@@ -19,6 +19,70 @@ import {
 } from "recharts";
 
 type ChartType = "area" | "line" | "composed";
+type MAChartYears = 1 | 2 | 3;
+type BacktestYears = 3 | 5 | 7;
+
+type MAChartData = {
+  date: string;
+  close: number;
+  ma30?: number;
+  ma60?: number;
+};
+
+type BacktestTrade = {
+  date: string;
+  type: "buy" | "sell";
+  price: number;
+  shares: number;
+  value: number;
+  portfolioValue: number;
+  signal: string;
+};
+
+type BacktestResult = {
+  symbol: string;
+  strategy: {
+    name: string;
+    description: string;
+    maPeriod: number;
+  };
+  period: {
+    years: number;
+    startDate: string;
+    endDate: string;
+    tradingDays: number;
+  };
+  results: {
+    initialCapital: number;
+    finalValue: number;
+    totalReturn: string;
+    totalTrades: number;
+    winningTrades: number;
+    losingTrades: number;
+    winRate: string;
+    maxDrawdown: string;
+    buyHoldReturn: string;
+    outperformance: string;
+  };
+  trades: BacktestTrade[];
+  chartData: Array<{
+    date: string;
+    price: number;
+    ma30: number | null;
+    portfolioValue: number;
+    signal: string | null;
+  }>;
+};
+
+type SyncStatus = {
+  symbol: string;
+  recordCount: number;
+  hasData: boolean;
+  dateRange?: {
+    from: string;
+    to: string;
+  };
+};
 
 type StockData = {
   symbol: string;
@@ -200,6 +264,26 @@ export default function InvestmentPage() {
   const [tradeShares, setTradeShares] = useState<string>("");
   const [showWallet, setShowWallet] = useState(false);
   const [showTransactions, setShowTransactions] = useState(false);
+  
+  // MA Chart & Backtest states
+  const [showMAChart, setShowMAChart] = useState(false);
+  const [maChartData, setMaChartData] = useState<MAChartData[]>([]);
+  const [maChartYears, setMaChartYears] = useState<MAChartYears>(1);
+  const [loadingMAChart, setLoadingMAChart] = useState(false);
+  const [showMA30, setShowMA30] = useState(true);
+  const [showMA60, setShowMA60] = useState(false);
+  
+  // Backtest states
+  const [showBacktest, setShowBacktest] = useState(false);
+  const [backtestYears, setBacktestYears] = useState<BacktestYears>(3);
+  const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(null);
+  const [loadingBacktest, setLoadingBacktest] = useState(false);
+  
+  // Sync states
+  const [showSyncModal, setShowSyncModal] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<Record<string, SyncStatus>>({});
+  const [syncing, setSyncing] = useState<string | null>(null);
+  const [syncYears, setSyncYears] = useState<number>(7);
   
   const refreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -614,6 +698,154 @@ export default function InvestmentPage() {
     [selectedSymbol, fetchHistory]
   );
 
+  // ========== Moving Average & Backtest Functions ==========
+
+  // Check sync status for a symbol
+  const checkSyncStatus = async (symbol: string) => {
+    try {
+      const res = await fetch(`/api/stocks/sync?symbol=${symbol}`);
+      if (res.ok) {
+        const data = await res.json();
+        setSyncStatus(prev => ({ ...prev, [symbol]: data }));
+        return data;
+      }
+    } catch (err) {
+      console.error("Error checking sync status:", err);
+    }
+    return null;
+  };
+
+  // Sync historical data for a symbol
+  const syncStockData = async (symbol: string, years: number = 7) => {
+    setSyncing(symbol);
+    try {
+      const res = await fetch('/api/stocks/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol, years }),
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        // Update sync status
+        await checkSyncStatus(symbol);
+        return data;
+      } else {
+        const error = await res.json();
+        throw new Error(error.error || 'Sync failed');
+      }
+    } catch (err) {
+      console.error("Error syncing data:", err);
+      setError(err instanceof Error ? err.message : "Failed to sync data");
+    } finally {
+      setSyncing(null);
+    }
+  };
+
+  // Fetch MA chart data
+  const fetchMAChartData = async (symbol: string, years: MAChartYears) => {
+    setLoadingMAChart(true);
+    try {
+      const res = await fetch(
+        `/api/stocks/history?symbol=${symbol}&years=${years}&ma30=true&ma60=true`
+      );
+      
+      if (res.ok) {
+        const data = await res.json();
+        if (data.data && data.data.length > 0) {
+          setMaChartData(data.data);
+        } else if (data.needsSync) {
+          // Need to sync data first
+          setError("No historical data found. Please sync data first.");
+          setShowSyncModal(true);
+        }
+      }
+    } catch (err) {
+      console.error("Error fetching MA chart data:", err);
+    } finally {
+      setLoadingMAChart(false);
+    }
+  };
+
+  // Run backtest
+  const runBacktest = async (symbol: string, years: BacktestYears) => {
+    setLoadingBacktest(true);
+    setBacktestResult(null);
+    try {
+      const res = await fetch('/api/stocks/backtest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbol,
+          years,
+          maPeriod: 30,
+          initialCapital: 100000,
+        }),
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        setBacktestResult(data);
+      } else {
+        const error = await res.json();
+        if (error.needsSync) {
+          setError("Not enough historical data. Please sync data first.");
+          setShowSyncModal(true);
+        } else {
+          throw new Error(error.error || 'Backtest failed');
+        }
+      }
+    } catch (err) {
+      console.error("Error running backtest:", err);
+      setError(err instanceof Error ? err.message : "Failed to run backtest");
+    } finally {
+      setLoadingBacktest(false);
+    }
+  };
+
+  // Open MA Chart panel (toggle)
+  const openMAChart = () => {
+    if (showMAChart) {
+      // If already showing, close it
+      setShowMAChart(false);
+    } else {
+      // Close others and open MA Chart
+      setShowBacktest(false);
+      setShowSyncModal(false);
+      setShowMAChart(true);
+      checkSyncStatus(selectedSymbol);
+      fetchMAChartData(selectedSymbol, maChartYears);
+    }
+  };
+
+  // Open Backtest panel (toggle)
+  const openBacktest = () => {
+    if (showBacktest) {
+      // If already showing, close it
+      setShowBacktest(false);
+    } else {
+      // Close others and open Backtest
+      setShowMAChart(false);
+      setShowSyncModal(false);
+      setShowBacktest(true);
+      checkSyncStatus(selectedSymbol);
+    }
+  };
+
+  // Open Sync Data panel (toggle)
+  const openSyncModal = () => {
+    if (showSyncModal) {
+      // If already showing, close it
+      setShowSyncModal(false);
+    } else {
+      // Close others and open Sync
+      setShowMAChart(false);
+      setShowBacktest(false);
+      setShowSyncModal(true);
+      checkSyncStatus(selectedSymbol);
+    }
+  };
+
   // Auto-refresh for intraday intervals
   useEffect(() => {
     if (autoRefresh && isIntradayInterval(selectedInterval)) {
@@ -730,7 +962,7 @@ export default function InvestmentPage() {
 
             {stockData[selectedSymbol] && (
               <div className="bg-gray-50 rounded-lg p-4 mb-4">
-                <p className="text-sm text-gray-600">Current Price</p>
+                <p className="text-sm text-gray-800">Current Price</p>
                 <p className="text-3xl font-bold text-gray-900">
                   {formatCurrency(stockData[selectedSymbol].close)}
                 </p>
@@ -741,12 +973,12 @@ export default function InvestmentPage() {
               <div className="bg-blue-50 rounded-lg p-3 mb-4">
                 <p className="text-xs text-blue-600 font-semibold mb-1">Your Position</p>
                 <div className="flex justify-between text-sm">
-                  <span className="text-gray-600">Shares:</span>
-                  <span className="font-semibold">{currentPosition.shares}</span>
+                  <span className="text-gray-800">Shares:</span>
+                  <span className="font-semibold text-gray-900">{currentPosition.shares}</span>
                 </div>
                 <div className="flex justify-between text-sm">
-                  <span className="text-gray-600">Avg Price:</span>
-                  <span className="font-semibold">{formatCurrency(currentPosition.avgPrice)}</span>
+                  <span className="text-gray-800">Avg Price:</span>
+                  <span className="font-semibold text-gray-900">{formatCurrency(currentPosition.avgPrice)}</span>
                 </div>
               </div>
             )}
@@ -762,19 +994,39 @@ export default function InvestmentPage() {
                 placeholder="Enter shares"
                 min="0"
                 step="1"
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg text-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg text-lg text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-teal-500"
               />
             </div>
 
             {tradeShares && parseFloat(tradeShares) > 0 && stockData[selectedSymbol] && (
               <div className="bg-gray-50 rounded-lg p-4 mb-4">
                 <div className="flex justify-between text-sm mb-1">
-                  <span className="text-gray-600">Total Amount</span>
-                  <span className="font-bold text-lg">
+                  <span className="text-gray-800">Total Amount</span>
+                  <span className="font-bold text-lg text-gray-900">
                     {formatCurrency(parseFloat(tradeShares) * stockData[selectedSymbol].close)}
                   </span>
                 </div>
               </div>
+            )}
+
+            {/* Validation Messages */}
+            {tradeShares && parseFloat(tradeShares) > 0 && stockData[selectedSymbol] && (
+              <>
+                {tradeType === 'buy' && parseFloat(tradeShares) * stockData[selectedSymbol].close > wallet.cash && (
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
+                    <p className="text-red-600 text-sm font-medium">
+                      ⚠️ Insufficient funds. You need {formatCurrency(parseFloat(tradeShares) * stockData[selectedSymbol].close)} but only have {formatCurrency(wallet.cash)}.
+                    </p>
+                  </div>
+                )}
+                {tradeType === 'sell' && currentPosition && parseFloat(tradeShares) > currentPosition.shares && (
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
+                    <p className="text-red-600 text-sm font-medium">
+                      ⚠️ Insufficient shares. You want to sell {tradeShares} shares but only have {currentPosition.shares}.
+                    </p>
+                  </div>
+                )}
+              </>
             )}
 
             <div className="flex gap-3">
@@ -790,10 +1042,16 @@ export default function InvestmentPage() {
               </button>
               <button
                 onClick={executeTrade}
+                disabled={
+                  !tradeShares || 
+                  parseFloat(tradeShares) <= 0 ||
+                  (tradeType === 'buy' && stockData[selectedSymbol] && parseFloat(tradeShares) * stockData[selectedSymbol].close > wallet.cash) ||
+                  (tradeType === 'sell' && currentPosition && parseFloat(tradeShares) > currentPosition.shares)
+                }
                 className={`flex-1 px-4 py-3 rounded-lg transition font-medium text-white ${
                   tradeType === 'buy'
-                    ? 'bg-green-600 hover:bg-green-700'
-                    : 'bg-red-600 hover:bg-red-700'
+                    ? 'bg-green-600 hover:bg-green-700 disabled:bg-green-300 disabled:cursor-not-allowed'
+                    : 'bg-red-600 hover:bg-red-700 disabled:bg-red-300 disabled:cursor-not-allowed'
                 }`}
               >
                 {tradeType === 'buy' ? 'Buy' : 'Sell'}
@@ -868,7 +1126,7 @@ export default function InvestmentPage() {
                             <span className="text-2xl">{asset?.emoji || '📈'}</span>
                             <div>
                               <p className="font-bold text-gray-900">{position.symbol}</p>
-                              <p className="text-sm text-gray-500">{position.shares} shares</p>
+                              <p className="text-sm text-gray-700">{position.shares} shares</p>
                             </div>
                           </div>
                           <div className="text-right">
@@ -880,11 +1138,11 @@ export default function InvestmentPage() {
                         </div>
                         <div className="grid grid-cols-2 gap-4 text-sm pt-2 border-t border-gray-200">
                           <div>
-                            <span className="text-gray-500">Avg Price:</span>{' '}
+                            <span className="text-gray-700">Avg Price:</span>{' '}
                             <span className="font-semibold">{formatCurrency(position.avgPrice)}</span>
                           </div>
                           <div>
-                            <span className="text-gray-500">Current:</span>{' '}
+                            <span className="text-gray-700">Current:</span>{' '}
                             <span className="font-semibold">{formatCurrency(currentPrice)}</span>
                           </div>
                         </div>
@@ -945,14 +1203,14 @@ export default function InvestmentPage() {
                                   {transaction.type.toUpperCase()}
                                 </span>
                               </div>
-                              <p className="text-sm text-gray-500">
+                              <p className="text-sm text-gray-700">
                                 {new Date(transaction.date).toLocaleString()}
                               </p>
                             </div>
                           </div>
                           <div className="text-right">
                             <p className="font-bold text-lg">{formatCurrency(transaction.total)}</p>
-                            <p className="text-sm text-gray-500">
+                            <p className="text-sm text-gray-700">
                               {transaction.shares} × {formatCurrency(transaction.price)}
                             </p>
                           </div>
@@ -1084,11 +1342,11 @@ export default function InvestmentPage() {
                     placeholder="Search..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-teal-500"
                   />
 
                   <div className="space-y-2">
-                    <p className="text-xs font-medium text-gray-600">Custom Symbol:</p>
+                    <p className="text-xs font-medium text-gray-800">Custom Symbol:</p>
                     <div className="flex gap-2">
                       <input
                         type="text"
@@ -1096,7 +1354,7 @@ export default function InvestmentPage() {
                         value={customSymbol}
                         onChange={(e) => setCustomSymbol(e.target.value.toUpperCase())}
                         onKeyDown={(e) => e.key === "Enter" && addCustomSymbol()}
-                        className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+                        className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-teal-500"
                       />
                       <button
                         onClick={addCustomSymbol}
@@ -1124,7 +1382,7 @@ export default function InvestmentPage() {
                           <span className="text-lg">{asset.emoji}</span>
                           <div>
                             <p className="font-semibold text-sm text-gray-900">{asset.symbol}</p>
-                            <p className="text-xs text-gray-500">{asset.name}</p>
+                            <p className="text-xs text-gray-700">{asset.name}</p>
                           </div>
                         </div>
                         {isInWatchlist(asset.symbol) ? (
@@ -1208,26 +1466,26 @@ export default function InvestmentPage() {
                                 <div className="grid grid-cols-2 gap-1 text-xs">
                                   {metrics.pe !== undefined && (
                                     <div>
-                                      <span className="text-gray-500">P/E:</span>{" "}
-                                      <span className="font-semibold">{metrics.pe.toFixed(2)}</span>
+                                      <span className="text-gray-700 font-medium">P/E:</span>{" "}
+                                      <span className="font-semibold text-gray-900">{metrics.pe.toFixed(2)}</span>
                                     </div>
                                   )}
                                   {metrics.roe !== undefined && (
                                     <div>
-                                      <span className="text-gray-500">ROE:</span>{" "}
-                                      <span className="font-semibold">{(metrics.roe * 100).toFixed(1)}%</span>
+                                      <span className="text-gray-700 font-medium">ROE:</span>{" "}
+                                      <span className="font-semibold text-gray-900">{(metrics.roe * 100).toFixed(1)}%</span>
                                     </div>
                                   )}
                                   {metrics.volume !== undefined && (
                                     <div className="col-span-2">
-                                      <span className="text-gray-500">Vol:</span>{" "}
-                                      <span className="font-semibold">{formatNumber(metrics.volume)}</span>
+                                      <span className="text-gray-700 font-medium">Vol:</span>{" "}
+                                      <span className="font-semibold text-gray-900">{formatNumber(metrics.volume)}</span>
                                     </div>
                                   )}
                                   {metrics.marketCap !== undefined && (
                                     <div className="col-span-2">
-                                      <span className="text-gray-500">MCap:</span>{" "}
-                                      <span className="font-semibold">{formatNumber(metrics.marketCap * 1e6)}</span>
+                                      <span className="text-gray-700 font-medium">MCap:</span>{" "}
+                                      <span className="font-semibold text-gray-900">{formatNumber(metrics.marketCap * 1e6)}</span>
                                     </div>
                                   )}
                                 </div>
@@ -1370,16 +1628,16 @@ export default function InvestmentPage() {
                     <p className="text-xs text-blue-600 font-semibold mb-1">Your Position</p>
                     <div className="flex gap-4 text-sm">
                       <div>
-                        <span className="text-gray-600">Shares:</span>{" "}
-                        <span className="font-semibold">{currentPosition.shares}</span>
+                        <span className="text-gray-800">Shares:</span>{" "}
+                        <span className="font-semibold text-gray-900">{currentPosition.shares}</span>
                       </div>
                       <div>
-                        <span className="text-gray-600">Avg:</span>{" "}
-                        <span className="font-semibold">{formatCurrency(currentPosition.avgPrice)}</span>
+                        <span className="text-gray-800">Avg:</span>{" "}
+                        <span className="font-semibold text-gray-900">{formatCurrency(currentPosition.avgPrice)}</span>
                       </div>
                       <div>
-                        <span className="text-gray-600">Value:</span>{" "}
-                        <span className="font-semibold">
+                        <span className="text-gray-800">Value:</span>{" "}
+                        <span className="font-semibold text-gray-900">
                           {formatCurrency(currentPosition.shares * (stockData[selectedSymbol]?.close || currentPosition.avgPrice))}
                         </span>
                       </div>
@@ -1404,7 +1662,7 @@ export default function InvestmentPage() {
               </div>
 
               {/* Trade Buttons */}
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <button
                   onClick={() => {
                     setTradeType('buy');
@@ -1427,34 +1685,42 @@ export default function InvestmentPage() {
               </div>
             </div>
 
-            {/* Time Interval Selector */}
-            <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1 overflow-x-auto mb-4">
-              {TIME_INTERVALS.map((interval) => (
-                <button
-                  key={interval.value}
-                  onClick={() => handleIntervalChange(interval.value)}
-                  className={`px-3 py-2 rounded-md text-sm font-medium transition whitespace-nowrap ${
-                    selectedInterval === interval.value
-                      ? "bg-white text-teal-600 shadow-sm"
-                      : "text-gray-600 hover:text-gray-900"
-                  }`}
-                >
-                  {interval.label}
-                </button>
-              ))}
-            </div>
+            {/* Time Interval Selector - Only show for regular chart view */}
+            {!showMAChart && !showBacktest && !showSyncModal && (
+              <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1 overflow-x-auto mb-4">
+                {TIME_INTERVALS.map((interval) => (
+                  <button
+                    key={interval.value}
+                    onClick={() => handleIntervalChange(interval.value)}
+                    className={`px-3 py-2 rounded-md text-sm font-medium transition whitespace-nowrap ${
+                      selectedInterval === interval.value
+                        ? "bg-white text-teal-600 shadow-sm"
+                        : "text-gray-600 hover:text-gray-900"
+                    }`}
+                  >
+                    {interval.label}
+                  </button>
+                ))}
+              </div>
+            )}
 
             {/* Chart Controls */}
             <div className="flex flex-wrap items-center gap-4 mb-4">
               <div className="flex items-center gap-2">
-                <span className="text-sm text-gray-600">Chart:</span>
+                <span className="text-sm text-gray-800 font-medium">Chart:</span>
                 <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1">
                   {(["area", "line", "composed"] as ChartType[]).map((type) => (
                     <button
                       key={type}
-                      onClick={() => setChartType(type)}
+                      onClick={() => {
+                        setChartType(type);
+                        // Close analysis panels when switching chart type
+                        setShowMAChart(false);
+                        setShowBacktest(false);
+                        setShowSyncModal(false);
+                      }}
                       className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${
-                        chartType === type
+                        chartType === type && !showMAChart && !showBacktest && !showSyncModal
                           ? "bg-white text-teal-600 shadow-sm"
                           : "text-gray-600 hover:text-gray-900"
                       }`}
@@ -1465,38 +1731,484 @@ export default function InvestmentPage() {
                 </div>
               </div>
 
-              <button
-                onClick={() => setShowBrush(!showBrush)}
-                className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${
-                  showBrush
-                    ? "bg-teal-100 text-teal-700"
-                    : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                }`}
-              >
-                🔍 {showBrush ? "Zoom On" : "Zoom Off"}
-              </button>
-
+              {/* Analysis Tools */}
               <div className="flex items-center gap-2">
-                <span className="text-sm text-gray-600">Compare:</span>
-                <select
-                  value={compareSymbol || ""}
-                  onChange={(e) => setCompareSymbol(e.target.value || null)}
-                  className="px-3 py-1.5 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
-                >
-                  <option value="">None</option>
-                  {watchlist
-                    .filter((a) => a.symbol !== selectedSymbol)
-                    .map((asset) => (
-                      <option key={asset.symbol} value={asset.symbol}>
-                        {asset.symbol}
-                      </option>
-                    ))}
-                </select>
+                <span className="text-sm text-gray-800 font-medium">Analysis:</span>
+                <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1">
+                  <button
+                    onClick={openMAChart}
+                    className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${
+                      showMAChart
+                        ? "bg-white text-teal-600 shadow-sm"
+                        : "text-gray-600 hover:text-gray-900"
+                    }`}
+                  >
+                    📊 MA Chart
+                  </button>
+                  <button
+                    onClick={openBacktest}
+                    className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${
+                      showBacktest
+                        ? "bg-white text-teal-600 shadow-sm"
+                        : "text-gray-600 hover:text-gray-900"
+                    }`}
+                  >
+                    🎯 Backtest
+                  </button>
+                  <button
+                    onClick={openSyncModal}
+                    className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${
+                      showSyncModal
+                        ? "bg-white text-teal-600 shadow-sm"
+                        : "text-gray-600 hover:text-gray-900"
+                    }`}
+                  >
+                    🔄 Sync Data
+                  </button>
+                </div>
               </div>
+
+              {/* Zoom and Compare - Only show for regular chart view */}
+              {!showMAChart && !showBacktest && !showSyncModal && (
+                <>
+                  <button
+                    onClick={() => setShowBrush(!showBrush)}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${
+                      showBrush
+                        ? "bg-teal-100 text-teal-700"
+                        : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                    }`}
+                  >
+                    🔍 {showBrush ? "Zoom On" : "Zoom Off"}
+                  </button>
+
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-gray-800 font-medium">Compare:</span>
+                    <select
+                      value={compareSymbol || ""}
+                      onChange={(e) => setCompareSymbol(e.target.value || null)}
+                      className="px-3 py-1.5 rounded-lg border border-gray-300 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-teal-500"
+                    >
+                      <option value="">None</option>
+                      {watchlist
+                        .filter((a) => a.symbol !== selectedSymbol)
+                        .map((asset) => (
+                          <option key={asset.symbol} value={asset.symbol}>
+                            {asset.symbol}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                </>
+              )}
             </div>
 
-            {/* Chart */}
-            {loadingHistory ? (
+            {/* Chart Area - Shows different content based on selected mode */}
+            {showMAChart ? (
+              /* MA Chart Inline Panel */
+              <div>
+                {/* Sync Status Warning */}
+                {syncStatus[selectedSymbol] && !syncStatus[selectedSymbol].hasData && (
+                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-4">
+                    <p className="text-yellow-700 font-semibold">No historical data available</p>
+                    <p className="text-yellow-600 text-sm mb-2">Sync data to view moving averages</p>
+                    <button
+                      onClick={() => syncStockData(selectedSymbol, syncYears)}
+                      disabled={syncing === selectedSymbol}
+                      className="px-4 py-2 bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 disabled:opacity-50"
+                    >
+                      {syncing === selectedSymbol ? 'Syncing...' : `Sync ${syncYears} Years of Data`}
+                    </button>
+                  </div>
+                )}
+
+                {/* Year Selection & MA Toggles */}
+                <div className="flex items-center gap-4 mb-4 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-gray-700">Period:</span>
+                    <div className="flex gap-1">
+                      {([1, 2, 3] as MAChartYears[]).map((year) => (
+                        <button
+                          key={year}
+                          onClick={() => {
+                            setMaChartYears(year);
+                            fetchMAChartData(selectedSymbol, year);
+                          }}
+                          className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${
+                            maChartYears === year
+                              ? 'bg-teal-500 text-white'
+                              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                          }`}
+                        >
+                          {year}Y
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={showMA30}
+                      onChange={(e) => setShowMA30(e.target.checked)}
+                      className="rounded text-teal-500"
+                    />
+                    <span className="text-sm text-gray-800 font-medium">30-Day MA</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={showMA60}
+                      onChange={(e) => setShowMA60(e.target.checked)}
+                      className="rounded text-purple-500"
+                    />
+                    <span className="text-sm text-gray-800 font-medium">60-Day MA</span>
+                  </label>
+                </div>
+
+                {/* MA Chart */}
+                {loadingMAChart ? (
+                  <div className="flex items-center justify-center h-[400px]">
+                    <div className="text-center">
+                      <div className="w-12 h-12 border-4 border-teal-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                      <p className="text-gray-400">Loading MA chart data...</p>
+                    </div>
+                  </div>
+                ) : maChartData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={400}>
+                    <ComposedChart data={maChartData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                      <XAxis
+                        dataKey="date"
+                        tickFormatter={(d) => new Date(d).toLocaleDateString('en-US', { month: 'short', year: '2-digit' })}
+                        tick={{ fontSize: 12 }}
+                        stroke="#94a3b8"
+                      />
+                      <YAxis
+                        domain={['auto', 'auto']}
+                        tick={{ fontSize: 12 }}
+                        stroke="#94a3b8"
+                        tickFormatter={(value) => `$${value.toFixed(0)}`}
+                      />
+                      <Tooltip
+                        contentStyle={{
+                          backgroundColor: 'white',
+                          border: '1px solid #e2e8f0',
+                          borderRadius: '0.75rem',
+                          padding: '12px',
+                        }}
+                        labelStyle={{ color: '#111827', fontWeight: 600 }}
+                        itemStyle={{ color: '#374151' }}
+                        formatter={(value, name) => {
+                          if (value === undefined || value === null) return ['N/A', name || 'Value'];
+                          // name is the display name from the chart component's name prop
+                          return [`$${Number(value).toFixed(2)}`, name];
+                        }}
+                        labelFormatter={(label) => new Date(label).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}
+                      />
+                      <Legend />
+                      <Area
+                        type="monotone"
+                        dataKey="close"
+                        name="Price"
+                        stroke="#14b8a6"
+                        strokeWidth={2}
+                        fill="#14b8a6"
+                        fillOpacity={0.1}
+                        dot={false}
+                      />
+                      {showMA30 && (
+                        <Line
+                          type="monotone"
+                          dataKey="ma30"
+                          name="30-Day MA"
+                          stroke="#f59e0b"
+                          strokeWidth={2}
+                          dot={false}
+                          connectNulls
+                        />
+                      )}
+                      {showMA60 && (
+                        <Line
+                          type="monotone"
+                          dataKey="ma60"
+                          name="60-Day MA"
+                          stroke="#8b5cf6"
+                          strokeWidth={2}
+                          dot={false}
+                          connectNulls
+                        />
+                      )}
+                      <Brush
+                        dataKey="date"
+                        height={30}
+                        stroke="#14b8a6"
+                        tickFormatter={(d) => new Date(d).toLocaleDateString('en-US', { month: 'short' })}
+                      />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="flex items-center justify-center h-[400px]">
+                    <div className="text-center">
+                      <p className="text-gray-400 text-lg mb-2">No data available</p>
+                      <button
+                        onClick={() => syncStockData(selectedSymbol, syncYears)}
+                        disabled={syncing === selectedSymbol}
+                        className="px-4 py-2 bg-teal-500 text-white rounded-lg hover:bg-teal-600 disabled:opacity-50"
+                      >
+                        {syncing === selectedSymbol ? 'Syncing...' : 'Sync Historical Data'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* MA Chart Stats */}
+                {maChartData.length > 0 && (
+                  <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="bg-gray-50 rounded-lg p-3">
+                      <p className="text-xs text-gray-700">Data Points</p>
+                      <p className="text-lg font-bold text-gray-900">{maChartData.length}</p>
+                    </div>
+                    <div className="bg-gray-50 rounded-lg p-3">
+                      <p className="text-xs text-gray-700">Start Price</p>
+                      <p className="text-lg font-bold text-gray-900">${maChartData[0]?.close.toFixed(2)}</p>
+                    </div>
+                    <div className="bg-gray-50 rounded-lg p-3">
+                      <p className="text-xs text-gray-700">Current Price</p>
+                      <p className="text-lg font-bold text-gray-900">${maChartData[maChartData.length - 1]?.close.toFixed(2)}</p>
+                    </div>
+                    <div className="bg-gray-50 rounded-lg p-3">
+                      <p className="text-xs text-gray-700">Change</p>
+                      {(() => {
+                        const startPrice = maChartData[0]?.close || 0;
+                        const endPrice = maChartData[maChartData.length - 1]?.close || 0;
+                        const change = ((endPrice - startPrice) / startPrice) * 100;
+                        return (
+                          <p className={`text-lg font-bold ${change >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                            {change >= 0 ? '+' : ''}{change.toFixed(2)}%
+                          </p>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : showBacktest ? (
+              /* Backtest Inline Panel */
+              <div>
+                {/* Strategy Description */}
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
+                  <h4 className="font-bold text-blue-900 mb-2">MA Crossover Strategy</h4>
+                  <p className="text-blue-700 text-sm">
+                    <strong>Buy:</strong> Price &lt; 30-day MA | <strong>Sell:</strong> Price &gt; 30-day MA | Initial: $100,000
+                  </p>
+                </div>
+
+                {/* Backtest Controls */}
+                <div className="flex items-center gap-4 mb-4 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-gray-700">Period:</span>
+                    <div className="flex gap-1">
+                      {([3, 5, 7] as BacktestYears[]).map((year) => (
+                        <button
+                          key={year}
+                          onClick={() => setBacktestYears(year)}
+                          className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${
+                            backtestYears === year
+                              ? 'bg-teal-500 text-white'
+                              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                          }`}
+                        >
+                          {year}Y
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => runBacktest(selectedSymbol, backtestYears)}
+                    disabled={loadingBacktest}
+                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 font-medium"
+                  >
+                    {loadingBacktest ? 'Running...' : '▶ Run Backtest'}
+                  </button>
+                </div>
+
+                {/* Sync Warning */}
+                {syncStatus[selectedSymbol] && !syncStatus[selectedSymbol].hasData && (
+                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-4">
+                    <p className="text-yellow-700 font-semibold">Historical data required</p>
+                    <button
+                      onClick={() => syncStockData(selectedSymbol, 7)}
+                      disabled={syncing === selectedSymbol}
+                      className="mt-2 px-4 py-2 bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 disabled:opacity-50"
+                    >
+                      {syncing === selectedSymbol ? 'Syncing...' : 'Sync 7 Years of Data'}
+                    </button>
+                  </div>
+                )}
+
+                {/* Loading State */}
+                {loadingBacktest && (
+                  <div className="flex items-center justify-center h-[300px]">
+                    <div className="text-center">
+                      <div className="w-12 h-12 border-4 border-teal-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                      <p className="text-gray-400">Running backtest simulation...</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Backtest Results */}
+                {backtestResult && !loadingBacktest && (
+                  <>
+                    {/* Results Summary */}
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                      <div className="bg-gradient-to-br from-teal-500 to-teal-600 rounded-lg p-3 text-white">
+                        <p className="text-xs opacity-90">Final Value</p>
+                        <p className="text-xl font-bold">${backtestResult.results.finalValue.toLocaleString()}</p>
+                      </div>
+                      <div className={`bg-gradient-to-br ${parseFloat(backtestResult.results.totalReturn) >= 0 ? 'from-green-500 to-green-600' : 'from-red-500 to-red-600'} rounded-lg p-3 text-white`}>
+                        <p className="text-xs opacity-90">Total Return</p>
+                        <p className="text-xl font-bold">{backtestResult.results.totalReturn}</p>
+                      </div>
+                      <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-lg p-3 text-white">
+                        <p className="text-xs opacity-90">Buy & Hold</p>
+                        <p className="text-xl font-bold">{backtestResult.results.buyHoldReturn}</p>
+                      </div>
+                      <div className={`bg-gradient-to-br ${parseFloat(backtestResult.results.outperformance) >= 0 ? 'from-purple-500 to-purple-600' : 'from-orange-500 to-orange-600'} rounded-lg p-3 text-white`}>
+                        <p className="text-xs opacity-90">Outperformance</p>
+                        <p className="text-xl font-bold">{backtestResult.results.outperformance}</p>
+                      </div>
+                    </div>
+
+                    {/* Additional Metrics */}
+                    <div className="grid grid-cols-5 gap-2 mb-4">
+                      <div className="bg-gray-50 rounded-lg p-2 text-center">
+                        <p className="text-xs text-gray-700">Trades</p>
+                        <p className="font-bold text-gray-900">{backtestResult.results.totalTrades}</p>
+                      </div>
+                      <div className="bg-gray-50 rounded-lg p-2 text-center">
+                        <p className="text-xs text-gray-700">Wins</p>
+                        <p className="font-bold text-green-600">{backtestResult.results.winningTrades}</p>
+                      </div>
+                      <div className="bg-gray-50 rounded-lg p-2 text-center">
+                        <p className="text-xs text-gray-700">Losses</p>
+                        <p className="font-bold text-red-600">{backtestResult.results.losingTrades}</p>
+                      </div>
+                      <div className="bg-gray-50 rounded-lg p-2 text-center">
+                        <p className="text-xs text-gray-700">Win Rate</p>
+                        <p className="font-bold text-blue-600">{backtestResult.results.winRate}</p>
+                      </div>
+                      <div className="bg-gray-50 rounded-lg p-2 text-center">
+                        <p className="text-xs text-gray-700">Max DD</p>
+                        <p className="font-bold text-orange-600">{backtestResult.results.maxDrawdown}</p>
+                      </div>
+                    </div>
+
+                    {/* Portfolio Value Chart */}
+                    {backtestResult.chartData && backtestResult.chartData.length > 0 && (
+                      <ResponsiveContainer width="100%" height={250}>
+                        <ComposedChart data={backtestResult.chartData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                          <XAxis
+                            dataKey="date"
+                            tickFormatter={(d) => new Date(d).toLocaleDateString('en-US', { month: 'short', year: '2-digit' })}
+                            tick={{ fontSize: 10 }}
+                            stroke="#94a3b8"
+                          />
+                          <YAxis
+                            yAxisId="left"
+                            domain={['auto', 'auto']}
+                            tick={{ fontSize: 10 }}
+                            stroke="#94a3b8"
+                            tickFormatter={(value) => `$${(value / 1000).toFixed(0)}K`}
+                          />
+                          <Tooltip
+                            contentStyle={{
+                              backgroundColor: 'white',
+                              border: '1px solid #e2e8f0',
+                              borderRadius: '0.75rem',
+                              padding: '12px',
+                            }}
+                            labelStyle={{ color: '#111827', fontWeight: 600 }}
+                            itemStyle={{ color: '#374151' }}
+                            formatter={(value, name) => {
+                              if (value === undefined) return ['N/A', name || 'Value'];
+                              if (name === 'portfolioValue') return [`$${Number(value).toLocaleString()}`, 'Portfolio'];
+                              return [`$${Number(value).toFixed(2)}`, name || 'Value'];
+                            }}
+                          />
+                          <Legend />
+                          <Line
+                            yAxisId="left"
+                            type="monotone"
+                            dataKey="portfolioValue"
+                            name="Portfolio Value"
+                            stroke="#14b8a6"
+                            strokeWidth={2}
+                            dot={false}
+                          />
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                    )}
+                  </>
+                )}
+
+                {/* No Results Yet */}
+                {!backtestResult && !loadingBacktest && (
+                  <div className="flex items-center justify-center h-[200px]">
+                    <p className="text-gray-400">Select a period and click "Run Backtest" to simulate</p>
+                  </div>
+                )}
+              </div>
+            ) : showSyncModal ? (
+              /* Sync Data Inline Panel */
+              <div className="flex items-center justify-center h-[400px]">
+                <div className="bg-white rounded-xl p-6 max-w-md w-full">
+                  <h3 className="text-xl font-bold text-gray-900 mb-4">🔄 Sync Historical Data</h3>
+                  <p className="text-gray-600 mb-4">
+                    Sync price data for <strong>{selectedSymbol}</strong> to enable MA charts and backtesting.
+                  </p>
+
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Years of Data</label>
+                    <div className="flex gap-2">
+                      {[3, 5, 7].map((year) => (
+                        <button
+                          key={year}
+                          onClick={() => setSyncYears(year)}
+                          className={`flex-1 px-4 py-2 rounded-lg text-sm font-medium transition ${
+                            syncYears === year
+                              ? 'bg-teal-500 text-white'
+                              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                          }`}
+                        >
+                          {year} Years
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {syncStatus[selectedSymbol]?.hasData && (
+                    <div className="bg-green-50 border border-green-200 rounded-lg p-3 mb-4">
+                      <p className="text-green-700 text-sm font-medium">Data already synced</p>
+                      <p className="text-green-600 text-xs">
+                        {syncStatus[selectedSymbol].recordCount} records
+                      </p>
+                    </div>
+                  )}
+
+                  <button
+                    onClick={async () => {
+                      await syncStockData(selectedSymbol, syncYears);
+                      await checkSyncStatus(selectedSymbol);
+                    }}
+                    disabled={syncing === selectedSymbol}
+                    className="w-full px-4 py-3 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition font-medium disabled:opacity-50"
+                  >
+                    {syncing === selectedSymbol ? 'Syncing...' : 'Sync Data'}
+                  </button>
+                </div>
+              </div>
+            ) : loadingHistory ? (
               <div className="flex items-center justify-center h-[400px]">
                 <div className="text-center">
                   <div className="w-12 h-12 border-4 border-teal-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
@@ -1541,6 +2253,8 @@ export default function InvestmentPage() {
                           borderRadius: "0.75rem",
                           padding: "12px",
                         }}
+                        labelStyle={{ color: '#111827', fontWeight: 600 }}
+                        itemStyle={{ color: '#374151' }}
                         formatter={(value: number | undefined, name?: string) => {
                           if (value === undefined) return ["N/A", name || "Price"];
                           const displayName = name === "compareClose" ? compareSymbol : (name || selectedSymbol);
@@ -1632,6 +2346,8 @@ export default function InvestmentPage() {
                           borderRadius: "0.75rem",
                           padding: "12px",
                         }}
+                        labelStyle={{ color: '#111827', fontWeight: 600 }}
+                        itemStyle={{ color: '#374151' }}
                         formatter={(value: number | undefined) => [
                           `$${(value ?? 0).toFixed(2)}`,
                           "Price",
@@ -1725,6 +2441,8 @@ export default function InvestmentPage() {
                           borderRadius: "0.75rem",
                           padding: "12px",
                         }}
+                        labelStyle={{ color: '#111827', fontWeight: 600 }}
+                        itemStyle={{ color: '#374151' }}
                         formatter={(value: number | undefined, name?: string) => [
                           `$${(value ?? 0).toFixed(2)}`,
                           name ? name.charAt(0).toUpperCase() + name.slice(1) : "Price",

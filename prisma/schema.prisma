@@ -28,3 +28,74 @@ model Post {
   authorId  Int
   author    User    @relation(fields: [authorId], references: [id])
 }
+
+// Stock price history for moving average calculations
+model StockPrice {
+  id        Int      @id @default(autoincrement())
+  symbol    String
+  date      DateTime
+  open      Float
+  high      Float
+  low       Float
+  close     Float
+  volume    BigInt?
+  createdAt DateTime @default(now())
+
+  @@unique([symbol, date])
+  @@index([symbol])
+  @@index([date])
+}
+
+// Watchlist items
+model WatchlistItem {
+  id        Int      @id @default(autoincrement())
+  symbol    String   @unique
+  name      String
+  emoji     String   @default("📈")
+  createdAt DateTime @default(now())
+}
+
+// Portfolio positions
+model Portfolio {
+  id        Int      @id @default(autoincrement())
+  symbol    String   @unique
+  shares    Float
+  avgPrice  Float
+  totalCost Float
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Transaction history
+model Transaction {
+  id        Int      @id @default(autoincrement())
+  symbol    String
+  type      String   // 'buy' or 'sell'
+  shares    Float
+  price     Float
+  total     Float
+  createdAt DateTime @default(now())
+
+  @@index([symbol])
+}
+
+// Backtest results storage
+model BacktestResult {
+  id              Int      @id @default(autoincrement())
+  symbol          String
+  strategyName    String
+  startDate       DateTime
+  endDate         DateTime
+  initialCapital  Float
+  finalValue      Float
+  totalReturn     Float
+  totalTrades     Int
+  winningTrades   Int
+  losingTrades    Int
+  maxDrawdown     Float
+  sharpeRatio     Float?
+  tradesJson      String   // JSON string of all trades
+  createdAt       DateTime @default(now())
+
+  @@index([symbol])
+}
