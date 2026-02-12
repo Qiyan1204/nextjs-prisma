@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
+import { useAuth } from "@/app/hooks/useAuth";
 import {
   LineChart,
   Line,
@@ -179,10 +180,10 @@ const PREDEFINED_ASSETS = {
   ],
 };
 
-// Load watchlist from localStorage
-const loadWatchlistFromStorage = (): Array<{ symbol: string; name: string; emoji: string }> => {
-  if (typeof window === "undefined") return PREDEFINED_ASSETS.stocks.slice(0, 6);
-  const saved = localStorage.getItem("investment-watchlist");
+// Load watchlist from localStorage (with userId)
+const loadWatchlistFromStorage = (userId: number | null): Array<{ symbol: string; name: string; emoji: string }> => {
+  if (typeof window === "undefined" || !userId) return PREDEFINED_ASSETS.stocks.slice(0, 6);
+  const saved = localStorage.getItem(`investment-watchlist-${userId}`);
   if (saved) {
     try {
       return JSON.parse(saved);
@@ -193,12 +194,12 @@ const loadWatchlistFromStorage = (): Array<{ symbol: string; name: string; emoji
   return PREDEFINED_ASSETS.stocks.slice(0, 6);
 };
 
-// Load wallet from localStorage
-const loadWalletFromStorage = (): Wallet => {
-  if (typeof window === "undefined") {
+// Load wallet from localStorage (with userId)
+const loadWalletFromStorage = (userId: number | null): Wallet => {
+  if (typeof window === "undefined" || !userId) {
     return { cash: INITIAL_CASH, positions: {}, transactions: [] };
   }
-  const saved = localStorage.getItem("investment-wallet");
+  const saved = localStorage.getItem(`investment-wallet-${userId}`);
   if (saved) {
     try {
       return JSON.parse(saved);
@@ -230,6 +231,7 @@ const formatCurrency = (num: number): string => {
 };
 
 export default function InvestmentPage() {
+  const { user, loading: authLoading } = useAuth();
   const [watchlist, setWatchlist] = useState<
     Array<{ symbol: string; name: string; emoji: string }>
   >([]);
@@ -287,26 +289,28 @@ export default function InvestmentPage() {
   
   const refreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Initialize from localStorage on client
+  // Initialize from localStorage on client (after user is loaded)
   useEffect(() => {
     setIsClient(true);
-    setWatchlist(loadWatchlistFromStorage());
-    setWallet(loadWalletFromStorage());
-  }, []);
+    if (user?.id) {
+      setWatchlist(loadWatchlistFromStorage(user.id));
+      setWallet(loadWalletFromStorage(user.id));
+    }
+  }, [user?.id]);
 
   // Save watchlist to localStorage
   useEffect(() => {
-    if (isClient && watchlist.length > 0) {
-      localStorage.setItem("investment-watchlist", JSON.stringify(watchlist));
+    if (isClient && user?.id && watchlist.length > 0) {
+      localStorage.setItem(`investment-watchlist-${user.id}`, JSON.stringify(watchlist));
     }
-  }, [watchlist, isClient]);
+  }, [watchlist, isClient, user?.id]);
 
   // Save wallet to localStorage
   useEffect(() => {
-    if (isClient) {
-      localStorage.setItem("investment-wallet", JSON.stringify(wallet));
+    if (isClient && user?.id) {
+      localStorage.setItem(`investment-wallet-${user.id}`, JSON.stringify(wallet));
     }
-  }, [wallet, isClient]);
+  }, [wallet, isClient, user?.id]);
 
   // Calculate portfolio value
   const getPortfolioValue = (): number => {

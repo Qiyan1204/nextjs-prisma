@@ -15,9 +15,12 @@ datasource db {
 
 model User {
   id    Int     @id @default(autoincrement())
+  name String
   email String  @unique
-  name  String?
+  password String
+  role  Role
   posts Post[]
+  createdAt DateTime @default(now())
 }
 
 model Post {
@@ -98,4 +101,10 @@ model BacktestResult {
   createdAt       DateTime @default(now())
 
   @@index([symbol])
+}
+
+enum Role {
+  STUDENT
+  ADMIN
+  INVESTOR
 }
