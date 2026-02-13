@@ -230,6 +230,27 @@ const formatCurrency = (num: number): string => {
   }).format(num);
 };
 
+// Check if US stock market is open (9:30 AM - 4:00 PM ET, Monday-Friday)
+const isMarketOpen = (): boolean => {
+  const now = new Date();
+  // Convert to ET (Eastern Time)
+  const etTime = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const day = etTime.getDay(); // 0 = Sunday, 6 = Saturday
+  const hours = etTime.getHours();
+  const minutes = etTime.getMinutes();
+  const timeInMinutes = hours * 60 + minutes;
+  
+  // Market hours: 9:30 AM (570 min) to 4:00 PM (960 min) ET
+  const marketOpen = 9 * 60 + 30; // 9:30 AM
+  const marketClose = 16 * 60;     // 4:00 PM
+  
+  // Check if weekday and within market hours
+  const isWeekday = day >= 1 && day <= 5;
+  const isDuringHours = timeInMinutes >= marketOpen && timeInMinutes < marketClose;
+  
+  return isWeekday && isDuringHours;
+};
+
 export default function InvestmentPage() {
   const { user, loading: authLoading } = useAuth();
   const [watchlist, setWatchlist] = useState<
@@ -258,6 +279,13 @@ export default function InvestmentPage() {
   const [compareSymbol, setCompareSymbol] = useState<string | null>(null);
   const [compareData, setCompareData] = useState<StockData[]>([]);
   const [showMetrics, setShowMetrics] = useState(true);
+  
+  // Top-up modal states
+  const [showTopUpModal, setShowTopUpModal] = useState(false);
+  const [topUpAmount, setTopUpAmount] = useState<string>("");
+  
+  // Success message state
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   
   // Wallet states
   const [wallet, setWallet] = useState<Wallet>({ cash: INITIAL_CASH, positions: {}, transactions: [] });
@@ -385,6 +413,7 @@ export default function InvestmentPage() {
       setShowTradeModal(false);
       setTradeShares("");
       setError(null);
+      setSuccessMessage(`Successfully bought ${shares} shares of ${selectedSymbol} for ${formatCurrency(total)}`);
     } else {
       // Sell
       const position = wallet.positions[selectedSymbol];
@@ -426,8 +455,50 @@ export default function InvestmentPage() {
       setShowTradeModal(false);
       setTradeShares("");
       setError(null);
+      setSuccessMessage(`Successfully sold ${shares} shares of ${selectedSymbol} for ${formatCurrency(total)}`);
     }
   };
+
+  const executeTopUp = () => {
+  const amount = parseFloat(topUpAmount);
+  if (!amount || amount <= 0) {
+    setError("Please enter a valid amount");
+    return;
+  }
+
+  // Minimum top-up: $100
+  if (amount < 100) {
+    setError("Minimum top-up amount is $100");
+    return;
+  }
+
+  // Maximum top-up: $1,000,000 per transaction
+  if (amount > 1000000) {
+    setError("Maximum top-up amount is $1,000,000 per transaction");
+    return;
+  }
+
+  // Execute top-up
+  const newWallet = { ...wallet };
+  newWallet.cash += amount;
+
+  // Add transaction
+  newWallet.transactions.unshift({
+    id: Date.now().toString(),
+    symbol: 'CASH',
+    type: 'buy', // Using 'buy' type to represent deposit
+    shares: 0,
+    price: 0,
+    total: amount,
+    date: new Date().toISOString(),
+  });
+
+  setWallet(newWallet);
+  setShowTopUpModal(false);
+  setTopUpAmount("");
+  setError(null);
+  setSuccessMessage(`Successfully deposited ${formatCurrency(amount)} to your account`);
+};
 
   // Get all available assets for the selected category
   const getAvailableAssets = () => {
@@ -943,7 +1014,32 @@ export default function InvestmentPage() {
   });
 
   return (
-    <div className="min-h-screen bg-gray-50 flex">
+    <div className="min-h-screen bg-gray-50 flex flex-col md:flex-row">
+      {/* Success Message */}
+      {successMessage && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 border-4 border-orange-500">
+            <div className="flex items-start gap-4">
+              <div className="flex-shrink-0 w-12 h-12 bg-orange-100 rounded-full flex items-center justify-center">
+                <svg className="w-6 h-6 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+              <div className="flex-1">
+                <h3 className="text-xl font-bold text-orange-600 mb-2">Success!</h3>
+                <p className="text-gray-700 leading-relaxed">{successMessage}</p>
+              </div>
+            </div>
+            <button
+              onClick={() => setSuccessMessage(null)}
+              className="w-full mt-6 px-4 py-3 bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition font-medium"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Trade Modal */}
       {showTradeModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
@@ -969,6 +1065,15 @@ export default function InvestmentPage() {
                 <p className="text-sm text-gray-800">Current Price</p>
                 <p className="text-3xl font-bold text-gray-900">
                   {formatCurrency(stockData[selectedSymbol].close)}
+                </p>
+              </div>
+            )}
+
+            {/* After Hours Warning */}
+            {!isMarketOpen() && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4">
+                <p className="text-amber-700 text-sm font-medium">
+                  ⏰ Market is closed. Trade will be simulated at closing price.
                 </p>
               </div>
             )}
@@ -1065,6 +1170,109 @@ export default function InvestmentPage() {
         </div>
       )}
 
+
+    {/* Top-Up Modal */}
+    {showTopUpModal && (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+        <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-2xl font-bold text-gray-900">💳 Add Funds</h3>
+            <button
+              onClick={() => {
+                setShowTopUpModal(false);
+                setTopUpAmount("");
+                setError(null);
+              }}
+              className="text-gray-400 hover:text-gray-600 text-2xl"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div className="bg-gradient-to-br from-teal-500 to-teal-600 rounded-lg p-4 mb-4 text-white">
+            <p className="text-sm opacity-90 mb-1">Current Balance</p>
+            <p className="text-3xl font-bold">{formatCurrency(wallet.cash)}</p>
+          </div>
+
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Amount to Add
+            </label>
+            <div className="relative">
+              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 text-lg">$</span>
+              <input
+                type="number"
+                value={topUpAmount}
+                onChange={(e) => setTopUpAmount(e.target.value)}
+                placeholder="0.00"
+                min="100"
+                step="100"
+                className="w-full pl-8 pr-4 py-3 border border-gray-300 rounded-lg text-lg text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-teal-500"
+              />
+            </div>
+            <p className="text-xs text-gray-500 mt-1">Min: $100 • Max: $1,000,000</p>
+          </div>
+
+          {/* Quick Amount Buttons */}
+          <div className="grid grid-cols-3 gap-2 mb-4">
+            {[1000, 5000, 10000].map((amount) => (
+             <button
+                key={amount}
+                onClick={() => setTopUpAmount(amount.toString())}
+               className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition text-sm font-medium"
+          >
+                ${amount.toLocaleString()}
+              </button>
+            ))}
+          </div>
+
+          {topUpAmount && parseFloat(topUpAmount) > 0 && (
+            <div className="bg-blue-50 rounded-lg p-4 mb-4">
+              <div className="flex justify-between text-sm mb-1">
+                <span className="text-gray-800">New Balance</span>
+                <span className="font-bold text-lg text-gray-900">
+                  {formatCurrency(wallet.cash + parseFloat(topUpAmount))}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Validation Messages */}
+          {topUpAmount && parseFloat(topUpAmount) > 0 && parseFloat(topUpAmount) < 100 && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
+              <p className="text-red-600 text-sm font-medium">
+                ⚠️ Minimum top-up amount is $100
+              </p>
+            </div>
+          )}
+
+          <div className="flex gap-3">
+            <button
+              onClick={() => {
+                setShowTopUpModal(false);
+                setTopUpAmount("");
+                setError(null);
+              }}
+              className="flex-1 px-4 py-3 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition font-medium"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={executeTopUp}
+              disabled={!topUpAmount || parseFloat(topUpAmount) < 100 || parseFloat(topUpAmount) > 1000000}
+              className="flex-1 px-4 py-3 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition font-medium disabled:bg-teal-300 disabled:cursor-not-allowed"
+            >
+              Add Funds
+            </button>
+          </div>
+
+          <p className="text-xs text-gray-500 mt-4 text-center">
+            💡 Tip: Funds are instantly available for trading
+          </p>
+        </div>
+      </div>
+    )}
+
       {/* Wallet Modal */}
       {showWallet && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
@@ -1130,11 +1338,11 @@ export default function InvestmentPage() {
                             <span className="text-2xl">{asset?.emoji || '📈'}</span>
                             <div>
                               <p className="font-bold text-gray-900">{position.symbol}</p>
-                              <p className="text-sm text-gray-700">{position.shares} shares</p>
+                              <p className="text-sm text-gray-900">{position.shares} shares</p>
                             </div>
                           </div>
                           <div className="text-right">
-                            <p className="font-bold text-lg">{formatCurrency(currentValue)}</p>
+                            <p className="font-bold text-lg text-gray-900">{formatCurrency(currentValue)}</p>
                             <p className={`text-sm font-semibold ${profitLoss >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                               {profitLoss >= 0 ? '+' : ''}{formatCurrency(profitLoss)} ({profitLossPercent}%)
                             </p>
@@ -1142,12 +1350,12 @@ export default function InvestmentPage() {
                         </div>
                         <div className="grid grid-cols-2 gap-4 text-sm pt-2 border-t border-gray-200">
                           <div>
-                            <span className="text-gray-700">Avg Price:</span>{' '}
-                            <span className="font-semibold">{formatCurrency(position.avgPrice)}</span>
+                            <span className="text-gray-900">Avg Price:</span>{' '}
+                            <span className="font-semibold text-gray-900">{formatCurrency(position.avgPrice)}</span>
                           </div>
                           <div>
-                            <span className="text-gray-700">Current:</span>{' '}
-                            <span className="font-semibold">{formatCurrency(currentPrice)}</span>
+                            <span className="text-gray-900">Current:</span>{' '}
+                            <span className="font-semibold text-gray-900">{formatCurrency(currentPrice)}</span>
                           </div>
                         </div>
                       </div>
@@ -1186,37 +1394,44 @@ export default function InvestmentPage() {
                 <div className="space-y-3">
                   {wallet.transactions.map((transaction) => {
                     const asset = watchlist.find(a => a.symbol === transaction.symbol);
+                    const isTopUp = transaction.symbol === 'CASH';
                     return (
                       <div key={transaction.id} className="bg-gray-50 rounded-lg p-4">
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-3">
                             <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                              transaction.type === 'buy' ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600'
+                              isTopUp
+                                ? 'bg-blue-100 text-blue-600'
+                                : transaction.type === 'buy' ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600'
                             }`}>
-                              {transaction.type === 'buy' ? '🛒' : '💰'}
+                              {isTopUp ? '💵' : transaction.type === 'buy' ? '🛒' : '💰'}
                             </div>
                             <div>
                               <div className="flex items-center gap-2">
-                                <span className="text-lg">{asset?.emoji || '📈'}</span>
-                                <p className="font-bold text-gray-900">{transaction.symbol}</p>
+                                {!isTopUp && <span className="text-lg">{asset?.emoji || '📈'}</span>}
+                                <p className="font-bold text-gray-900">{isTopUp ? 'Cash Deposit' : transaction.symbol}</p>
                                 <span className={`text-xs px-2 py-1 rounded ${
-                                  transaction.type === 'buy' 
+                                  isTopUp
+                                    ? 'bg-blue-100 text-blue-700'
+                                    : transaction.type === 'buy' 
                                     ? 'bg-green-100 text-green-700' 
                                     : 'bg-red-100 text-red-700'
                                 }`}>
-                                  {transaction.type.toUpperCase()}
+                                  {isTopUp ? 'TOP-UP' : transaction.type.toUpperCase()}
                                 </span>
                               </div>
-                              <p className="text-sm text-gray-700">
+                              <p className="text-sm text-gray-900">
                                 {new Date(transaction.date).toLocaleString()}
                               </p>
                             </div>
                           </div>
                           <div className="text-right">
-                            <p className="font-bold text-lg">{formatCurrency(transaction.total)}</p>
-                            <p className="text-sm text-gray-700">
-                              {transaction.shares} × {formatCurrency(transaction.price)}
-                            </p>
+                            <p className="font-bold text-lg text-gray-900">{formatCurrency(transaction.total)}</p>
+                            {!isTopUp && (
+                              <p className="text-sm text-gray-900">
+                                {transaction.shares} × {formatCurrency(transaction.price)}
+                              </p>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -1229,11 +1444,19 @@ export default function InvestmentPage() {
         </div>
       )}
 
+      {/* Mobile overlay */}
+      {isWatchlistExpanded && (
+        <div
+          className="fixed inset-0 bg-black bg-opacity-50 z-30 md:hidden"
+          onClick={() => setIsWatchlistExpanded(false)}
+        />
+      )}
+
       {/* Collapsible Watchlist Sidebar */}
       <div
         className={`bg-white border-r border-gray-200 transition-all duration-300 flex-shrink-0 ${
           isWatchlistExpanded ? "w-80" : "w-16"
-        }`}
+        } md:block ${isWatchlistExpanded ? "fixed md:relative inset-y-0 left-0 z-40" : "hidden md:block"}`}
       >
         {/* Sidebar Header */}
         <div className="h-16 border-b border-gray-200 flex items-center justify-between px-4">
@@ -1285,16 +1508,22 @@ export default function InvestmentPage() {
               </div>
 
               {/* Wallet Actions */}
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-3 gap-2">
                 <button
                   onClick={() => setShowWallet(true)}
-                  className="px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition text-sm font-medium"
+                  className="px-2 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition text-xs font-medium"
                 >
                   💼 Portfolio
                 </button>
                 <button
+                  onClick={() => setShowTopUpModal(true)}
+                  className="px-2 py-2 bg-teal-500 text-white rounded-lg hover:bg-teal-600 transition text-xs font-medium"
+                >
+                  💳 Top Up
+                </button>
+                <button
                   onClick={() => setShowTransactions(true)}
-                  className="px-3 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition text-sm font-medium"
+                  className="px-2 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition text-xs font-medium"
                 >
                   📜 History
                 </button>
@@ -1549,9 +1778,20 @@ export default function InvestmentPage() {
           {/* Header */}
           <div className="mb-6">
             <div className="flex items-center justify-between mb-2">
-              <h1 className="text-3xl font-bold text-gray-900">
-                Multi-Asset Dashboard
-              </h1>
+              <div className="flex items-center gap-3">
+                {/* Mobile menu button */}
+                <button
+                  onClick={() => setIsWatchlistExpanded(!isWatchlistExpanded)}
+                  className="md:hidden p-2 text-gray-600 hover:bg-gray-100 rounded-lg"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                  </svg>
+                </button>
+                <h1 className="text-3xl font-bold text-gray-900">
+                  Multi-Asset Dashboard
+                </h1>
+              </div>
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => {

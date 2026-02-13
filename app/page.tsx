@@ -79,11 +79,11 @@ export default function Home() {
         }
 
         .btn-primary {
-          background: #3b82f6;
+          background: #f97316;
           color: white;
         }
         .btn-primary:hover {
-          background: #2563eb;
+          background: #ea580c;
         }
 
         .btn-outline {
@@ -132,14 +132,14 @@ export default function Home() {
           transition: all 0.3s;
         }
         .feature-card:hover {
-          border-color: #3b82f6;
-          box-shadow: 0 4px 12px rgba(59, 130, 246, 0.1);
+          border-color: #f97316;
+          box-shadow: 0 4px 12px rgba(249, 115, 22, 0.1);
         }
 
         .feature-icon {
           width: 48px;
           height: 48px;
-          background: #dbeafe;
+          background: #fed7aa;
           border-radius: 8px;
           display: flex;
           align-items: center;
@@ -178,7 +178,7 @@ export default function Home() {
         .stat-number {
           font-size: 36px;
           font-weight: 700;
-          color: #3b82f6;
+          color: #f97316;
           margin-bottom: 8px;
         }
 
@@ -219,7 +219,7 @@ export default function Home() {
           width: 36px;
           height: 36px;
           border-radius: 50%;
-          background: #3b82f6;
+          background: #f97316;
           display: flex;
           align-items: center;
           justify-content: center;
@@ -227,11 +227,11 @@ export default function Home() {
           font-weight: 600;
           color: white;
           cursor: pointer;
-          border: 2px solid #dbeafe;
+          border: 2px solid #fed7aa;
           transition: all 0.2s;
         }
         .profile-btn:hover {
-          background: #2563eb;
+          background: #ea580c;
           transform: scale(1.05);
         }
 
@@ -293,8 +293,8 @@ export default function Home() {
 
         .badge {
           display: inline-block;
-          background: #dbeafe;
-          color: #1e40af;
+          background: #fed7aa;
+          color: #9a3412;
           padding: 6px 14px;
           border-radius: 20px;
           font-size: 13px;
@@ -314,9 +314,13 @@ export default function Home() {
       <nav className="nav-bar">
         <div className="container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: '64px' }}>
           
-          <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '10px', textDecoration: 'none' }}>
-            <div style={{ width: 32, height: 32, background: '#3b82f6', borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 700, fontSize: '16px' }}>V</div>
-            <span style={{ fontSize: '18px', fontWeight: 600, color: '#111827' }}>Oiyen</span>
+          <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', textDecoration: 'none' }}>
+            <img 
+              src="/oiyen-logo.png" 
+              alt="Oiyen" 
+              style={{ width: 46, height: 46, borderRadius: 100 }}
+            />
+            <span style={{ fontSize: '1.05rem', fontWeight: 600, color: '#f97316', letterSpacing: '-0.01em' }}>Oiyen</span>
           </Link>
 
           <div className="nav-links" style={{ display: 'flex', gap: '32px' }}>
@@ -486,7 +490,11 @@ export default function Home() {
         <div className="container">
           <div className="footer-content">
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <div style={{ width: 24, height: 24, background: '#3b82f6', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 700, fontSize: '12px' }}>V</div>
+              <img 
+                src="/oiyen-logo.png" 
+                alt="Oiyen" 
+                style={{ width: 24, height: 24, borderRadius: 6 }}
+              />
               <span style={{ fontSize: '14px', color: '#6b7280' }}>© 2025 Oiyen</span>
             </div>
             <div style={{ display: 'flex', gap: '24px' }}>

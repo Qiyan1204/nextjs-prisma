@@ -2,7 +2,19 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useState, useMemo } from "react";
+
+interface PasswordStrength {
+  score: number; // 0-4
+  label: string; // "Weak", "Fair", "Good", "Strong"
+  color: string; // CSS color
+  checks: {
+    length: boolean;
+    uppercase: boolean;
+    number: boolean;
+    symbol: boolean;
+  };
+}
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -15,6 +27,44 @@ export default function RegisterPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
+  // 计算密码强度
+  const passwordStrength = useMemo((): PasswordStrength => {
+    const pwd = formData.password;
+    
+    const checks = {
+      length: pwd.length >= 8,
+      uppercase: /[A-Z]/.test(pwd),
+      number: /[0-9]/.test(pwd),
+      symbol: /[!@#$%^&*(),.?":{}|<>_\-+=\[\]\\\/;'`~]/.test(pwd),
+    };
+
+    const passedChecks = Object.values(checks).filter(Boolean).length;
+
+    let score = 0;
+    let label = "Weak";
+    let color = "#dc2626"; // red
+
+    if (passedChecks === 4) {
+      score = 4;
+      label = "Strong";
+      color = "#16a34a"; // green
+    } else if (passedChecks === 3) {
+      score = 3;
+      label = "Good";
+      color = "#ca8a04"; // yellow
+    } else if (passedChecks === 2) {
+      score = 2;
+      label = "Fair";
+      color = "#ea580c"; // orange
+    } else {
+      score = passedChecks;
+      label = "Weak";
+      color = "#dc2626"; // red
+    }
+
+    return { score, label, color, checks };
+  }, [formData.password]);
+
   function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
     setFormData({ ...formData, [e.target.name]: e.target.value });
   }
@@ -24,8 +74,24 @@ export default function RegisterPage() {
     setLoading(true);
     setError("");
 
-    if (formData.password !== formData.confirmPassword) {
-      setError("Passwords do not match");
+    // 验证密码强度
+    if (!passwordStrength.checks.length) {
+      setError("Password must be at least 8 characters");
+      setLoading(false);
+      return;
+    }
+    if (!passwordStrength.checks.uppercase) {
+      setError("Password must contain at least one uppercase letter");
+      setLoading(false);
+      return;
+    }
+    if (!passwordStrength.checks.number) {
+      setError("Password must contain at least one number");
+      setLoading(false);
+      return;
+    }
+    if (!passwordStrength.checks.symbol) {
+      setError("Password must contain at least one symbol");
       setLoading(false);
       return;
     }
@@ -168,13 +234,96 @@ export default function RegisterPage() {
           line-height: 1.5;
           margin-top: 12px;
         }
+
+        /* Password strength indicator */
+        .strength-container {
+          margin-top: 8px;
+          padding: 12px;
+          background: #f9fafb;
+          border-radius: 6px;
+          border: 1px solid #e5e7eb;
+        }
+
+        .strength-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          margin-bottom: 8px;
+        }
+
+        .strength-label {
+          font-size: 12px;
+          color: #6b7280;
+        }
+
+        .strength-badge {
+          font-size: 12px;
+          font-weight: 600;
+          padding: 2px 8px;
+          border-radius: 4px;
+        }
+
+        .strength-bars {
+          display: flex;
+          gap: 4px;
+          margin-bottom: 10px;
+        }
+
+        .strength-bar {
+          flex: 1;
+          height: 4px;
+          background: #e5e7eb;
+          border-radius: 2px;
+          transition: all 0.3s;
+        }
+
+        .strength-bar.filled {
+          background: currentColor;
+        }
+
+        .requirement {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 12px;
+          color: #6b7280;
+          margin-bottom: 4px;
+        }
+
+        .requirement:last-child {
+          margin-bottom: 0;
+        }
+
+        .requirement-icon {
+          width: 14px;
+          height: 14px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 10px;
+        }
+
+        .requirement-icon.met {
+          background: #16a34a;
+          color: white;
+        }
+
+        .requirement-icon.unmet {
+          background: #e5e7eb;
+          color: #9ca3af;
+        }
       `}</style>
 
       <div className="register-container">
         
         {/* Logo */}
         <Link href="/" style={{ display: 'inline-flex', alignItems: 'center', gap: '10px', textDecoration: 'none', marginBottom: '32px' }}>
-          <div style={{ width: 32, height: 32, background: '#3b82f6', borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 700, fontSize: '16px' }}>V</div>
+          <img 
+            src="/oiyen-logo.png" 
+            alt="Oiyen" 
+            style={{ width: 46, height: 46, borderRadius: 100 }}
+          />
           <span style={{ fontSize: '18px', fontWeight: 600, color: '#111827' }}>Oiyen</span>
         </Link>
 
@@ -235,6 +384,62 @@ export default function RegisterPage() {
               required
               disabled={loading}
             />
+
+            {/* Password Strength Indicator */}
+            {formData.password && (
+              <div className="strength-container">
+                <div className="strength-header">
+                  <span className="strength-label">Password Strength</span>
+                  <span 
+                    className="strength-badge"
+                    style={{ 
+                      color: passwordStrength.color,
+                      background: passwordStrength.color + '15'
+                    }}
+                  >
+                    {passwordStrength.label}
+                  </span>
+                </div>
+
+                {/* Strength bars */}
+                <div className="strength-bars" style={{ color: passwordStrength.color }}>
+                  {[1, 2, 3, 4].map((i) => (
+                    <div
+                      key={i}
+                      className={`strength-bar ${i <= passwordStrength.score ? 'filled' : ''}`}
+                    />
+                  ))}
+                </div>
+
+                {/* Requirements checklist */}
+                <div>
+                  <div className="requirement">
+                    <div className={`requirement-icon ${passwordStrength.checks.length ? 'met' : 'unmet'}`}>
+                      {passwordStrength.checks.length ? '✓' : '○'}
+                    </div>
+                    At least 8 characters
+                  </div>
+                  <div className="requirement">
+                    <div className={`requirement-icon ${passwordStrength.checks.uppercase ? 'met' : 'unmet'}`}>
+                      {passwordStrength.checks.uppercase ? '✓' : '○'}
+                    </div>
+                    One uppercase letter
+                  </div>
+                  <div className="requirement">
+                    <div className={`requirement-icon ${passwordStrength.checks.number ? 'met' : 'unmet'}`}>
+                      {passwordStrength.checks.number ? '✓' : '○'}
+                    </div>
+                    One number
+                  </div>
+                  <div className="requirement">
+                    <div className={`requirement-icon ${passwordStrength.checks.symbol ? 'met' : 'unmet'}`}>
+                      {passwordStrength.checks.symbol ? '✓' : '○'}
+                    </div>
+                    One symbol (!@#$%^&*...)
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           <div style={{ marginBottom: '24px' }}>
@@ -249,6 +454,27 @@ export default function RegisterPage() {
               required
               disabled={loading}
             />
+
+            {/* Password Match Indicator */}
+            {formData.confirmPassword && (
+              <div style={{ 
+                marginTop: '8px',
+                padding: '8px 12px',
+                borderRadius: '6px',
+                fontSize: '13px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                background: formData.password === formData.confirmPassword ? '#f0fdf4' : '#fef2f2',
+                border: `1px solid ${formData.password === formData.confirmPassword ? '#bbf7d0' : '#fecaca'}`,
+                color: formData.password === formData.confirmPassword ? '#16a34a' : '#dc2626'
+              }}>
+                <span style={{ fontSize: '14px' }}>
+                  {formData.password === formData.confirmPassword ? '✓' : '✕'}
+                </span>
+                {formData.password === formData.confirmPassword ? 'Passwords match' : 'Passwords do not match'}
+              </div>
+            )}
           </div>
 
           <button type="submit" className="btn-primary" disabled={loading}>

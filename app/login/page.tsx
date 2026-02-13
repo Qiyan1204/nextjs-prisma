@@ -163,9 +163,13 @@ export default function LoginPage() {
       <div className="login-container">
         
         {/* Logo */}
-        <Link href="/" style={{ display: 'inline-flex', alignItems: 'center', gap: '10px', textDecoration: 'none', marginBottom: '32px' }}>
-          <div style={{ width: 32, height: 32, background: '#3b82f6', borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 700, fontSize: '16px' }}>V</div>
-          <span style={{ fontSize: '18px', fontWeight: 600, color: '#111827' }}>Oiyen</span>
+        <Link href="/" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.6rem', textDecoration: 'none', marginBottom: '2rem' }}>
+          <img 
+            src="/oiyen-logo.png" 
+            alt="Oiyen" 
+            style={{ width: 46, height: 46, borderRadius: 100 }}
+          />
+          <span style={{ fontSize: '1.125rem', fontWeight: 600, color: '#111827', letterSpacing: '-0.01em' }}>Oiyen</span>
         </Link>
 
         {/* Title */}
