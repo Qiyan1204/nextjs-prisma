@@ -94,6 +94,18 @@ export const authOptions: NextAuthOptions = {
       return session;
     },
   },
+  events: {
+    // 当 Google 用户首次登录时，设置默认密码为他们的 email
+    async createUser({ user }) {
+      if (user.email) {
+        const hashedPassword = await bcrypt.hash(user.email, 10);
+        await prisma.user.update({
+          where: { email: user.email },
+          data: { password: hashedPassword },
+        });
+      }
+    },
+  },
 };
 
 export function generateToken(payload: TokenPayload): string {
