@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://your-domain.com"),
+  metadataBase: new URL("https://oiyen.quadrawebs.com"),
 
   title: {
     default: "Oiyen Investment – Smart Portfolio & Stock Analytics",
@@ -33,7 +33,7 @@ export const metadata: Metadata = {
     title: "Oiyen Investment – Smart Portfolio & Stock Analytics",
     description:
       "Track stocks, manage portfolios, and run backtesting strategies with Oiyen Investment App.",
-    url: "https://your-domain.com",
+    url: "https://oiyen.quadrawebs.com",
     siteName: "Oiyen Investment",
     images: [
       {
