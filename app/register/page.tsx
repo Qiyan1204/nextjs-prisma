@@ -3,11 +3,12 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, useMemo } from "react";
+import { signIn } from "next-auth/react";
 
 interface PasswordStrength {
-  score: number; // 0-5
-  label: string; // "Weak", "Fair", "Good", "Strong"
-  color: string; // CSS color
+  score: number;
+  label: string;
+  color: string;
   checks: {
     length: boolean;
     uppercase: boolean;
@@ -26,9 +27,9 @@ export default function RegisterPage() {
     confirmPassword: "",
   });
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // 计算密码强度
   const passwordStrength = useMemo((): PasswordStrength => {
     const pwd = formData.password;
     
@@ -44,24 +45,24 @@ export default function RegisterPage() {
 
     let score = 0;
     let label = "Weak";
-    let color = "#dc2626"; // red
+    let color = "#dc2626";
 
     if (passedChecks === 5) {
       score = 5;
       label = "Strong";
-      color = "#16a34a"; // green
+      color = "#16a34a";
     } else if (passedChecks === 4) {
       score = 4;
       label = "Good";
-      color = "#ca8a04"; // yellow
+      color = "#ca8a04";
     } else if (passedChecks === 3) {
       score = 3;
       label = "Fair";
-      color = "#ea580c"; // orange
+      color = "#ea580c";
     } else {
       score = passedChecks;
       label = "Weak";
-      color = "#dc2626"; // red
+      color = "#dc2626";
     }
 
     return { score, label, color, checks };
@@ -71,6 +72,19 @@ export default function RegisterPage() {
     setFormData({ ...formData, [e.target.name]: e.target.value });
   }
 
+  // Google OAuth 登录
+  async function handleGoogleSignIn() {
+    try {
+      setGoogleLoading(true);
+      await signIn("google", { callbackUrl: "/investment" });
+    } catch (error) {
+      console.error("Google sign in error:", error);
+      setError("Failed to sign in with Google");
+      setGoogleLoading(false);
+    }
+  }
+
+  // 传统邮箱密码注册
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
@@ -118,8 +132,17 @@ export default function RegisterPage() {
       const data = await response.json();
 
       if (response.ok) {
-        router.push("/investment");
-        router.refresh();
+        // 注册成功后自动登录
+        const result = await signIn("credentials", {
+          email: formData.email,
+          password: formData.password,
+          redirect: false,
+        });
+
+        if (result?.ok) {
+          router.push("/investment");
+          router.refresh();
+        }
       } else {
         setError(data.error || "Registration failed");
       }
@@ -161,9 +184,7 @@ export default function RegisterPage() {
           border-color: #f97316;
           box-shadow: 0 0 0 3px rgba(249,115,22,0.1);
         }
-        .input-field::placeholder {
-          color: #9ca3af;
-        }
+        .input-field::placeholder { color: #9ca3af; }
 
         .btn-primary {
           width: 100%;
@@ -181,21 +202,44 @@ export default function RegisterPage() {
           justify-content: center;
           gap: 8px;
         }
-        .btn-primary:hover:not(:disabled) {
-          background: #ea580c;
-        }
+        .btn-primary:hover:not(:disabled) { background: #ea580c; }
         .btn-primary:disabled {
           opacity: 0.6;
           cursor: not-allowed;
         }
 
+        .btn-google {
+          width: 100%;
+          background: white;
+          color: #374151;
+          border: 1px solid #d1d5db;
+          border-radius: 6px;
+          padding: 11px;
+          font-size: 14px;
+          font-weight: 500;
+          cursor: pointer;
+          transition: all 0.2s;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 10px;
+        }
+        .btn-google:hover:not(:disabled) {
+          background: #f9fafb;
+          border-color: #9ca3af;
+        }
+        .btn-google:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
+        }
+
         .link-text {
-          color: #3b82f6;
+          color: #f97316;
           text-decoration: none;
           transition: color 0.2s;
         }
         .link-text:hover {
-          color: #2563eb;
+          color: #ea580c;
           text-decoration: underline;
         }
 
@@ -217,9 +261,7 @@ export default function RegisterPage() {
           border-radius: 50%;
           animation: spin 0.6s linear infinite;
         }
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
+        @keyframes spin { to { transform: rotate(360deg); } }
 
         .label {
           display: block;
@@ -233,6 +275,18 @@ export default function RegisterPage() {
           height: 1px;
           background: #e5e7eb;
           margin: 24px 0;
+          position: relative;
+        }
+
+        .divider-text {
+          position: absolute;
+          top: 50%;
+          left: 50%;
+          transform: translate(-50%, -50%);
+          background: white;
+          padding: 0 12px;
+          color: #6b7280;
+          font-size: 13px;
         }
 
         .info-text {
@@ -242,7 +296,6 @@ export default function RegisterPage() {
           margin-top: 12px;
         }
 
-        /* Password strength indicator */
         .strength-container {
           margin-top: 8px;
           padding: 12px;
@@ -284,9 +337,7 @@ export default function RegisterPage() {
           transition: all 0.3s;
         }
 
-        .strength-bar.filled {
-          background: currentColor;
-        }
+        .strength-bar.filled { background: currentColor; }
 
         .requirement {
           display: flex;
@@ -297,9 +348,7 @@ export default function RegisterPage() {
           margin-bottom: 4px;
         }
 
-        .requirement:last-child {
-          margin-bottom: 0;
-        }
+        .requirement:last-child { margin-bottom: 0; }
 
         .requirement-icon {
           width: 14px;
@@ -329,7 +378,7 @@ export default function RegisterPage() {
           <img 
             src="/oiyen-logo.png" 
             alt="Oiyen" 
-            style={{ width: 32, height: 32, borderRadius: 6 }}
+            style={{ width: 46, height: 46, borderRadius: 100 }}
           />
           <span style={{ fontSize: '18px', fontWeight: 600, color: '#111827' }}>Oiyen</span>
         </Link>
@@ -343,11 +392,36 @@ export default function RegisterPage() {
         </p>
 
         {/* Error message */}
-        {error && (
-          <div className="error-box">
-            {error}
-          </div>
-        )}
+        {error && <div className="error-box">{error}</div>}
+
+        {/* Google Sign In */}
+        <button 
+          onClick={handleGoogleSignIn}
+          disabled={googleLoading || loading}
+          className="btn-google"
+          style={{ marginBottom: '20px' }}
+        >
+          {googleLoading ? (
+            <>
+              <div className="spinner" style={{ borderTopColor: '#374151' }} />
+              Signing in...
+            </>
+          ) : (
+            <>
+              <svg width="18" height="18" viewBox="0 0 24 24">
+                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+              </svg>
+              Continue with Google
+            </>
+          )}
+        </button>
+
+        <div className="divider">
+          <span className="divider-text">or</span>
+        </div>
 
         {/* Form */}
         <form onSubmit={handleSubmit}>
@@ -361,7 +435,7 @@ export default function RegisterPage() {
               value={formData.name}
               onChange={handleChange}
               required
-              disabled={loading}
+              disabled={loading || googleLoading}
             />
           </div>
 
@@ -375,7 +449,7 @@ export default function RegisterPage() {
               value={formData.email}
               onChange={handleChange}
               required
-              disabled={loading}
+              disabled={loading || googleLoading}
             />
           </div>
 
@@ -389,10 +463,9 @@ export default function RegisterPage() {
               value={formData.password}
               onChange={handleChange}
               required
-              disabled={loading}
+              disabled={loading || googleLoading}
             />
 
-            {/* Password Strength Indicator */}
             {formData.password && (
               <div className="strength-container">
                 <div className="strength-header">
@@ -408,7 +481,6 @@ export default function RegisterPage() {
                   </span>
                 </div>
 
-                {/* Strength bars */}
                 <div className="strength-bars" style={{ color: passwordStrength.color }}>
                   {[1, 2, 3, 4, 5].map((i) => (
                     <div
@@ -418,7 +490,6 @@ export default function RegisterPage() {
                   ))}
                 </div>
 
-                {/* Requirements checklist */}
                 <div>
                   <div className="requirement">
                     <div className={`requirement-icon ${passwordStrength.checks.length ? 'met' : 'unmet'}`}>
@@ -465,10 +536,9 @@ export default function RegisterPage() {
               value={formData.confirmPassword}
               onChange={handleChange}
               required
-              disabled={loading}
+              disabled={loading || googleLoading}
             />
 
-            {/* Password Match Indicator */}
             {formData.confirmPassword && (
               <div style={{ 
                 marginTop: '8px',
@@ -490,7 +560,7 @@ export default function RegisterPage() {
             )}
           </div>
 
-          <button type="submit" className="btn-primary" disabled={loading}>
+          <button type="submit" className="btn-primary" disabled={loading || googleLoading}>
             {loading ? (
               <>
                 <div className="spinner" />
@@ -506,9 +576,8 @@ export default function RegisterPage() {
           </p>
         </form>
 
-        <div className="divider" />
+        <div className="divider" style={{ marginTop: '24px', marginBottom: '24px' }}></div>
 
-        {/* Sign in link */}
         <p style={{ textAlign: 'center', fontSize: '14px', color: '#6b7280' }}>
           Already have an account?{' '}
           <Link href="/login" className="link-text">
