@@ -5,12 +5,13 @@ import { useRouter } from "next/navigation";
 import { useState, useMemo } from "react";
 
 interface PasswordStrength {
-  score: number; // 0-4
+  score: number; // 0-5
   label: string; // "Weak", "Fair", "Good", "Strong"
   color: string; // CSS color
   checks: {
     length: boolean;
     uppercase: boolean;
+    lowercase: boolean;
     number: boolean;
     symbol: boolean;
   };
@@ -34,6 +35,7 @@ export default function RegisterPage() {
     const checks = {
       length: pwd.length >= 8,
       uppercase: /[A-Z]/.test(pwd),
+      lowercase: /[a-z]/.test(pwd),
       number: /[0-9]/.test(pwd),
       symbol: /[!@#$%^&*(),.?":{}|<>_\-+=\[\]\\\/;'`~]/.test(pwd),
     };
@@ -44,16 +46,16 @@ export default function RegisterPage() {
     let label = "Weak";
     let color = "#dc2626"; // red
 
-    if (passedChecks === 4) {
-      score = 4;
+    if (passedChecks === 5) {
+      score = 5;
       label = "Strong";
       color = "#16a34a"; // green
-    } else if (passedChecks === 3) {
-      score = 3;
+    } else if (passedChecks === 4) {
+      score = 4;
       label = "Good";
       color = "#ca8a04"; // yellow
-    } else if (passedChecks === 2) {
-      score = 2;
+    } else if (passedChecks === 3) {
+      score = 3;
       label = "Fair";
       color = "#ea580c"; // orange
     } else {
@@ -82,6 +84,11 @@ export default function RegisterPage() {
     }
     if (!passwordStrength.checks.uppercase) {
       setError("Password must contain at least one uppercase letter");
+      setLoading(false);
+      return;
+    }
+    if (!passwordStrength.checks.lowercase) {
+      setError("Password must contain at least one lowercase letter");
       setLoading(false);
       return;
     }
@@ -151,8 +158,8 @@ export default function RegisterPage() {
           outline: none;
         }
         .input-field:focus {
-          border-color: #3b82f6;
-          box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+          border-color: #f97316;
+          box-shadow: 0 0 0 3px rgba(249,115,22,0.1);
         }
         .input-field::placeholder {
           color: #9ca3af;
@@ -160,7 +167,7 @@ export default function RegisterPage() {
 
         .btn-primary {
           width: 100%;
-          background: #3b82f6;
+          background: #f97316;
           color: white;
           border: none;
           border-radius: 6px;
@@ -175,7 +182,7 @@ export default function RegisterPage() {
           gap: 8px;
         }
         .btn-primary:hover:not(:disabled) {
-          background: #2563eb;
+          background: #ea580c;
         }
         .btn-primary:disabled {
           opacity: 0.6;
@@ -322,7 +329,7 @@ export default function RegisterPage() {
           <img 
             src="/oiyen-logo.png" 
             alt="Oiyen" 
-            style={{ width: 46, height: 46, borderRadius: 100 }}
+            style={{ width: 32, height: 32, borderRadius: 6 }}
           />
           <span style={{ fontSize: '18px', fontWeight: 600, color: '#111827' }}>Oiyen</span>
         </Link>
@@ -403,7 +410,7 @@ export default function RegisterPage() {
 
                 {/* Strength bars */}
                 <div className="strength-bars" style={{ color: passwordStrength.color }}>
-                  {[1, 2, 3, 4].map((i) => (
+                  {[1, 2, 3, 4, 5].map((i) => (
                     <div
                       key={i}
                       className={`strength-bar ${i <= passwordStrength.score ? 'filled' : ''}`}
@@ -423,13 +430,19 @@ export default function RegisterPage() {
                     <div className={`requirement-icon ${passwordStrength.checks.uppercase ? 'met' : 'unmet'}`}>
                       {passwordStrength.checks.uppercase ? '✓' : '○'}
                     </div>
-                    One uppercase letter
+                    One uppercase letter (A-Z)
+                  </div>
+                  <div className="requirement">
+                    <div className={`requirement-icon ${passwordStrength.checks.lowercase ? 'met' : 'unmet'}`}>
+                      {passwordStrength.checks.lowercase ? '✓' : '○'}
+                    </div>
+                    One lowercase letter (a-z)
                   </div>
                   <div className="requirement">
                     <div className={`requirement-icon ${passwordStrength.checks.number ? 'met' : 'unmet'}`}>
                       {passwordStrength.checks.number ? '✓' : '○'}
                     </div>
-                    One number
+                    One number (0-9)
                   </div>
                   <div className="requirement">
                     <div className={`requirement-icon ${passwordStrength.checks.symbol ? 'met' : 'unmet'}`}>
