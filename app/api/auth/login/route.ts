@@ -29,6 +29,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // 检查用户是否有密码（Google 登录用户没有密码）
+    if (!user.password) {
+      return NextResponse.json(
+        { error: "This account uses Google login. Please sign in with Google." },
+        { status: 401 }
+      );
+    }
+
     // 验证密码
     const isValidPassword = await bcrypt.compare(password, user.password);
     if (!isValidPassword) {
