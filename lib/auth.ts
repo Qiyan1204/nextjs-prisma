@@ -32,6 +32,7 @@ export interface TokenPayload {
 // NextAuth 配置
 export const authOptions: NextAuthOptions = {
   adapter: PrismaAdapter(prisma),
+  secret: process.env.NEXTAUTH_SECRET || "fallback-secret-for-development-only",
   providers: [
     GoogleProvider({
       clientId: process.env.GOOGLE_CLIENT_ID || "",

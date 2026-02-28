@@ -48,9 +48,14 @@ export async function POST(request: NextRequest) {
     let userId: number | null = null;
 
     // First try NextAuth session (for Google login users)
-    const session = await getServerSession(authOptions);
-    if (session?.user?.id) {
-      userId = parseInt(session.user.id);
+    try {
+      const session = await getServerSession(authOptions);
+      if (session?.user?.id) {
+        userId = parseInt(session.user.id);
+      }
+    } catch (sessionError) {
+      console.log("NextAuth session error (will try JWT):", sessionError);
+      // Continue to try JWT auth
     }
 
     // If no NextAuth session, try custom JWT auth
