@@ -88,14 +88,17 @@ export default function ProfilePage() {
         body: formData,
       });
 
-      if (response.ok) {
+      const data = await response.json();
+
+      if (response.ok && data.success) {
         await refetch();
         setMessage({ type: 'success', text: 'Profile image updated successfully!' });
       } else {
-        throw new Error('Upload failed');
+        throw new Error(data.error || 'Upload failed');
       }
     } catch (error) {
-      setMessage({ type: 'error', text: 'Failed to upload image' });
+      const errorMessage = error instanceof Error ? error.message : 'Failed to upload image';
+      setMessage({ type: 'error', text: `✕ ${errorMessage}` });
       console.error('Upload error:', error);
     } finally {
       setUploading(false);
