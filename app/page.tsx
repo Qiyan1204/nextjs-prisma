@@ -13,7 +13,12 @@ export default function Home() {
 
   function handleProtectedNav() {
     if (loading) return;
-    router.push(isLoggedIn ? "/investment" : "/login");
+    router.push(isLoggedIn ? "/markets" : "/login");
+  }
+
+  function handleLearnMore() {
+    if (loading) return;
+    router.push(isLoggedIn ? "/profile" : "/login");
   }
 
   async function handleLogout() {
@@ -65,6 +70,10 @@ export default function Home() {
           transition: color 0.2s;
         }
         .nav-link:hover { color: #111827; }
+        .nav-link.active {
+          color: #f97316;
+          font-weight: 600;
+        }
 
         .btn {
           padding: 8px 20px;
@@ -424,7 +433,7 @@ export default function Home() {
             <button onClick={handleProtectedNav} className="btn btn-primary" style={{ padding: '12px 28px', fontSize: '15px' }}>
               Get Started
             </button>
-            <button onClick={handleProtectedNav} className="btn btn-outline" style={{ padding: '12px 28px', fontSize: '15px' }}>
+            <button onClick={handleLearnMore} className="btn btn-outline" style={{ padding: '12px 28px', fontSize: '15px' }}>
               Learn More
             </button>
           </div>

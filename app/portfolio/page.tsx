@@ -204,7 +204,12 @@ const loadWalletFromStorage = (userId: number | null): Wallet => {
   const saved = localStorage.getItem(`investment-wallet-${userId}`);
   if (saved) {
     try {
-      return JSON.parse(saved);
+      const parsed = JSON.parse(saved);
+      // Validate that cash is a valid number
+      const cash = typeof parsed.cash === 'number' && !isNaN(parsed.cash) ? parsed.cash : INITIAL_CASH;
+      const positions = parsed.positions && typeof parsed.positions === 'object' ? parsed.positions : {};
+      const transactions = Array.isArray(parsed.transactions) ? parsed.transactions : [];
+      return { cash, positions, transactions };
     } catch {
       return { cash: INITIAL_CASH, positions: {}, transactions: [] };
     }
@@ -224,6 +229,9 @@ const formatNumber = (num: number | undefined): string => {
 
 // Format currency
 const formatCurrency = (num: number): string => {
+  if (num === undefined || num === null || isNaN(num)) {
+    return '$0.00';
+  }
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency: 'USD',
@@ -304,6 +312,9 @@ export default function InvestmentPage() {
   // Success message state
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   
+  // Last updated time (client-only to avoid hydration mismatch)
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+  
   // Wallet states
   const [wallet, setWallet] = useState<Wallet>({ cash: INITIAL_CASH, positions: {}, transactions: [] });
   const [showTradeModal, setShowTradeModal] = useState(false);
@@ -343,6 +354,24 @@ export default function InvestmentPage() {
     }
   }, [user?.id]);
 
+  // Listen for storage changes from other pages (e.g., Markets)
+  useEffect(() => {
+    if (!user?.id) return;
+    
+    const handleStorageChange = (e: StorageEvent) => {
+      const key = `investment-watchlist-${user.id}`;
+      if (e.key === key && e.newValue) {
+        try {
+          setWatchlist(JSON.parse(e.newValue));
+        } catch {
+          // Ignore parse errors
+        }
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, [user?.id]);
+
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
@@ -372,10 +401,13 @@ export default function InvestmentPage() {
     let stocksValue = 0;
     Object.keys(wallet.positions).forEach(symbol => {
       const position = wallet.positions[symbol];
-      const currentPrice = stockData[symbol]?.close || position.avgPrice;
-      stocksValue += position.shares * currentPrice;
+      const currentPrice = stockData[symbol]?.close || position.avgPrice || 0;
+      const shares = position.shares || 0;
+      stocksValue += shares * currentPrice;
     });
-    return wallet.cash + stocksValue;
+    const cash = typeof wallet.cash === 'number' && !isNaN(wallet.cash) ? wallet.cash : INITIAL_CASH;
+    const result = cash + stocksValue;
+    return isNaN(result) ? INITIAL_CASH : result;
   };
 
   // Execute trade
@@ -668,6 +700,27 @@ export default function InvestmentPage() {
     }
   }, [compareSymbol, selectedInterval]);
 
+  // Helper function to fetch with retry and rate limit handling
+  const fetchWithRetry = useCallback(async (url: string, retries = 3, delay = 1000): Promise<Response> => {
+    for (let i = 0; i < retries; i++) {
+      const res = await fetch(url);
+      if (res.ok) return res;
+      
+      // If rate limited (429), wait longer before retry
+      if (res.status === 429) {
+        const waitTime = delay * Math.pow(2, i); // Exponential backoff
+        console.log(`Rate limited, waiting ${waitTime}ms before retry...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        continue;
+      }
+      
+      // For other errors, return the response
+      if (i === retries - 1) return res;
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+    return fetch(url); // Final attempt
+  }, []);
+
   // Fetch all stocks data including sparkline and metrics
   const fetchAllStocks = useCallback(async () => {
     if (watchlist.length === 0) return;
@@ -675,43 +728,65 @@ export default function InvestmentPage() {
     setError(null);
 
     try {
-      const promises = watchlist.map(async (asset) => {
-        const res = await fetch(`/api/finnhub?symbol=${asset.symbol}&interval=1d&limit=1`);
-        if (!res.ok) {
-          console.error(`Failed to fetch ${asset.symbol}`);
-          return { symbol: asset.symbol, data: null, sparkline: [], metrics: { symbol: asset.symbol } };
-        }
-        const json = await res.json();
-
-        const sparkRes = await fetch(`/api/finnhub?symbol=${asset.symbol}&interval=1w`);
-        let sparkline: number[] = [];
-        if (sparkRes.ok) {
-          const sparkJson = await sparkRes.json();
-          if (sparkJson.data && sparkJson.data.length > 0) {
-            sparkline = sparkJson.data.map((d: StockData) => d.close);
-          }
-        }
-
-        let metrics: StockMetrics = { symbol: asset.symbol };
+      // Process stocks in smaller batches to avoid rate limit
+      const batchSize = 3;
+      const results: Array<{symbol: string; data: StockData | null; sparkline: number[]; metrics: StockMetrics}> = [];
+      
+      for (let i = 0; i < watchlist.length; i += batchSize) {
+        const batch = watchlist.slice(i, i + batchSize);
         
-        if (!asset.symbol.includes('BINANCE:') && !asset.symbol.includes('OANDA:')) {
-          metrics = await fetchStockMetrics(asset.symbol);
+        const batchPromises = batch.map(async (asset) => {
+          try {
+            const res = await fetchWithRetry(`/api/finnhub?symbol=${asset.symbol}&interval=1d&limit=1`);
+            if (!res.ok) {
+              console.warn(`Failed to fetch ${asset.symbol}: ${res.status}`);
+              return { symbol: asset.symbol, data: null, sparkline: [], metrics: { symbol: asset.symbol } };
+            }
+            const json = await res.json();
+
+            // Small delay before sparkline request
+            await new Promise(resolve => setTimeout(resolve, 100));
+            
+            const sparkRes = await fetchWithRetry(`/api/finnhub?symbol=${asset.symbol}&interval=1w`);
+            let sparkline: number[] = [];
+            if (sparkRes.ok) {
+              const sparkJson = await sparkRes.json();
+              if (sparkJson.data && sparkJson.data.length > 0) {
+                sparkline = sparkJson.data.map((d: StockData) => d.close);
+              }
+            }
+
+            let metrics: StockMetrics = { symbol: asset.symbol };
+            
+            if (!asset.symbol.includes('BINANCE:') && !asset.symbol.includes('OANDA:')) {
+              metrics = await fetchStockMetrics(asset.symbol);
+            }
+
+            const currentData = json.data?.[0];
+            if (currentData?.volume) {
+              metrics.volume = currentData.volume;
+            }
+
+            return { 
+              symbol: asset.symbol, 
+              data: currentData || null, 
+              sparkline,
+              metrics 
+            };
+          } catch (err) {
+            console.error(`Error fetching ${asset.symbol}:`, err);
+            return { symbol: asset.symbol, data: null, sparkline: [], metrics: { symbol: asset.symbol } };
+          }
+        });
+
+        const batchResults = await Promise.all(batchPromises);
+        results.push(...batchResults);
+        
+        // Wait between batches to avoid rate limit
+        if (i + batchSize < watchlist.length) {
+          await new Promise(resolve => setTimeout(resolve, 500));
         }
-
-        const currentData = json.data?.[0];
-        if (currentData?.volume) {
-          metrics.volume = currentData.volume;
-        }
-
-        return { 
-          symbol: asset.symbol, 
-          data: currentData || null, 
-          sparkline,
-          metrics 
-        };
-      });
-
-      const results = await Promise.all(promises);
+      }
 
       const newStockData: StockDataMap = {};
       const newSparklineData: Record<string, number[]> = {};
@@ -732,13 +807,14 @@ export default function InvestmentPage() {
       setStockData(newStockData);
       setSparklineData(newSparklineData);
       setStockMetrics(newMetrics);
+      setLastUpdated(new Date().toLocaleTimeString("en-US"));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch stock data");
       console.error("Error fetching stocks:", err);
     } finally {
       setLoading(false);
     }
-  }, [watchlist]);
+  }, [watchlist, fetchWithRetry]);
 
   // Fetch historical data for selected stock and interval
   const fetchHistory = useCallback(
@@ -747,12 +823,14 @@ export default function InvestmentPage() {
       setError(null);
 
       try {
-        const res = await fetch(`/api/finnhub?symbol=${symbol}&interval=${interval}`);
+        const res = await fetchWithRetry(`/api/finnhub?symbol=${symbol}&interval=${interval}`);
 
         if (!res.ok) {
           const errorText = await res.text();
-          console.error(`API response error:`, errorText);
-          throw new Error(`Failed to fetch history: ${res.status}`);
+          console.warn(`API response issue for ${symbol}:`, errorText);
+          // Don't throw, just set empty data
+          setHistoryData([]);
+          return;
         }
 
         const json = await res.json();
@@ -773,13 +851,13 @@ export default function InvestmentPage() {
           setHistoryData([]);
         }
       } catch (err) {
-        console.error("Error fetching history:", err);
+        console.warn("Error fetching history:", err);
         setHistoryData([]);
       } finally {
         setLoadingHistory(false);
       }
     },
-    []
+    [fetchWithRetry]
   );
 
   // Handle stock selection
@@ -1028,8 +1106,10 @@ export default function InvestmentPage() {
   const selectedAsset = watchlist.find((a) => a.symbol === selectedSymbol);
   const currentPosition = wallet.positions[selectedSymbol];
   const portfolioValue = getPortfolioValue();
-  const totalProfitLoss = portfolioValue - INITIAL_CASH;
-  const totalProfitLossPercent = ((totalProfitLoss / INITIAL_CASH) * 100).toFixed(2);
+  const totalProfitLoss = isNaN(portfolioValue) ? 0 : portfolioValue - INITIAL_CASH;
+  const totalProfitLossPercent = isNaN(totalProfitLoss) 
+    ? "0.00" 
+    : ((totalProfitLoss / INITIAL_CASH) * 100).toFixed(2);
 
   // Merge historyData with compareData for chart
   const mergedChartData = historyData.map((item, index) => {
@@ -1068,6 +1148,10 @@ export default function InvestmentPage() {
           transition: color 0.2s;
         }
         .nav-link:hover { color: #111827; }
+        .nav-link.active {
+          color: #f97316;
+          font-weight: 600;
+        }
 
         .btn {
           padding: 8px 20px;
@@ -1195,7 +1279,13 @@ export default function InvestmentPage() {
 
           <div className="nav-links" style={{ display: 'flex', gap: '32px' }}>
             {['Markets', 'Portfolio', 'Research', 'Pricing'].map(item => (
-              <Link key={item} href={`/${item.toLowerCase()}`} className="nav-link">{item}</Link>
+              <Link 
+                key={item} 
+                href={`/${item.toLowerCase()}`} 
+                className={`nav-link${item === 'Portfolio' ? ' active' : ''}`}
+              >
+                {item}
+              </Link>
             ))}
           </div>
 
@@ -1965,30 +2055,17 @@ export default function InvestmentPage() {
                             {showMetrics && metrics && (
                               <div className="mt-2 pt-2 border-t border-gray-200 space-y-1">
                                 <div className="grid grid-cols-2 gap-1 text-xs">
-                                  {metrics.pe !== undefined && (
-                                    <div>
-                                      <span className="text-gray-700 font-medium">P/E:</span>{" "}
-                                      <span className="font-semibold text-gray-900">{metrics.pe.toFixed(2)}</span>
+                                  {[
+                                    metrics.pe !== undefined && { key: 'pe', label: 'P/E:', value: metrics.pe.toFixed(2) },
+                                    metrics.roe !== undefined && { key: 'roe', label: 'ROE:', value: `${(metrics.roe * 100).toFixed(1)}%` },
+                                    metrics.volume !== undefined && { key: 'vol', label: 'Vol:', value: formatNumber(metrics.volume), span: true },
+                                    metrics.marketCap !== undefined && { key: 'mcap', label: 'MCap:', value: formatNumber(metrics.marketCap * 1e6), span: true },
+                                  ].filter(Boolean).map((item: any) => (
+                                    <div key={item.key} className={item.span ? 'col-span-2' : ''}>
+                                      <span className="text-gray-700 font-medium">{item.label}</span>{" "}
+                                      <span className="font-semibold text-gray-900">{item.value}</span>
                                     </div>
-                                  )}
-                                  {metrics.roe !== undefined && (
-                                    <div>
-                                      <span className="text-gray-700 font-medium">ROE:</span>{" "}
-                                      <span className="font-semibold text-gray-900">{(metrics.roe * 100).toFixed(1)}%</span>
-                                    </div>
-                                  )}
-                                  {metrics.volume !== undefined && (
-                                    <div className="col-span-2">
-                                      <span className="text-gray-700 font-medium">Vol:</span>{" "}
-                                      <span className="font-semibold text-gray-900">{formatNumber(metrics.volume)}</span>
-                                    </div>
-                                  )}
-                                  {metrics.marketCap !== undefined && (
-                                    <div className="col-span-2">
-                                      <span className="text-gray-700 font-medium">MCap:</span>{" "}
-                                      <span className="font-semibold text-gray-900">{formatNumber(metrics.marketCap * 1e6)}</span>
-                                    </div>
-                                  )}
+                                  ))}
                                 </div>
                               </div>
                             )}
@@ -3058,54 +3135,21 @@ export default function InvestmentPage() {
                 <div className="mt-6 pt-6 border-t border-gray-200">
                   <h4 className="text-md font-semibold mb-3">Financial Metrics</h4>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
-                    {stockMetrics[selectedSymbol].pe !== undefined && (
-                      <div>
-                        <p className="text-sm text-gray-600 mb-1">P/E Ratio</p>
-                        <p className="text-xl font-bold text-blue-600">
-                          {stockMetrics[selectedSymbol].pe!.toFixed(2)}
+                    {[
+                      stockMetrics[selectedSymbol].pe !== undefined && { key: 'pe', label: 'P/E Ratio', value: stockMetrics[selectedSymbol].pe!.toFixed(2), color: 'text-blue-600' },
+                      stockMetrics[selectedSymbol].roe !== undefined && { key: 'roe', label: 'ROE', value: `${(stockMetrics[selectedSymbol].roe! * 100).toFixed(2)}%`, color: 'text-purple-600' },
+                      stockMetrics[selectedSymbol].volume !== undefined && { key: 'volume', label: 'Volume', value: formatNumber(stockMetrics[selectedSymbol].volume!), color: 'text-orange-600' },
+                      stockMetrics[selectedSymbol].marketCap !== undefined && { key: 'marketcap', label: 'Market Cap', value: formatNumber(stockMetrics[selectedSymbol].marketCap! * 1e6), color: 'text-teal-600' },
+                      stockMetrics[selectedSymbol].beta !== undefined && { key: 'beta', label: 'Beta', value: stockMetrics[selectedSymbol].beta!.toFixed(2), color: 'text-indigo-600' },
+                      stockMetrics[selectedSymbol].dividendYield !== undefined && { key: 'dividend', label: 'Div Yield', value: `${stockMetrics[selectedSymbol].dividendYield!.toFixed(2)}%`, color: 'text-green-600' },
+                    ].filter(Boolean).map((item: any) => (
+                      <div key={item.key}>
+                        <p className="text-sm text-gray-600 mb-1">{item.label}</p>
+                        <p className={`text-xl font-bold ${item.color}`}>
+                          {item.value}
                         </p>
                       </div>
-                    )}
-                    {stockMetrics[selectedSymbol].roe !== undefined && (
-                      <div>
-                        <p className="text-sm text-gray-600 mb-1">ROE</p>
-                        <p className="text-xl font-bold text-purple-600">
-                          {(stockMetrics[selectedSymbol].roe! * 100).toFixed(2)}%
-                        </p>
-                      </div>
-                    )}
-                    {stockMetrics[selectedSymbol].volume !== undefined && (
-                      <div>
-                        <p className="text-sm text-gray-600 mb-1">Volume</p>
-                        <p className="text-xl font-bold text-orange-600">
-                          {formatNumber(stockMetrics[selectedSymbol].volume!)}
-                        </p>
-                      </div>
-                    )}
-                    {stockMetrics[selectedSymbol].marketCap !== undefined && (
-                      <div>
-                        <p className="text-sm text-gray-600 mb-1">Market Cap</p>
-                        <p className="text-xl font-bold text-teal-600">
-                          {formatNumber(stockMetrics[selectedSymbol].marketCap! * 1e6)}
-                        </p>
-                      </div>
-                    )}
-                    {stockMetrics[selectedSymbol].beta !== undefined && (
-                      <div>
-                        <p className="text-sm text-gray-600 mb-1">Beta</p>
-                        <p className="text-xl font-bold text-indigo-600">
-                          {stockMetrics[selectedSymbol].beta!.toFixed(2)}
-                        </p>
-                      </div>
-                    )}
-                    {stockMetrics[selectedSymbol].dividendYield !== undefined && (
-                      <div>
-                        <p className="text-sm text-gray-600 mb-1">Div Yield</p>
-                        <p className="text-xl font-bold text-green-600">
-                          {stockMetrics[selectedSymbol].dividendYield!.toFixed(2)}%
-                        </p>
-                      </div>
-                    )}
+                    ))}
                   </div>
                 </div>
               )}
@@ -3118,7 +3162,7 @@ export default function InvestmentPage() {
               Data Source: Finnhub API • {watchlist.length} assets in watchlist • Portfolio Value: {formatCurrency(portfolioValue)}
             </p>
             <p className="text-xs text-gray-400 mt-1">
-              Last updated: {new Date().toLocaleTimeString("en-US")}
+              Last updated: {lastUpdated || "--:--:-- --"}
             </p>
           </div>
         </div>

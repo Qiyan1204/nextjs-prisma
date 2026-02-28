@@ -2,6 +2,67 @@ import { NextResponse } from "next/server";
 
 export type TimeInterval = "1" | "5" | "15" | "30" | "60" | "D" | "W" | "M";
 
+// ============= SERVER-SIDE CACHE =============
+// Cache to prevent hitting Finnhub's rate limit (60 calls/min for free tier)
+type CacheEntry = {
+  data: unknown;
+  timestamp: number;
+};
+
+const cache = new Map<string, CacheEntry>();
+const CACHE_TTL = 30 * 1000; // 30 seconds cache
+const QUOTE_CACHE_TTL = 15 * 1000; // 15 seconds for quotes (more real-time)
+
+// Request queue to prevent concurrent duplicate requests
+const pendingRequests = new Map<string, Promise<unknown>>();
+
+function getCacheKey(symbol: string, interval: string, limit: string | null): string {
+  return `${symbol}-${interval}-${limit || 'full'}`;
+}
+
+function getFromCache(key: string, ttl: number): unknown | null {
+  const entry = cache.get(key);
+  if (entry && Date.now() - entry.timestamp < ttl) {
+    return entry.data;
+  }
+  if (entry) {
+    cache.delete(key); // Clean expired entry
+  }
+  return null;
+}
+
+function setCache(key: string, data: unknown): void {
+  cache.set(key, { data, timestamp: Date.now() });
+  
+  // Clean old entries if cache gets too large (prevent memory leak)
+  if (cache.size > 500) {
+    const now = Date.now();
+    for (const [k, v] of cache) {
+      if (now - v.timestamp > CACHE_TTL * 2) {
+        cache.delete(k);
+      }
+    }
+  }
+}
+
+// Rate limiting: track last request time
+let lastRequestTime = 0;
+const MIN_REQUEST_INTERVAL = 100; // 100ms between requests (10 req/sec max)
+
+async function rateLimitedFetch(url: string): Promise<Response> {
+  const now = Date.now();
+  const timeSinceLastRequest = now - lastRequestTime;
+  
+  if (timeSinceLastRequest < MIN_REQUEST_INTERVAL) {
+    await new Promise(resolve => setTimeout(resolve, MIN_REQUEST_INTERVAL - timeSinceLastRequest));
+  }
+  
+  lastRequestTime = Date.now();
+  return fetch(url);
+}
+
+// ============= END CACHE =============
+
 // Map user-friendly intervals to Finnhub resolution codes
 function mapIntervalToResolution(interval: string): {
   resolution: TimeInterval;
@@ -44,57 +105,85 @@ export async function GET(request: Request) {
     );
   }
 
-  try {
-    // For simple quote requests (limit=1)
-    if (limit === "1") {
+  const cacheKey = getCacheKey(symbol, interval, limit);
+  const cacheTTL = limit === "1" ? QUOTE_CACHE_TTL : CACHE_TTL;
+
+  // Check cache first
+  const cachedData = getFromCache(cacheKey, cacheTTL);
+  if (cachedData) {
+    return NextResponse.json(cachedData);
+  }
+
+  // Prevent duplicate concurrent requests for the same data
+  if (pendingRequests.has(cacheKey)) {
+    try {
+      const result = await pendingRequests.get(cacheKey);
+      return NextResponse.json(result);
+    } catch {
+      // If pending request failed, continue with new request
+    }
+  }
+
+  // Create the request promise
+  const requestPromise = (async () => {
+    try {
+      // For simple quote requests (limit=1)
+      if (limit === "1") {
+        const quoteUrl = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${apiKey}`;
+        const quoteRes = await rateLimitedFetch(quoteUrl);
+
+        if (!quoteRes.ok) {
+          if (quoteRes.status === 429) {
+            throw new Error(`Rate limit exceeded. Please wait a moment and try again.`);
+          }
+          throw new Error(`Finnhub API error: ${quoteRes.status}`);
+        }
+
+        const quoteData = await quoteRes.json();
+
+        // Transform to match our expected format
+        const transformedData = {
+          data: [
+            {
+              symbol: symbol,
+              date: new Date().toISOString(),
+              open: quoteData.o || quoteData.c,
+              high: quoteData.h || quoteData.c,
+              low: quoteData.l || quoteData.c,
+              close: quoteData.c,
+              volume: 0,
+            },
+          ],
+        };
+
+        setCache(cacheKey, transformedData);
+        return transformedData;
+      }
+
+      // For all requests (free tier doesn't support candles)
+      // Use quote API and generate simulated historical data based on current price
       const quoteUrl = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${apiKey}`;
-      const quoteRes = await fetch(quoteUrl);
+      const quoteRes = await rateLimitedFetch(quoteUrl);
 
       if (!quoteRes.ok) {
+        if (quoteRes.status === 429) {
+          throw new Error(`Rate limit exceeded. Please wait a moment and try again.`);
+        }
         throw new Error(`Finnhub API error: ${quoteRes.status}`);
       }
 
       const quoteData = await quoteRes.json();
+      const currentPrice = quoteData.c;
 
-      // Transform to match our expected format
-      const transformedData = {
-        data: [
-          {
-            symbol: symbol,
-            date: new Date().toISOString(),
-            open: quoteData.o || quoteData.c,
-            high: quoteData.h || quoteData.c,
-            low: quoteData.l || quoteData.c,
-            close: quoteData.c,
-            volume: 0,
-          },
-        ],
-      };
+      if (!currentPrice) {
+        return {
+          data: [],
+          error: "No data available for this symbol",
+        };
+      }
 
-      return NextResponse.json(transformedData);
-    }
-
-    // For all requests (free tier doesn't support candles)
-    // Use quote API and generate simulated historical data based on current price
-    const quoteUrl = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${apiKey}`;
-    const quoteRes = await fetch(quoteUrl);
-
-    if (!quoteRes.ok) {
-      throw new Error(`Finnhub API error: ${quoteRes.status}`);
-    }
-
-    const quoteData = await quoteRes.json();
-    const currentPrice = quoteData.c;
-
-    if (!currentPrice) {
-      return NextResponse.json({
-        data: [],
-        error: "No data available for this symbol",
-      });
-    }
-
-    // Generate simulated historical data based on current price
-    const { days } = mapIntervalToResolution(interval);
+      // Generate simulated historical data based on current price
+      const { days } = mapIntervalToResolution(interval);
     
     // Determine if this is an intraday interval
     const isIntraday = ["10m", "30m", "1h", "12h"].includes(interval);
@@ -193,7 +282,20 @@ export async function GET(request: Request) {
       });
     }
 
-    return NextResponse.json({ data: simulatedData });
+      const result = { data: simulatedData };
+      setCache(cacheKey, result);
+      return result;
+    } finally {
+      pendingRequests.delete(cacheKey);
+    }
+  })();
+
+  // Store the pending request
+  pendingRequests.set(cacheKey, requestPromise);
+
+  try {
+    const result = await requestPromise;
+    return NextResponse.json(result);
   } catch (error) {
     console.error("Finnhub API error:", error);
     return NextResponse.json(

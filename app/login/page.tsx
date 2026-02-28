@@ -28,7 +28,7 @@ export default function LoginPage() {
       const data = await response.json();
 
       if (response.ok) {
-        router.push("/investment");
+        router.push("/markets");
         router.refresh();
       } else {
         setError(data.error || "Login failed");
@@ -292,7 +292,7 @@ export default function LoginPage() {
           className="btn-google"
           onClick={() => {
             setGoogleLoading(true);
-            signIn("google", { callbackUrl: "/investment" });
+            signIn("google", { callbackUrl: "/markets" });
           }}
           disabled={googleLoading || loading}
         >

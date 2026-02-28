@@ -106,9 +106,9 @@ export default function SetPasswordPage() {
       setMessage(data.message);
       setSuccess(true);
       
-      // Redirect to profile or investment page after 2 seconds
+      // Redirect to profile page after 2 seconds
       setTimeout(() => {
-        router.push("/investment");
+        router.push("/profile");
       }, 2000);
     } catch (err) {
       setError("Server error. Please try again.");
@@ -327,8 +327,8 @@ export default function SetPasswordPage() {
 
         {/* Back Link */}
         <div style={{ textAlign: 'center', marginTop: '1.5rem' }}>
-          <Link href="/investment" style={{ color: '#6b7280', fontSize: '0.875rem', textDecoration: 'none' }}>
-            ← Back to Dashboard
+          <Link href="/profile" style={{ color: '#6b7280', fontSize: '0.875rem', textDecoration: 'none' }}>
+            ← Back to Profile
           </Link>
         </div>
       </div>

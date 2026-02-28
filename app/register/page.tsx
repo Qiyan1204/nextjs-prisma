@@ -76,7 +76,7 @@ export default function RegisterPage() {
   async function handleGoogleSignIn() {
     try {
       setGoogleLoading(true);
-      await signIn("google", { callbackUrl: "/investment" });
+      await signIn("google", { callbackUrl: "/markets" });
     } catch (error) {
       console.error("Google sign in error:", error);
       setError("Failed to sign in with Google");
@@ -140,7 +140,7 @@ export default function RegisterPage() {
         });
 
         if (result?.ok) {
-          router.push("/investment");
+          router.push("/markets");
           router.refresh();
         }
       } else {

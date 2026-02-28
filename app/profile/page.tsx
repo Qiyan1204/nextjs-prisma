@@ -14,6 +14,14 @@ export default function ProfilePage() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
   
+  // Top-up modal state
+  const [showTopUpModal, setShowTopUpModal] = useState(false);
+  const [topUpAmount, setTopUpAmount] = useState<string>("");
+  
+  // Wallet modal states
+  const [showWallet, setShowWallet] = useState(false);
+  const [showTransactions, setShowTransactions] = useState(false);
+  
   const [formData, setFormData] = useState({
     name: '',
     email: '',
@@ -88,17 +96,14 @@ export default function ProfilePage() {
         body: formData,
       });
 
-      const data = await response.json();
-
-      if (response.ok && data.success) {
+      if (response.ok) {
         await refetch();
         setMessage({ type: 'success', text: 'Profile image updated successfully!' });
       } else {
-        throw new Error(data.error || 'Upload failed');
+        throw new Error('Upload failed');
       }
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Failed to upload image';
-      setMessage({ type: 'error', text: `✕ ${errorMessage}` });
+      setMessage({ type: 'error', text: 'Failed to upload image' });
       console.error('Upload error:', error);
     } finally {
       setUploading(false);
@@ -135,6 +140,106 @@ export default function ProfilePage() {
     }
   }
 
+  // Format currency
+  const formatCurrency = (num: number): string => {
+    if (num === undefined || num === null || isNaN(num)) {
+      return '$0.00';
+    }
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(num);
+  };
+
+  // Execute top-up
+  const executeTopUp = () => {
+    const amount = parseFloat(topUpAmount);
+    if (!amount || amount <= 0) {
+      setMessage({ type: 'error', text: 'Please enter a valid amount' });
+      return;
+    }
+
+    // Minimum top-up: $100
+    if (amount < 100) {
+      setMessage({ type: 'error', text: 'Minimum top-up amount is $100' });
+      return;
+    }
+
+    // Maximum top-up: $1,000,000 per transaction
+    if (amount > 1000000) {
+      setMessage({ type: 'error', text: 'Maximum top-up amount is $1,000,000 per transaction' });
+      return;
+    }
+
+    // Get current wallet from localStorage
+    const userId = (user as any)?.id;
+    if (!userId) {
+      setMessage({ type: 'error', text: 'User not found' });
+      return;
+    }
+
+    const saved = localStorage.getItem(`investment-wallet-${userId}`);
+    let wallet = saved ? JSON.parse(saved) : { cash: 100000, positions: {}, transactions: [] };
+
+    // Execute top-up
+    wallet.cash += amount;
+
+    // Add transaction
+    wallet.transactions.unshift({
+      id: Date.now().toString(),
+      symbol: 'CASH',
+      type: 'buy',
+      shares: 0,
+      price: 0,
+      total: amount,
+      date: new Date().toISOString(),
+    });
+
+    // Save back to localStorage
+    localStorage.setItem(`investment-wallet-${userId}`, JSON.stringify(wallet));
+
+    setShowTopUpModal(false);
+    setTopUpAmount("");
+    setMessage({ type: 'success', text: `Successfully deposited ${formatCurrency(amount)} to your investment account` });
+  };
+
+  // Get wallet data
+  const getWallet = () => {
+    const userId = (user as any)?.id;
+    if (!userId) return { cash: 100000, positions: {}, transactions: [] };
+    try {
+      const saved = localStorage.getItem(`investment-wallet-${userId}`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        const cash = typeof parsed.cash === 'number' && !isNaN(parsed.cash) ? parsed.cash : 100000;
+        const positions = parsed.positions && typeof parsed.positions === 'object' ? parsed.positions : {};
+        const transactions = Array.isArray(parsed.transactions) ? parsed.transactions : [];
+        return { cash, positions, transactions };
+      }
+    } catch {
+      // ignore parse errors
+    }
+    return { cash: 100000, positions: {}, transactions: [] };
+  };
+
+  // Calculate portfolio value
+  const getPortfolioValue = () => {
+    const wallet = getWallet();
+    let stocksValue = 0;
+    // Note: In real implementation, you'd fetch current prices
+    // For now, we just use the total cost as an approximation
+    Object.values(wallet.positions).forEach((position: any) => {
+      const cost = position.totalCost || 0;
+      if (!isNaN(cost)) {
+        stocksValue += cost;
+      }
+    });
+    const result = wallet.cash + stocksValue;
+    return isNaN(result) ? 100000 : result;
+  };
+
   if (loading) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'white' }}>
@@ -162,11 +267,15 @@ export default function ProfilePage() {
         .nav-link {
           color: #6b7280;
           text-decoration: none;
-          fontSize: 14px;
-          fontWeight: 500;
+          font-size: 14px;
+          font-weight: 500;
           transition: color 0.2s;
         }
         .nav-link:hover { color: #111827; }
+        .nav-link.active {
+          color: #f97316;
+          font-weight: 600;
+        }
 
         .profile-btn {
           width: 36px;
@@ -387,6 +496,136 @@ export default function ProfilePage() {
             gap: '0.5rem'
           }}>
             {message.type === 'success' ? '✓' : '✕'} {message.text}
+          </div>
+        )}
+
+        {/* Top-Up Modal */}
+        {showTopUpModal && (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50, padding: '1rem' }}>
+            <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 20px 25px -5px rgba(0,0,0,0.1)', maxWidth: '28rem', width: '100%', padding: '1.5rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+                <h3 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#111827' }}>💳 Add Funds</h3>
+                <button
+                  onClick={() => {
+                    setShowTopUpModal(false);
+                    setTopUpAmount("");
+                  }}
+                  style={{ color: '#9ca3af', fontSize: '1.5rem', background: 'none', border: 'none', cursor: 'pointer' }}
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div style={{ background: 'linear-gradient(135deg, #14b8a6, #0d9488)', borderRadius: '8px', padding: '1rem', marginBottom: '1rem', color: 'white' }}>
+                <p style={{ fontSize: '0.875rem', opacity: 0.9, marginBottom: '0.25rem' }}>Current Balance</p>
+                <p style={{ fontSize: '2rem', fontWeight: 700 }}>
+                  {(() => {
+                    const userId = (user as any)?.id;
+                    if (!userId) return '$0.00';
+                    const saved = localStorage.getItem(`investment-wallet-${userId}`);
+                    const wallet = saved ? JSON.parse(saved) : { cash: 100000 };
+                    return formatCurrency(wallet.cash);
+                  })()}
+                </p>
+              </div>
+
+              <div style={{ marginBottom: '1rem' }}>
+                <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: 500, color: '#374151', marginBottom: '0.5rem' }}>
+                  Amount to Add
+                </label>
+                <div style={{ position: 'relative' }}>
+                  <span style={{ position: 'absolute', left: '1rem', top: '50%', transform: 'translateY(-50%)', color: '#6b7280', fontSize: '1.125rem' }}>$</span>
+                  <input
+                    type="number"
+                    value={topUpAmount}
+                    onChange={(e) => setTopUpAmount(e.target.value)}
+                    placeholder="0.00"
+                    min="100"
+                    step="100"
+                    style={{ width: '100%', paddingLeft: '2rem', paddingRight: '1rem', paddingTop: '0.75rem', paddingBottom: '0.75rem', border: '1px solid #d1d5db', borderRadius: '8px', fontSize: '1.125rem', outline: 'none' }}
+                    onFocus={(e) => e.target.style.borderColor = '#14b8a6'}
+                    onBlur={(e) => e.target.style.borderColor = '#d1d5db'}
+                  />
+                </div>
+                <p style={{ fontSize: '0.75rem', color: '#6b7280', marginTop: '0.25rem' }}>Min: $100 • Max: $1,000,000</p>
+              </div>
+
+              {/* Quick Amount Buttons */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.5rem', marginBottom: '1rem' }}>
+                {[1000, 5000, 10000].map((amount) => (
+                  <button
+                    key={amount}
+                    onClick={() => setTopUpAmount(amount.toString())}
+                    style={{ padding: '0.5rem 1rem', background: '#f3f4f6', color: '#374151', borderRadius: '8px', fontSize: '0.875rem', fontWeight: 500, border: 'none', cursor: 'pointer', transition: 'all 0.2s' }}
+                    onMouseEnter={(e) => e.currentTarget.style.background = '#e5e7eb'}
+                    onMouseLeave={(e) => e.currentTarget.style.background = '#f3f4f6'}
+                  >
+                    ${amount.toLocaleString()}
+                  </button>
+                ))}
+              </div>
+
+              {topUpAmount && parseFloat(topUpAmount) > 0 && (
+                <div style={{ background: '#eff6ff', borderRadius: '8px', padding: '1rem', marginBottom: '1rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.875rem', marginBottom: '0.25rem' }}>
+                    <span style={{ color: '#1f2937' }}>New Balance</span>
+                    <span style={{ fontWeight: 700, fontSize: '1.125rem', color: '#111827' }}>
+                      {(() => {
+                        const userId = (user as any)?.id;
+                        if (!userId) return '$0.00';
+                        const saved = localStorage.getItem(`investment-wallet-${userId}`);
+                        const wallet = saved ? JSON.parse(saved) : { cash: 100000 };
+                        return formatCurrency(wallet.cash + parseFloat(topUpAmount));
+                      })()}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* Validation Messages */}
+              {topUpAmount && parseFloat(topUpAmount) > 0 && parseFloat(topUpAmount) < 100 && (
+                <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', padding: '0.75rem', marginBottom: '1rem' }}>
+                  <p style={{ color: '#dc2626', fontSize: '0.875rem', fontWeight: 500 }}>
+                    ⚠️ Minimum top-up amount is $100
+                  </p>
+                </div>
+              )}
+
+              <div style={{ display: 'flex', gap: '0.75rem' }}>
+                <button
+                  onClick={() => {
+                    setShowTopUpModal(false);
+                    setTopUpAmount("");
+                  }}
+                  style={{ flex: 1, padding: '0.75rem 1rem', background: '#e5e7eb', color: '#374151', borderRadius: '8px', fontWeight: 500, border: 'none', cursor: 'pointer', transition: 'all 0.2s' }}
+                  onMouseEnter={(e) => e.currentTarget.style.background = '#d1d5db'}
+                  onMouseLeave={(e) => e.currentTarget.style.background = '#e5e7eb'}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={executeTopUp}
+                  disabled={!topUpAmount || parseFloat(topUpAmount) < 100 || parseFloat(topUpAmount) > 1000000}
+                  style={{ flex: 1, padding: '0.75rem 1rem', background: !topUpAmount || parseFloat(topUpAmount) < 100 || parseFloat(topUpAmount) > 1000000 ? '#99f6e4' : '#14b8a6', color: 'white', borderRadius: '8px', fontWeight: 500, border: 'none', cursor: !topUpAmount || parseFloat(topUpAmount) < 100 || parseFloat(topUpAmount) > 1000000 ? 'not-allowed' : 'pointer', transition: 'all 0.2s' }}
+                  onMouseEnter={(e) => {
+                    if (!(!topUpAmount || parseFloat(topUpAmount) < 100 || parseFloat(topUpAmount) > 1000000)) {
+                      e.currentTarget.style.background = '#0d9488';
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!(!topUpAmount || parseFloat(topUpAmount) < 100 || parseFloat(topUpAmount) > 1000000)) {
+                      e.currentTarget.style.background = '#14b8a6';
+                    }
+                  }}
+                >
+                  Add Funds
+                </button>
+              </div>
+
+              <p style={{ fontSize: '0.75rem', color: '#6b7280', marginTop: '1rem', textAlign: 'center' }}>
+                💡 Tip: Funds are instantly available for trading
+              </p>
+            </div>
           </div>
         )}
 
@@ -658,6 +897,92 @@ export default function ProfilePage() {
               </div>
             </div>
           </div>
+
+          {/* Investment Account Section */}
+          <div style={{ padding: '2rem', borderTop: '1px solid #e5e7eb' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
+              <h3 style={{ fontSize: '1.125rem', fontWeight: 600, color: '#111827' }}>
+                💰 Investment Account
+              </h3>
+              <button
+                onClick={() => setShowTopUpModal(true)}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: '#14b8a6',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '6px',
+                  fontSize: '0.875rem',
+                  fontWeight: 500,
+                  cursor: 'pointer',
+                  transition: 'all 0.2s',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.5rem'
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = '#0d9488'}
+                onMouseLeave={(e) => e.currentTarget.style.background = '#14b8a6'}
+              >
+                💳 Top Up
+              </button>
+            </div>
+
+            {/* Portfolio Summary */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
+              <div style={{ background: 'linear-gradient(135deg, #14b8a6, #0d9488)', borderRadius: '8px', padding: '1rem', color: 'white' }}>
+                <p style={{ fontSize: '0.75rem', opacity: 0.9, marginBottom: '0.25rem' }}>Total Value</p>
+                <p style={{ fontSize: '1.5rem', fontWeight: 700 }}>{formatCurrency(getPortfolioValue())}</p>
+              </div>
+              <div style={{ background: 'linear-gradient(135deg, #3b82f6, #2563eb)', borderRadius: '8px', padding: '1rem', color: 'white' }}>
+                <p style={{ fontSize: '0.75rem', opacity: 0.9, marginBottom: '0.25rem' }}>Cash</p>
+                <p style={{ fontSize: '1.5rem', fontWeight: 700 }}>{formatCurrency(getWallet().cash)}</p>
+              </div>
+              <div style={{ background: 'linear-gradient(135deg, #a855f7, #9333ea)', borderRadius: '8px', padding: '1rem', color: 'white' }}>
+                <p style={{ fontSize: '0.75rem', opacity: 0.9, marginBottom: '0.25rem' }}>Positions</p>
+                <p style={{ fontSize: '1.5rem', fontWeight: 700 }}>{Object.keys(getWallet().positions).length}</p>
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+              <button
+                onClick={() => setShowWallet(true)}
+                style={{
+                  padding: '0.75rem',
+                  background: '#eff6ff',
+                  color: '#2563eb',
+                  border: '1px solid #bfdbfe',
+                  borderRadius: '8px',
+                  fontSize: '0.875rem',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  transition: 'all 0.2s'
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = '#dbeafe'}
+                onMouseLeave={(e) => e.currentTarget.style.background = '#eff6ff'}
+              >
+                💼 Portfolio
+              </button>
+              <button
+                onClick={() => setShowTransactions(true)}
+                style={{
+                  padding: '0.75rem',
+                  background: '#faf5ff',
+                  color: '#9333ea',
+                  border: '1px solid #e9d5ff',
+                  borderRadius: '8px',
+                  fontSize: '0.875rem',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  transition: 'all 0.2s'
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = '#f3e8ff'}
+                onMouseLeave={(e) => e.currentTarget.style.background = '#faf5ff'}
+              >
+                📜 History
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* Connected Accounts Section */}
@@ -716,6 +1041,164 @@ export default function ProfilePage() {
             </span>
           </div>
         </div>
+
+        {/* Portfolio Modal */}
+        {showWallet && (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50, padding: '1rem' }}>
+            <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 20px 25px -5px rgba(0,0,0,0.1)', maxWidth: '56rem', width: '100%', maxHeight: '90vh', overflowY: 'auto' }}>
+              <div style={{ position: 'sticky', top: 0, background: 'white', borderBottom: '1px solid #e5e7eb', padding: '1.5rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <h3 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#111827' }}>💼 Portfolio</h3>
+                  <button
+                    onClick={() => setShowWallet(false)}
+                    style={{ color: '#9ca3af', fontSize: '1.5rem', background: 'none', border: 'none', cursor: 'pointer' }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+
+              <div style={{ padding: '1.5rem' }}>
+                {/* Portfolio Summary */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
+                  <div style={{ background: 'linear-gradient(135deg, #14b8a6, #0d9488)', borderRadius: '12px', padding: '1rem', color: 'white' }}>
+                    <p style={{ fontSize: '0.875rem', opacity: 0.9, marginBottom: '0.25rem' }}>Total Value</p>
+                    <p style={{ fontSize: '2rem', fontWeight: 700 }}>{formatCurrency(getPortfolioValue())}</p>
+                    <p style={{ fontSize: '0.875rem', marginTop: '0.25rem', color: getPortfolioValue() >= 100000 ? '#d1fae5' : '#fecaca' }}>
+                      {getPortfolioValue() >= 100000 ? '↗' : '↘'} {formatCurrency(Math.abs(getPortfolioValue() - 100000))} ({(((getPortfolioValue() - 100000) / 100000) * 100).toFixed(2)}%)
+                    </p>
+                  </div>
+                  <div style={{ background: 'linear-gradient(135deg, #3b82f6, #2563eb)', borderRadius: '12px', padding: '1rem', color: 'white' }}>
+                    <p style={{ fontSize: '0.875rem', opacity: 0.9, marginBottom: '0.25rem' }}>Cash</p>
+                    <p style={{ fontSize: '2rem', fontWeight: 700 }}>{formatCurrency(getWallet().cash)}</p>
+                    <p style={{ fontSize: '0.875rem', marginTop: '0.25rem', opacity: 0.75 }}>
+                      {getPortfolioValue() > 0 ? ((getWallet().cash / getPortfolioValue()) * 100).toFixed(1) : '0.0'}% of portfolio
+                    </p>
+                  </div>
+                  <div style={{ background: 'linear-gradient(135deg, #a855f7, #9333ea)', borderRadius: '12px', padding: '1rem', color: 'white' }}>
+                    <p style={{ fontSize: '0.875rem', opacity: 0.9, marginBottom: '0.25rem' }}>Positions</p>
+                    <p style={{ fontSize: '2rem', fontWeight: 700 }}>{Object.keys(getWallet().positions).length}</p>
+                    <p style={{ fontSize: '0.875rem', marginTop: '0.25rem', opacity: 0.75 }}>
+                      {formatCurrency(getPortfolioValue() - getWallet().cash)} invested
+                    </p>
+                  </div>
+                </div>
+
+                {/* Holdings */}
+                <h4 style={{ fontSize: '1.125rem', fontWeight: 700, color: '#111827', marginBottom: '0.75rem' }}>Holdings</h4>
+                {Object.keys(getWallet().positions).length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '2rem', color: '#9ca3af' }}>
+                    <p style={{ fontSize: '1.125rem' }}>No positions yet</p>
+                    <p style={{ fontSize: '0.875rem' }}>Start trading to build your portfolio</p>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                    {Object.values(getWallet().positions).map((position: any) => (
+                      <div key={position.symbol} style={{ background: '#f9fafb', borderRadius: '8px', padding: '1rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <span style={{ fontSize: '1.5rem' }}>📈</span>
+                            <div>
+                              <p style={{ fontWeight: 700, color: '#111827' }}>{position.symbol}</p>
+                              <p style={{ fontSize: '0.875rem', color: '#111827' }}>{position.shares} shares</p>
+                            </div>
+                          </div>
+                          <div style={{ textAlign: 'right' }}>
+                            <p style={{ fontWeight: 700, fontSize: '1.125rem', color: '#111827' }}>{formatCurrency(position.totalCost)}</p>
+                            <p style={{ fontSize: '0.875rem', fontWeight: 600, color: '#6b7280' }}>
+                              Avg: {formatCurrency(position.avgPrice)}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Transactions Modal */}
+        {showTransactions && (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50, padding: '1rem' }}>
+            <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 20px 25px -5px rgba(0,0,0,0.1)', maxWidth: '48rem', width: '100%', maxHeight: '90vh', overflowY: 'auto' }}>
+              <div style={{ position: 'sticky', top: 0, background: 'white', borderBottom: '1px solid #e5e7eb', padding: '1.5rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <h3 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#111827' }}>📜 Transaction History</h3>
+                  <button
+                    onClick={() => setShowTransactions(false)}
+                    style={{ color: '#9ca3af', fontSize: '1.5rem', background: 'none', border: 'none', cursor: 'pointer' }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+
+              <div style={{ padding: '1.5rem' }}>
+                {getWallet().transactions.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '2rem', color: '#9ca3af' }}>
+                    <p style={{ fontSize: '1.125rem' }}>No transactions yet</p>
+                    <p style={{ fontSize: '0.875rem' }}>Your trades will appear here</p>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                    {getWallet().transactions.map((transaction: any) => {
+                      const isTopUp = transaction.symbol === 'CASH';
+                      return (
+                        <div key={transaction.id} style={{ background: '#f9fafb', borderRadius: '8px', padding: '1rem' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                              <div style={{ 
+                                width: 40, 
+                                height: 40, 
+                                borderRadius: '50%', 
+                                display: 'flex', 
+                                alignItems: 'center', 
+                                justifyContent: 'center',
+                                background: isTopUp ? '#dbeafe' : (transaction.type === 'buy' ? '#dcfce7' : '#fee2e2'),
+                                color: isTopUp ? '#2563eb' : (transaction.type === 'buy' ? '#16a34a' : '#dc2626')
+                              }}>
+                                {isTopUp ? '💵' : (transaction.type === 'buy' ? '🛒' : '💰')}
+                              </div>
+                              <div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                  {!isTopUp && <span style={{ fontSize: '1.125rem' }}>📈</span>}
+                                  <p style={{ fontWeight: 700, color: '#111827' }}>{isTopUp ? 'Cash Deposit' : transaction.symbol}</p>
+                                  <span style={{ 
+                                    fontSize: '0.75rem', 
+                                    padding: '0.125rem 0.5rem', 
+                                    borderRadius: '4px',
+                                    background: isTopUp ? '#dbeafe' : (transaction.type === 'buy' ? '#dcfce7' : '#fee2e2'),
+                                    color: isTopUp ? '#2563eb' : (transaction.type === 'buy' ? '#16a34a' : '#dc2626'),
+                                    fontWeight: 600
+                                  }}>
+                                    {isTopUp ? 'TOP-UP' : transaction.type.toUpperCase()}
+                                  </span>
+                                </div>
+                                <p style={{ fontSize: '0.875rem', color: '#111827' }}>
+                                  {new Date(transaction.date).toLocaleString()}
+                                </p>
+                              </div>
+                            </div>
+                            <div style={{ textAlign: 'right' }}>
+                              <p style={{ fontWeight: 700, fontSize: '1.125rem', color: '#111827' }}>{formatCurrency(transaction.total)}</p>
+                              {!isTopUp && (
+                                <p style={{ fontSize: '0.875rem', color: '#111827' }}>
+                                  {transaction.shares} × {formatCurrency(transaction.price)}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
