@@ -4,12 +4,17 @@ import { cookies } from "next/headers";
 import { getServerSession } from "next-auth";
 import jwt from "jsonwebtoken";
 import prisma from "@/lib/prisma";
-import { writeFile, mkdir } from 'fs/promises';
-import { join } from 'path';
-import { existsSync } from 'fs';
 import { authOptions } from "@/lib/auth";
+import { v2 as cloudinary } from "cloudinary";
 
 const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key-change-this-in-production";
+
+// Configure Cloudinary
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
 export async function POST(request: NextRequest) {
   try {
@@ -70,60 +75,43 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Convert file to buffer
+    // Convert file to buffer and then to base64
     const bytes = await file.arrayBuffer();
     const buffer = Buffer.from(bytes);
+    const base64Image = `data:${file.type};base64,${buffer.toString('base64')}`;
 
-    // Generate unique filename
-    const timestamp = Date.now();
-    const ext = file.type.split('/')[1] || 'png';
-    const filename = `${userId}-${timestamp}.${ext}`;
-    const uploadDir = join(process.cwd(), 'public', 'uploads', 'avatars');
-    const filepath = join(uploadDir, filename);
-
-    // Create directory if it doesn't exist
+    // Upload to Cloudinary
     try {
-      if (!existsSync(uploadDir)) {
-        await mkdir(uploadDir, { recursive: true });
-      }
-    } catch (mkdirError) {
-      console.error("Failed to create upload directory:", mkdirError);
-      return NextResponse.json(
-        { error: "Failed to create upload directory" },
-        { status: 500 }
-      );
-    }
+      const uploadResult = await cloudinary.uploader.upload(base64Image, {
+        folder: "avatars",
+        public_id: `user-${userId}-${Date.now()}`,
+        overwrite: true,
+        transformation: [
+          { width: 400, height: 400, crop: "fill", gravity: "face" },
+          { quality: "auto" }
+        ]
+      });
 
-    // Save file
-    try {
-      await writeFile(filepath, buffer);
-    } catch (writeError) {
-      console.error("Failed to write file:", writeError);
-      return NextResponse.json(
-        { error: "Failed to save image file" },
-        { status: 500 }
-      );
-    }
+      const imageUrl = uploadResult.secure_url;
 
-    // Update user in database
-    const imageUrl = `/uploads/avatars/${filename}`;
-    try {
+      // Update user in database
       await prisma.user.update({
         where: { id: userId },
         data: { image: imageUrl },
       });
-    } catch (dbError) {
-      console.error("Database update error:", dbError);
+
+      return NextResponse.json({ 
+        success: true,
+        imageUrl 
+      });
+
+    } catch (cloudinaryError) {
+      console.error("Cloudinary upload error:", cloudinaryError);
       return NextResponse.json(
-        { error: "Failed to update user profile" },
+        { error: "Failed to upload image to cloud storage" },
         { status: 500 }
       );
     }
-
-    return NextResponse.json({ 
-      success: true,
-      imageUrl 
-    });
 
   } catch (error) {
     console.error("Upload error:", error);
