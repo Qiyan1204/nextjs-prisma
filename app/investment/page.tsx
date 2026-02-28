@@ -2,6 +2,8 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useAuth } from "@/app/hooks/useAuth";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   LineChart,
   Line,
@@ -252,7 +254,22 @@ const isMarketOpen = (): boolean => {
 };
 
 export default function InvestmentPage() {
-  const { user, loading: authLoading } = useAuth();
+  const router = useRouter();
+  const { user, loading: authLoading, isLoggedIn, refetch } = useAuth();
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  async function handleLogout() {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+      await refetch();
+      setShowProfileMenu(false);
+      router.push("/");
+    } catch (error) {
+      console.error("Logout failed:", error);
+    }
+  }
+
   const [watchlist, setWatchlist] = useState<
     Array<{ symbol: string; name: string; emoji: string }>
   >([]);
@@ -325,6 +342,16 @@ export default function InvestmentPage() {
       setWallet(loadWalletFromStorage(user.id));
     }
   }, [user?.id]);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setShowProfileMenu(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   // Save watchlist to localStorage
   useEffect(() => {
@@ -1014,7 +1041,246 @@ export default function InvestmentPage() {
   });
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col md:flex-row">
+    <div className="min-h-screen bg-white text-gray-900">
+      <style>{`
+        * { box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif; }
+
+        .container {
+          max-width: 1100px;
+          margin: 0 auto;
+          padding: 0 20px;
+        }
+
+        .nav-bar {
+          background: white;
+          border-bottom: 1px solid #e5e7eb;
+          position: sticky;
+          top: 0;
+          z-index: 100;
+        }
+
+        .nav-link {
+          color: #6b7280;
+          text-decoration: none;
+          font-size: 14px;
+          font-weight: 500;
+          transition: color 0.2s;
+        }
+        .nav-link:hover { color: #111827; }
+
+        .btn {
+          padding: 8px 20px;
+          border-radius: 6px;
+          font-size: 14px;
+          font-weight: 500;
+          cursor: pointer;
+          transition: all 0.2s;
+          text-decoration: none;
+          display: inline-block;
+          border: none;
+        }
+
+        .btn-primary {
+          background: #f97316;
+          color: white;
+        }
+        .btn-primary:hover {
+          background: #ea580c;
+        }
+
+        .btn-outline {
+          background: white;
+          color: #374151;
+          border: 1px solid #d1d5db;
+        }
+        .btn-outline:hover {
+          background: #f9fafb;
+          border-color: #9ca3af;
+        }
+
+        .profile-btn {
+          width: 36px;
+          height: 36px;
+          border-radius: 50%;
+          background: #f97316;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 14px;
+          font-weight: 600;
+          color: white;
+          cursor: pointer;
+          border: 2px solid #fed7aa;
+          transition: all 0.2s;
+        }
+        .profile-btn:hover {
+          background: #ea580c;
+          transform: scale(1.05);
+        }
+
+        .profile-menu {
+          position: absolute;
+          top: 50px;
+          right: 0;
+          background: white;
+          border: 1px solid #e5e7eb;
+          border-radius: 8px;
+          padding: 8px;
+          min-width: 200px;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+
+        .profile-menu-header {
+          padding: 12px 16px;
+          border-bottom: 1px solid #e5e7eb;
+          margin-bottom: 8px;
+        }
+
+        .profile-menu-name {
+          font-size: 14px;
+          font-weight: 600;
+          color: #111827;
+          margin-bottom: 4px;
+        }
+
+        .profile-menu-email {
+          font-size: 12px;
+          color: #6b7280;
+        }
+
+        .profile-menu-item {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          padding: 10px 16px;
+          border-radius: 6px;
+          color: #374151;
+          font-size: 14px;
+          cursor: pointer;
+          transition: all 0.15s;
+          text-decoration: none;
+          border: none;
+          background: transparent;
+          width: 100%;
+          text-align: left;
+        }
+        .profile-menu-item:hover {
+          background: #f3f4f6;
+        }
+        .profile-menu-item.logout {
+          color: #ef4444;
+        }
+        .profile-menu-item.logout:hover {
+          background: #fef2f2;
+        }
+
+        @media (max-width: 768px) {
+          .nav-links { display: none; }
+        }
+      `}</style>
+
+      {/* Navigation */}
+      <nav className="nav-bar">
+        <div className="container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: '64px' }}>
+          
+          <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', textDecoration: 'none' }}>
+            <img 
+              src="/oiyen-logo.png" 
+              alt="Oiyen" 
+              style={{ width: 46, height: 46, borderRadius: 100 }}
+            />
+            <span style={{ fontSize: '1.05rem', fontWeight: 600, color: '#f97316', letterSpacing: '-0.01em' }}>Oiyen</span>
+          </Link>
+
+          <div className="nav-links" style={{ display: 'flex', gap: '32px' }}>
+            {['Markets', 'Portfolio', 'Research', 'Pricing'].map(item => (
+              <Link key={item} href={`/${item.toLowerCase()}`} className="nav-link">{item}</Link>
+            ))}
+          </div>
+
+          <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+            {authLoading ? (
+              <div style={{ width: 120, height: 36 }} />
+            ) : isLoggedIn ? (
+              <div style={{ position: 'relative' }} ref={menuRef}>
+                <button
+                  onClick={() => setShowProfileMenu(!showProfileMenu)}
+                  className="profile-btn"
+                  title={user?.name || "Profile"}
+                  style={{ padding: 0, overflow: 'hidden' }}
+                >
+                  {user?.image ? (
+                    <img 
+                      src={user.image} 
+                      alt={user.name || 'Profile'}
+                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                    />
+                  ) : (
+                    user?.name?.charAt(0).toUpperCase() || "U"
+                  )}
+                </button>
+
+                {showProfileMenu && (
+                  <div className="profile-menu">
+                    <div className="profile-menu-header">
+                      <div className="profile-menu-name">{user?.name}</div>
+                      <div className="profile-menu-email">{user?.email}</div>
+                    </div>
+
+                    <Link
+                      href="/profile"
+                      className="profile-menu-item"
+                      onClick={() => setShowProfileMenu(false)}
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                        <circle cx="12" cy="7" r="4" />
+                      </svg>
+                      My Profile
+                    </Link>
+
+                    <Link
+                      href="/set-password"
+                      className="profile-menu-item"
+                      onClick={() => setShowProfileMenu(false)}
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                      </svg>
+                      Password Settings
+                    </Link>
+
+                    <button
+                      onClick={handleLogout}
+                      className="profile-menu-item logout"
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                        <polyline points="16 17 21 12 16 7" />
+                        <line x1="21" y1="12" x2="9" y2="12" />
+                      </svg>
+                      Logout
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <>
+                <Link href="/login" className="btn btn-outline">
+                  Log in
+                </Link>
+                <Link href="/register" className="btn btn-primary">
+                  Get started
+                </Link>
+              </>
+            )}
+          </div>
+        </div>
+      </nav>
+
+      <div className="bg-gray-50 flex-1">
       {/* Success Message */}
       {successMessage && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4">
@@ -1452,6 +1718,8 @@ export default function InvestmentPage() {
         />
       )}
 
+      {/* Main Layout: Flex container for Watchlist and Content */}
+      <div className="flex h-full">
       {/* Collapsible Watchlist Sidebar */}
       <div
         className={`bg-white border-r border-gray-200 transition-all duration-300 flex-shrink-0 ${
@@ -2854,6 +3122,8 @@ export default function InvestmentPage() {
             </p>
           </div>
         </div>
+      </div>
+      </div>
       </div>
     </div>
   );
