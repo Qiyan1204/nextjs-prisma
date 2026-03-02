@@ -22,6 +22,11 @@ export default function ProfilePage() {
   const [showWallet, setShowWallet] = useState(false);
   const [showTransactions, setShowTransactions] = useState(false);
   
+  // Delete account modal state
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  
   const [formData, setFormData] = useState({
     name: '',
     email: '',
@@ -115,7 +120,7 @@ export default function ProfilePage() {
     setMessage(null);
 
     try {
-      const response = await fetch('/api/user/update-profile', {
+      const response = await fetch('/api/user/upload-profile', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData),
@@ -126,8 +131,14 @@ export default function ProfilePage() {
         setIsEditing(false);
         setMessage({ type: 'success', text: 'Profile updated successfully!' });
       } else {
-        const data = await response.json();
-        throw new Error(data.error || 'Update failed');
+        let errorMessage = 'Update failed';
+        try {
+          const data = await response.json();
+          errorMessage = data.error || errorMessage;
+        } catch (e) {
+          errorMessage = `Server error: ${response.status} ${response.statusText}`;
+        }
+        throw new Error(errorMessage);
       }
     } catch (error) {
       setMessage({ 
@@ -142,9 +153,6 @@ export default function ProfilePage() {
 
   // Format currency
   const formatCurrency = (num: number): string => {
-    if (num === undefined || num === null || isNaN(num)) {
-      return '$0.00';
-    }
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: 'USD',
@@ -208,20 +216,9 @@ export default function ProfilePage() {
   // Get wallet data
   const getWallet = () => {
     const userId = (user as any)?.id;
-    if (!userId) return { cash: 100000, positions: {}, transactions: [] };
-    try {
-      const saved = localStorage.getItem(`investment-wallet-${userId}`);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        const cash = typeof parsed.cash === 'number' && !isNaN(parsed.cash) ? parsed.cash : 100000;
-        const positions = parsed.positions && typeof parsed.positions === 'object' ? parsed.positions : {};
-        const transactions = Array.isArray(parsed.transactions) ? parsed.transactions : [];
-        return { cash, positions, transactions };
-      }
-    } catch {
-      // ignore parse errors
-    }
-    return { cash: 100000, positions: {}, transactions: [] };
+    if (!userId) return { cash: 0, positions: {}, transactions: [] };
+    const saved = localStorage.getItem(`investment-wallet-${userId}`);
+    return saved ? JSON.parse(saved) : { cash: 100000, positions: {}, transactions: [] };
   };
 
   // Calculate portfolio value
@@ -231,13 +228,57 @@ export default function ProfilePage() {
     // Note: In real implementation, you'd fetch current prices
     // For now, we just use the total cost as an approximation
     Object.values(wallet.positions).forEach((position: any) => {
-      const cost = position.totalCost || 0;
-      if (!isNaN(cost)) {
-        stocksValue += cost;
-      }
+      stocksValue += position.totalCost;
     });
-    const result = wallet.cash + stocksValue;
-    return isNaN(result) ? 100000 : result;
+    return wallet.cash + stocksValue;
+  };
+
+  // Delete account
+  const handleDeleteAccount = async () => {
+    if (!user?.name || deleteConfirmText !== user.name) {
+      setMessage({ type: 'error', text: 'Please type your full name exactly to confirm' });
+      return;
+    }
+
+    setDeleting(true);
+    try {
+      const response = await fetch('/api/user/delete-account', {
+        method: 'DELETE',
+      });
+
+      if (response.ok) {
+        // Clear localStorage
+        const userId = (user as any)?.id;
+        if (userId) {
+          localStorage.removeItem(`investment-wallet-${userId}`);
+          localStorage.removeItem(`investment-watchlist-${userId}`);
+        }
+        
+        // Logout and redirect
+        await fetch("/api/auth/logout", { method: "POST" });
+        router.push("/");
+        router.refresh();
+      } else {
+        let errorMessage = 'Failed to delete account';
+        try {
+          const data = await response.json();
+          errorMessage = data.error || errorMessage;
+        } catch (e) {
+          errorMessage = `Server error: ${response.status} ${response.statusText}`;
+        }
+        throw new Error(errorMessage);
+      }
+    } catch (error) {
+      setMessage({ 
+        type: 'error', 
+        text: error instanceof Error ? error.message : 'Failed to delete account' 
+      });
+      console.error('Delete account error:', error);
+    } finally {
+      setDeleting(false);
+      setShowDeleteModal(false);
+      setDeleteConfirmText("");
+    }
   };
 
   if (loading) {
@@ -267,15 +308,11 @@ export default function ProfilePage() {
         .nav-link {
           color: #6b7280;
           text-decoration: none;
-          font-size: 14px;
-          font-weight: 500;
+          fontSize: 14px;
+          fontWeight: 500;
           transition: color 0.2s;
         }
         .nav-link:hover { color: #111827; }
-        .nav-link.active {
-          color: #f97316;
-          font-weight: 600;
-        }
 
         .profile-btn {
           width: 36px;
@@ -1042,6 +1079,188 @@ export default function ProfilePage() {
           </div>
         </div>
 
+        {/* Danger Zone */}
+        <div className="fade-in" style={{ 
+          background: 'white', 
+          border: '2px solid #fecaca', 
+          borderRadius: '12px', 
+          boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+          padding: '2rem',
+          marginTop: '1.5rem'
+        }}>
+          <h3 style={{ fontSize: '1.125rem', fontWeight: 600, color: '#dc2626', marginBottom: '0.5rem' }}>
+            ⚠️ Danger Zone
+          </h3>
+          <p style={{ fontSize: '0.875rem', color: '#6b7280', marginBottom: '1rem' }}>
+            Once you delete your account, there is no going back. Please be certain.
+          </p>
+          <button
+            onClick={() => setShowDeleteModal(true)}
+            style={{
+              padding: '0.75rem 1.5rem',
+              background: '#dc2626',
+              color: 'white',
+              border: 'none',
+              borderRadius: '8px',
+              fontSize: '0.875rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              transition: 'all 0.2s',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem'
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.background = '#b91c1c'}
+            onMouseLeave={(e) => e.currentTarget.style.background = '#dc2626'}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polyline points="3 6 5 6 21 6" />
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+              <line x1="10" y1="11" x2="10" y2="17" />
+              <line x1="14" y1="11" x2="14" y2="17" />
+            </svg>
+            Delete Account
+          </button>
+        </div>
+
+        {/* Delete Account Modal */}
+        {showDeleteModal && (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60, padding: '1rem' }}>
+            <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 20px 25px -5px rgba(0,0,0,0.1)', maxWidth: '28rem', width: '100%', padding: '1.5rem', border: '2px solid #fecaca' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+                <h3 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#dc2626', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="12" y1="8" x2="12" y2="12" />
+                    <line x1="12" y1="16" x2="12.01" y2="16" />
+                  </svg>
+                  Delete Account
+                </h3>
+                <button
+                  onClick={() => {
+                    setShowDeleteModal(false);
+                    setDeleteConfirmText("");
+                  }}
+                  style={{ color: '#9ca3af', fontSize: '1.5rem', background: 'none', border: 'none', cursor: 'pointer' }}
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', padding: '1rem', marginBottom: '1rem' }}>
+                <p style={{ color: '#dc2626', fontSize: '0.875rem', fontWeight: 600, marginBottom: '0.5rem' }}>
+                  ⚠️ Warning: This action cannot be undone!
+                </p>
+                <p style={{ color: '#991b1b', fontSize: '0.75rem' }}>
+                  Deleting your account will:
+                </p>
+                <ul style={{ color: '#991b1b', fontSize: '0.75rem', marginLeft: '1.25rem', marginTop: '0.5rem' }}>
+                  <li>Permanently delete all your personal data</li>
+                  <li>Remove all your investment positions and transactions</li>
+                  <li>Delete your profile and account settings</li>
+                  <li>Log you out immediately</li>
+                </ul>
+              </div>
+
+              <div style={{ marginBottom: '1rem' }}>
+                <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: 600, color: '#374151', marginBottom: '0.5rem' }}>
+                  Type your full name <span style={{ color: '#dc2626', fontWeight: 700 }}>({user.name})</span> to confirm:
+                </label>
+                <input
+                  type="text"
+                  value={deleteConfirmText}
+                  onChange={(e) => setDeleteConfirmText(e.target.value)}
+                  placeholder={user.name}
+                  style={{ 
+                    width: '100%', 
+                    padding: '0.75rem', 
+                    border: '2px solid #fecaca', 
+                    borderRadius: '8px', 
+                    fontSize: '0.875rem', 
+                    outline: 'none',
+                    fontWeight: 600
+                  }}
+                  onFocus={(e) => e.target.style.borderColor = '#dc2626'}
+                  onBlur={(e) => e.target.style.borderColor = '#fecaca'}
+                />
+              </div>
+
+              {/* Account Info */}
+              <div style={{ background: '#f9fafb', borderRadius: '8px', padding: '0.75rem', marginBottom: '1rem' }}>
+                <p style={{ fontSize: '0.75rem', color: '#6b7280', marginBottom: '0.25rem' }}>Account to be deleted:</p>
+                <p style={{ fontSize: '0.875rem', fontWeight: 600, color: '#111827' }}>{user.email}</p>
+                <p style={{ fontSize: '0.75rem', color: '#6b7280' }}>User ID: U{(user as any).id}</p>
+              </div>
+
+              <div style={{ display: 'flex', gap: '0.75rem' }}>
+                <button
+                  onClick={() => {
+                    setShowDeleteModal(false);
+                    setDeleteConfirmText("");
+                  }}
+                  style={{ 
+                    flex: 1, 
+                    padding: '0.75rem 1rem', 
+                    background: '#f3f4f6', 
+                    color: '#374151', 
+                    borderRadius: '8px', 
+                    fontWeight: 500, 
+                    border: 'none', 
+                    cursor: 'pointer', 
+                    transition: 'all 0.2s' 
+                  }}
+                  onMouseEnter={(e) => e.currentTarget.style.background = '#e5e7eb'}
+                  onMouseLeave={(e) => e.currentTarget.style.background = '#f3f4f6'}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleDeleteAccount}
+                  disabled={deleteConfirmText !== user.name || deleting}
+                  style={{ 
+                    flex: 1, 
+                    padding: '0.75rem 1rem', 
+                    background: deleteConfirmText !== user.name || deleting ? '#fca5a5' : '#dc2626', 
+                    color: 'white', 
+                    borderRadius: '8px', 
+                    fontWeight: 600, 
+                    border: 'none', 
+                    cursor: deleteConfirmText !== user.name || deleting ? 'not-allowed' : 'pointer', 
+                    transition: 'all 0.2s',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '0.5rem'
+                  }}
+                  onMouseEnter={(e) => {
+                    if (deleteConfirmText === user.name && !deleting) {
+                      e.currentTarget.style.background = '#b91c1c';
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (deleteConfirmText === user.name && !deleting) {
+                      e.currentTarget.style.background = '#dc2626';
+                    }
+                  }}
+                >
+                  {deleting ? (
+                    <>
+                      <div style={{ width: 16, height: 16, border: '2px solid white', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.6s linear infinite' }}></div>
+                      Deleting...
+                    </>
+                  ) : (
+                    'Delete My Account'
+                  )}
+                </button>
+              </div>
+
+              <p style={{ fontSize: '0.75rem', color: '#9ca3af', marginTop: '1rem', textAlign: 'center' }}>
+                This action is permanent and cannot be reversed
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Portfolio Modal */}
         {showWallet && (
           <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50, padding: '1rem' }}>
@@ -1065,14 +1284,14 @@ export default function ProfilePage() {
                     <p style={{ fontSize: '0.875rem', opacity: 0.9, marginBottom: '0.25rem' }}>Total Value</p>
                     <p style={{ fontSize: '2rem', fontWeight: 700 }}>{formatCurrency(getPortfolioValue())}</p>
                     <p style={{ fontSize: '0.875rem', marginTop: '0.25rem', color: getPortfolioValue() >= 100000 ? '#d1fae5' : '#fecaca' }}>
-                      {getPortfolioValue() >= 100000 ? '↗' : '↘'} {formatCurrency(Math.abs(getPortfolioValue() - 100000))} ({(((getPortfolioValue() - 100000) / 100000) * 100).toFixed(2)}%)
+                      {getPortfolioValue() >= 100000 ? '↗' : '↘'} {formatCurrency(Math.abs(getPortfolioValue() - 100000))} ({((getPortfolioValue() - 100000) / 100000 * 100).toFixed(2)}%)
                     </p>
                   </div>
                   <div style={{ background: 'linear-gradient(135deg, #3b82f6, #2563eb)', borderRadius: '12px', padding: '1rem', color: 'white' }}>
                     <p style={{ fontSize: '0.875rem', opacity: 0.9, marginBottom: '0.25rem' }}>Cash</p>
                     <p style={{ fontSize: '2rem', fontWeight: 700 }}>{formatCurrency(getWallet().cash)}</p>
                     <p style={{ fontSize: '0.875rem', marginTop: '0.25rem', opacity: 0.75 }}>
-                      {getPortfolioValue() > 0 ? ((getWallet().cash / getPortfolioValue()) * 100).toFixed(1) : '0.0'}% of portfolio
+                      {((getWallet().cash / getPortfolioValue()) * 100).toFixed(1)}% of portfolio
                     </p>
                   </div>
                   <div style={{ background: 'linear-gradient(135deg, #a855f7, #9333ea)', borderRadius: '12px', padding: '1rem', color: 'white' }}>
