@@ -18,7 +18,9 @@ model User {
   name                String
   email               String               @unique
   password            String?              // 可选，因为 Google 登录不需要密码
-  role                Role                 @default(STUDENT)
+  role                Role                 @default(INVESTOR)
+  status              UserStatus           @default(ACTIVE)
+  walletBalance       Decimal              @default(0) @db.Decimal(18, 6)
   image               String?              // Google 头像
   emailVerified       DateTime?            // NextAuth 需要
   posts               Post[]
@@ -26,6 +28,15 @@ model User {
   accounts            Account[]            // NextAuth OAuth 账户
   sessions            Session[]            // NextAuth 会话
   createdAt           DateTime             @default(now())
+
+  // PolyOiyen relations
+  polyTransactions    PolyTransaction[]
+  createdMarkets      Market[]             @relation("MarketCreator")
+  orders              Order[]
+  positions           Position[]
+  resolutions         Resolution[]         @relation("MarketResolver")
+  polyBets            PolyBet[]
+  polyAlerts          PolyAlert[]
 }
 
 // NextAuth Account 模型（用于 OAuth）
@@ -164,4 +175,198 @@ enum Role {
   STUDENT
   ADMIN
   INVESTOR
+  USER
+}
+
+enum UserStatus {
+  ACTIVE
+  BANNED
+}
+
+enum MarketStatus {
+  OPEN
+  CLOSED
+  RESOLVED
+}
+
+enum MarketResolution {
+  YES
+  NO
+}
+
+enum OrderType {
+  BUY
+  SELL
+}
+
+enum OrderStatus {
+  OPEN
+  FILLED
+  CANCELLED
+}
+
+enum PolyTransactionType {
+  DEPOSIT
+  WITHDRAW
+  TRADE
+}
+
+// ─────────────────────────────────────────────
+// PolyOiyen Models
+// ─────────────────────────────────────────────
+
+// Wallet transaction history (balance stored on User.walletBalance)
+model PolyTransaction {
+  id           Int                  @id @default(autoincrement())
+  userId       Int
+  user         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type         PolyTransactionType
+  amount       Decimal              @db.Decimal(18, 6)
+  balanceAfter Decimal              @db.Decimal(18, 6)
+  createdAt    DateTime             @default(now())
+
+  @@index([userId])
+}
+
+// Prediction market
+model Market {
+  id          Int              @id @default(autoincrement())
+  title       String
+  description String?
+  category    String?
+  creatorId   Int
+  creator     User             @relation("MarketCreator", fields: [creatorId], references: [id])
+  endDate     DateTime
+  status      MarketStatus     @default(OPEN)
+  resolution  MarketResolution?
+  createdAt   DateTime         @default(now())
+  outcomes    Outcome[]
+  orders      Order[]
+  positions   Position[]
+  resolutionRecord Resolution?
+
+  @@index([creatorId])
+  @@index([status])
+}
+
+// Possible outcomes of a market (e.g. YES / NO)
+model Outcome {
+  id          Int       @id @default(autoincrement())
+  marketId    Int
+  market      Market    @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  name        String    // e.g. "YES", "NO", "Candidate A"
+  price       Decimal   @db.Decimal(10, 6)  // probability price 0–1
+  totalShares Decimal   @default(0) @db.Decimal(18, 6)
+  orders      Order[]
+  positions   Position[]
+  resolutions Resolution[] @relation("WinningOutcome")
+
+  @@index([marketId])
+}
+
+// Trading order placed by a user
+model Order {
+  id         Int         @id @default(autoincrement())
+  userId     Int
+  user       User        @relation(fields: [userId], references: [id])
+  marketId   Int
+  market     Market      @relation(fields: [marketId], references: [id])
+  outcomeId  Int
+  outcome    Outcome     @relation(fields: [outcomeId], references: [id])
+  orderType  OrderType
+  price      Decimal     @db.Decimal(10, 6)
+  shares     Decimal     @db.Decimal(18, 6)
+  status     OrderStatus @default(OPEN)
+  createdAt  DateTime    @default(now())
+  buyTrades  Trade[]     @relation("BuyOrder")
+  sellTrades Trade[]     @relation("SellOrder")
+
+  @@index([userId])
+  @@index([marketId])
+  @@index([outcomeId])
+  @@index([status])
+}
+
+// Executed trade matching a buy and sell order
+model Trade {
+  id          Int      @id @default(autoincrement())
+  buyOrderId  Int
+  buyOrder    Order    @relation("BuyOrder", fields: [buyOrderId], references: [id])
+  sellOrderId Int
+  sellOrder   Order    @relation("SellOrder", fields: [sellOrderId], references: [id])
+  price       Decimal  @db.Decimal(10, 6)
+  shares      Decimal  @db.Decimal(18, 6)
+  executedAt  DateTime @default(now())
+
+  @@index([buyOrderId])
+  @@index([sellOrderId])
+}
+
+// User's current holdings per outcome
+model Position {
+  id          Int      @id @default(autoincrement())
+  userId      Int
+  user        User     @relation(fields: [userId], references: [id])
+  marketId    Int
+  market      Market   @relation(fields: [marketId], references: [id])
+  outcomeId   Int
+  outcome     Outcome  @relation(fields: [outcomeId], references: [id])
+  sharesOwned Decimal  @default(0) @db.Decimal(18, 6)
+
+  @@unique([userId, marketId, outcomeId])   // one position per (user, market, outcome)
+  @@index([userId])
+  @@index([marketId])
+}
+
+// Market resolution record
+model Resolution {
+  id               Int      @id @default(autoincrement())
+  marketId         Int      @unique
+  market           Market   @relation(fields: [marketId], references: [id])
+  winningOutcomeId Int
+  winningOutcome   Outcome  @relation("WinningOutcome", fields: [winningOutcomeId], references: [id])
+  resolvedAt       DateTime @default(now())
+  resolvedBy       Int      // FK → User
+  resolver         User     @relation("MarketResolver", fields: [resolvedBy], references: [id])
+
+  @@index([winningOutcomeId])
+  @@index([resolvedBy])
+}
+
+// PolyOiyen: user bets on Polymarket events (persisted)
+model PolyBet {
+  id              Int      @id @default(autoincrement())
+  userId          Int
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  eventId         String   // Polymarket event id (slug or condition_id)
+  marketQuestion  String   // snapshot of the question
+  side            String   // "YES" or "NO"
+  amount          Decimal  @db.Decimal(18, 6)
+  shares          Decimal  @db.Decimal(18, 6)
+  price           Decimal  @db.Decimal(10, 6)  // avg price per share
+  createdAt       DateTime @default(now())
+
+  @@index([userId])
+  @@index([eventId])
+}
+
+// PolyOiyen: user price & large-order alerts
+model PolyAlert {
+  id             Int      @id @default(autoincrement())
+  userId         Int
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  eventId        String   // Polymarket event id
+  tokenId        String   // CLOB token id for the outcome being watched
+  marketQuestion String
+  alertType      String   // "PRICE" or "LARGE_ORDER"
+  side           String   // "YES" or "NO"
+  targetPrice    Decimal? @db.Decimal(10, 6)  // for PRICE alerts: trigger when price crosses this
+  threshold      Decimal? @db.Decimal(18, 6)  // for LARGE_ORDER: min $ size to trigger
+  triggered      Boolean  @default(false)
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  triggeredAt    DateTime?
+
+  @@index([userId])
+  @@index([eventId])
 }

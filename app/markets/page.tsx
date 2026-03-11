@@ -764,7 +764,7 @@ export default function MarketsPage() {
           </Link>
 
           <div style={{ display: 'flex', gap: '32px' }}>
-            {['Markets', 'Portfolio', 'Research', 'Pricing'].map(item => (
+            {['Markets', 'Portfolio', 'Research', 'Pricing', "PolyOiyen"].map(item => (
               <Link 
                 key={item} 
                 href={`/${item.toLowerCase()}`} 

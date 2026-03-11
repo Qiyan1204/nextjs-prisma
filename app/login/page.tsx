@@ -28,7 +28,18 @@ export default function LoginPage() {
       const data = await response.json();
 
       if (response.ok) {
-        router.push("/markets");
+        // Debug: 打印用户角色
+        console.log("User logged in:", data.user);
+        console.log("User role:", data.user?.role);
+        
+        // ── Admin routing: if API returns { role: "ADMIN" }, go to admin panel ──
+        if (data.user?.role === "ADMIN") {
+          console.log("Redirecting to admin panel...");
+          router.push("/admin/polymanage");
+        } else {
+          console.log("Redirecting to markets...");
+          router.push("/markets");
+        }
         router.refresh();
       } else {
         setError(data.error || "Login failed");
