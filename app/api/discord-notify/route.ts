@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
     description = `Large **${side}** order ≥ **${thresholdStr}** detected in order book`;
   }
 
-  const marketUrl = eventId ? `https://polyoiyen.com/polyoiyen?eventId=${eventId}` : null;
+  const marketUrl = eventId ? `https://oiyen.quadrawebs.com/polyoiyen?eventId=${eventId}` : null;
 
   const timestamp = triggeredAt ? new Date(triggeredAt).toISOString() : new Date().toISOString();
 
