@@ -187,7 +187,7 @@ function AlertCard({ alert, currentPrice, isTriggered, onDismiss }: AlertCardPro
       <div style={{ flex: 1, minWidth: 0 }}>
         {/* Market question */}
         <a
-          href={`/polyoiyen?eventId=${alert.eventId}`}
+          href={`/oiyen.quadrawebs.com/polyoiyen?eventId=${alert.eventId}`}
           style={{
             display: "block",
             fontSize: 14,
