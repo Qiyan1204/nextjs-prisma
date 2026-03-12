@@ -477,13 +477,17 @@ export default function PolyNotificationPage() {
     }
   }, [alerts, fetchPrices, fetchOrderBooks]);
 
-  // Send Discord webhook for newly triggered alerts
+  // Send Discord webhook for newly triggered alerts (server-side via PUT /api/polyalerts)
+  // We rely on `a.triggered` (DB field) as the deduplication flag — once the server marks
+  // it triggered, the DB field is true on next fetch so we never double-send.
   useEffect(() => {
     if (loading) return;
     alerts.forEach((a) => {
       if (a.active === false) return;
-      const triggered =
-        a.triggered ||
+      // Skip alerts already marked triggered in the DB — the server already notified Discord
+      if (a.triggered) return;
+
+      const clientTriggered =
         (a.alertType === "LARGE_ORDER" && largeOrderHit[a.id] === true) ||
         (a.alertType === "PRICE" &&
           a.targetPrice !== null &&
@@ -492,23 +496,27 @@ export default function PolyNotificationPage() {
             ? prices[a.eventId].yesPrice >= Number(a.targetPrice)
             : prices[a.eventId].noPrice >= Number(a.targetPrice)));
 
-      if (triggered && !notifiedIds.current.has(a.id)) {
+      if (clientTriggered && !notifiedIds.current.has(a.id)) {
         notifiedIds.current.add(a.id);
-        fetch("/api/discord-notify", {
-          method: "POST",
+        // Call PUT — server marks triggered=true in DB AND fires Discord webhook atomically
+        fetch("/api/polyalerts", {
+          method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            alertType: a.alertType,
-            side: a.side,
-            marketQuestion: a.marketQuestion,
-            targetPrice: a.targetPrice,
-            threshold: a.threshold,
-            triggeredAt: a.triggeredAt,
-            eventId: a.eventId,
-          }),
-        }).catch(() => {
-          // silent fail — don't disrupt the UI
-        });
+          body: JSON.stringify({ id: a.id }),
+        })
+          .then(() => {
+            // Optimistically update local state so card shows as triggered
+            setAlerts((prev) =>
+              prev.map((x) =>
+                x.id === a.id
+                  ? { ...x, triggered: true, triggeredAt: new Date().toISOString() }
+                  : x
+              )
+            );
+          })
+          .catch(() => {
+            // silent fail — don't disrupt the UI
+          });
       }
     });
   }, [alerts, prices, largeOrderHit, loading]);

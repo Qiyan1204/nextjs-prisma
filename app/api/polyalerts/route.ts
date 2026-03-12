@@ -106,6 +106,74 @@ export async function DELETE(req: NextRequest) {
   }
 }
 
+// PUT: mark a single alert as triggered=true AND fire Discord webhook
+export async function PUT(req: NextRequest) {
+  try {
+    const authUser = await getAuthUser();
+    if (!authUser) {
+      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    }
+
+    const body = await req.json();
+    const { id } = body;
+    if (!id) {
+      return NextResponse.json({ error: "Missing id" }, { status: 400 });
+    }
+
+    const alert = await prisma.polyAlert.findUnique({ where: { id: Number(id) } });
+    if (!alert || alert.userId !== authUser.userId) {
+      return NextResponse.json({ error: "Alert not found" }, { status: 404 });
+    }
+
+    // Idempotent: if already triggered, skip discord but return success
+    if (!alert.triggered) {
+      const now = new Date();
+      await prisma.polyAlert.update({
+        where: { id: Number(id) },
+        data: { triggered: true, triggeredAt: now },
+      });
+
+      // Fire Discord webhook server-side
+      const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+      if (webhookUrl) {
+        const isPriceAlert = alert.alertType === "PRICE";
+        const sideEmoji = alert.side === "YES" ? "✅" : "❌";
+        let description = "";
+        if (isPriceAlert) {
+          const targetPct = alert.targetPrice != null ? `${Math.round(Number(alert.targetPrice) * 100)}¢` : "—";
+          description = `**${alert.side}** price reached **${targetPct}** target`;
+        } else {
+          const thresholdStr = alert.threshold != null ? `$${Number(alert.threshold).toLocaleString()}` : "—";
+          description = `Large **${alert.side}** order ≥ **${thresholdStr}** detected in order book`;
+        }
+        const marketUrl = `https://oiyen.quadrawebs.com/polyoiyen?eventId=${alert.eventId}`;
+        const discordPayload = {
+          embeds: [
+            {
+              title: `${sideEmoji} Alert Triggered!`,
+              description: `**Market:** ${alert.marketQuestion}\n${description}\n[View Market](${marketUrl})`,
+              color: alert.side === "YES" ? 0x34d399 : 0xf87171,
+              footer: { text: "PolyOiyen Alerts" },
+              timestamp: now.toISOString(),
+            },
+          ],
+        };
+        // Fire-and-forget — don't block response
+        fetch(webhookUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(discordPayload),
+        }).catch(() => {});
+      }
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error("Trigger alert error:", error);
+    return NextResponse.json({ error: "Failed to trigger alert" }, { status: 500 });
+  }
+}
+
 // PATCH: mark alert(s) as read (triggered=true, active=false) or dismiss
 export async function PATCH(req: NextRequest) {
   try {
