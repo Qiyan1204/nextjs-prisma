@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { getAuthUser } from "@/lib/auth";
+import { checkAndTriggerLargeOrderAlerts } from "@/lib/triggerAlerts";
 
 // GET: fetch user's bets, positions, or check if a large order exists
 // ?positions=true → computed grouped portfolio positions
@@ -185,6 +186,13 @@ export async function POST(req: NextRequest) {
         category: category ? String(category) : "Other",
       },
     });
+
+    // Check if this bet triggers any user's LARGE_ORDER alerts (any user, not just the bettor)
+    if (betType === "BUY") {
+      checkAndTriggerLargeOrderAlerts(String(eventId), String(side), Number(amount)).catch((err) =>
+        console.error("Alert trigger check failed:", err)
+      );
+    }
 
     return NextResponse.json({ bet }, { status: 201 });
   } catch (error) {
