@@ -1,5 +1,6 @@
 "use client";
 import { useState, useEffect, useRef, useCallback } from "react";
+import PolyHeader from "../PolyHeader";
 
 /* ─── Types ──────────────────────────────────────────────────────────────── */
 interface NewsArticle {
@@ -33,43 +34,6 @@ function timeAgo(dateStr: string) {
   const hrs = Math.floor(mins / 60);
   if (hrs < 24) return `${hrs}h ago`;
   return `${Math.floor(hrs / 24)}d ago`;
-}
-
-/* ─── NavBar ─────────────────────────────────────────────────────────────── */
-function NavBar() {
-  const links = [
-    { label: "Oiyen.Invest", href: "/markets" },
-    { label: "Market", href: "/polyoiyen" },
-    { label: "Portfolio", href: "/polyoiyen/PolyPortfolio" },
-    { label: "News", href: "/polyoiyen/PolyNews", active: true },
-    { label: "Notification", href: "/polyoiyen/PolyNotification" },
-  ];
-  return (
-    <nav style={{
-      position: "sticky", top: 0, zIndex: 100,
-      background: "rgba(22,12,3,0.96)", backdropFilter: "blur(12px)",
-      borderBottom: "1px solid rgba(249,115,22,0.13)",
-      display: "flex", alignItems: "center", justifyContent: "space-between",
-      padding: "0 28px", height: 56,
-    }}>
-      <span style={{
-        fontFamily: "'DM Serif Display', serif", fontSize: 20,
-        color: "#f97316", fontWeight: 400, letterSpacing: "-0.01em",
-      }}>Oiyen</span>
-      <div style={{ display: "flex", gap: 4 }}>
-        {links.map((l) => (
-          <a key={l.label} href={l.href} style={{
-            padding: "6px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600,
-            textDecoration: "none",
-            color: l.active ? "#f97316" : "rgba(255,255,255,0.65)",
-            background: l.active ? "rgba(249,115,22,0.12)" : "transparent",
-            border: l.active ? "1px solid rgba(249,115,22,0.25)" : "1px solid transparent",
-            transition: "all 0.15s",
-          }}>{l.label}</a>
-        ))}
-      </div>
-    </nav>
-  );
 }
 
 /* ─── News Banner (auto-slide carousel) ──────────────────────────────────── */
@@ -225,7 +189,7 @@ export default function PolyNewsPage() {
   return (
     <div className="poly-news-root">
       <style>{GLOBAL_CSS}</style>
-      <NavBar />
+      <PolyHeader active="News" />
 
       <div className="poly-news-container">
         {/* Section Header */}

@@ -1,5 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
+import PolyHeader from "./PolyHeader";
 
 // ═══════════════════════════════════════════════════════
 //  TYPES
@@ -921,21 +922,7 @@ function DetailPage({
 
   return (
     <div style={{ background: "var(--bg)", minHeight: "100vh", fontFamily: "'DM Sans', sans-serif", color: "white" }}>
-      <nav className="nav">
-        <div className="nav-left">
-          <div className="nav-logo" onClick={onBack}>
-            <img src="/oiyen-logo.png" alt="PolyOiyen" className="nav-logo-img" />
-            <span className="nav-name">PolyOiyen</span>
-          </div>
-          <span className="nav-divider">|</span>
-          <div className="nav-links">
-            <a href="/markets" className="nav-link">📈 Oiyen.Invest</a>
-            <span className="nav-link active">🏪 Market</span>
-            <a href="/polyoiyen/PolyPortfolio" className="nav-link">📊 PolyPortfolio</a>
-            <a href="/polyoiyen/PolyNews" className="nav-link">📰 PolyNews</a>
-            <a href="/polyoiyen/PolyNotification" className="nav-link">🔔 Notification</a>
-          </div>
-        </div>
+      <PolyHeader active="Market">
         <button onClick={onBack} style={{
           display: "flex", alignItems: "center", gap: 5, fontSize: 12, fontWeight: 500,
           color: "var(--muted)", background: "none", border: "none", cursor: "pointer",
@@ -946,7 +933,7 @@ function DetailPage({
           </svg>
           All Markets
         </button>
-      </nav>
+      </PolyHeader>
 
       <div style={{ maxWidth: 1260, margin: "0 auto", padding: "24px 28px 80px" }}>
 
@@ -1603,21 +1590,7 @@ function ListPage({ onSelect }: { onSelect: (e: PolyEvent) => void }) {
 
   return (
     <div style={{ background: "var(--bg)", minHeight: "100vh", fontFamily: "'DM Sans', sans-serif", color: "white" }}>
-      <nav className="nav">
-        <div className="nav-left">
-          <div className="nav-logo">
-            <img src="/oiyen-logo.png" alt="PolyOiyen" className="nav-logo-img" />
-            <span className="nav-name">PolyOiyen</span>
-          </div>
-          <span className="nav-divider">|</span>
-          <div className="nav-links">
-            <a href="/markets" className="nav-link">📈 Oiyen.Invest</a>
-            <span className="nav-link active">🏪 Market</span>
-            <a href="/polyoiyen/PolyPortfolio" className="nav-link">📊 PolyPortfolio</a>
-            <a href="/polyoiyen/PolyNews" className="nav-link">📰 PolyNews</a>
-            <a href="/polyoiyen/PolyNotification" className="nav-link">🔔 PolyNotification</a>
-          </div>
-        </div>
+      <PolyHeader active="Market">
         <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
           <div style={{ textAlign: "center" }}>
             <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 13, fontWeight: 700, color: "var(--orange)" }}>{events.length}</div>
@@ -1645,7 +1618,7 @@ function ListPage({ onSelect }: { onSelect: (e: PolyEvent) => void }) {
             Join Discord
           </a>
         </div>
-      </nav>
+      </PolyHeader>
 
       <div style={{ maxWidth: 1180, margin: "0 auto", padding: "32px 24px 80px" }}>
         <div style={{ marginBottom: 36 }}>
