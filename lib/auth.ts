@@ -2,7 +2,7 @@
 import { cookies } from "next/headers";
 import { NextRequest } from "next/server";
 import jwt from "jsonwebtoken";
-import { NextAuthOptions } from "next-auth";
+import { getServerSession, NextAuthOptions } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
 import CredentialsProvider from "next-auth/providers/credentials";
 import { PrismaAdapter } from "@next-auth/prisma-adapter";
@@ -137,11 +137,53 @@ export async function setAuthCookie(payload: TokenPayload) {
 export async function getAuthUser(): Promise<TokenPayload | null> {
   const cookieStore = await cookies();
   const token = cookieStore.get("auth-token")?.value;
-  if (!token) return null;
-  return verifyToken(token);
+
+  if (token) {
+    const authUser = verifyToken(token);
+    if (authUser) {
+      return authUser;
+    }
+  }
+
+  const session = await getServerSession(authOptions);
+  const sessionEmail = session?.user?.email;
+
+  if (!sessionEmail) {
+    return null;
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { email: sessionEmail },
+    select: {
+      id: true,
+      email: true,
+      role: true,
+    },
+  });
+
+  if (!user) {
+    return null;
+  }
+
+  return {
+    userId: user.id,
+    email: user.email,
+    role: user.role,
+  };
 }
 
 export async function clearAuthCookie() {
   const cookieStore = await cookies();
   cookieStore.delete("auth-token");
+
+  const cookieNames = cookieStore.getAll().map((cookie) => cookie.name);
+  for (const cookieName of cookieNames) {
+    if (
+      cookieName.startsWith("next-auth") ||
+      cookieName.startsWith("__Secure-next-auth") ||
+      cookieName.startsWith("__Host-next-auth")
+    ) {
+      cookieStore.delete(cookieName);
+    }
+  }
 }
