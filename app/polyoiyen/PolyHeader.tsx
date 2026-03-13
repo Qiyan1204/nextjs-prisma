@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { signOut } from "next-auth/react";
 
 interface User {
   id: number;
@@ -44,13 +45,16 @@ export default function PolyHeader({ active, children }: { active: string; child
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
-
   async function handleLogout() {
-    await fetch("/api/auth/logout", { method: "POST" });
-    setUser(null);
-    setIsLoggedIn(false);
-    setShowMenu(false);
-    router.push("/");
+      await Promise.all([
+        fetch("/api/auth/logout", { method: "POST" }),
+        signOut({ redirect: false }),
+      ]);
+      setUser(null);
+      setIsLoggedIn(false);
+      setShowMenu(false);
+      router.push("/");
+      router.refresh();
   }
 
   return (

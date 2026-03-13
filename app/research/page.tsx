@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useAuth } from "@/app/hooks/useAuth";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { signOut } from "next-auth/react";
 import {
   LineChart,
   Line,
@@ -265,10 +266,14 @@ export default function ResearchPage() {
   // Handle logout
   async function handleLogout() {
     try {
-      await fetch("/api/auth/logout", { method: "POST" });
+        await Promise.all([
+          fetch("/api/auth/logout", { method: "POST" }),
+          signOut({ redirect: false }),
+        ]);
       await refetch();
       setShowProfileMenu(false);
       router.push("/");
+        router.refresh();
     } catch (error) {
       console.error("Logout failed:", error);
     }

@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/app/hooks/useAuth";
+import { signOut } from "next-auth/react";
 
 // Alternative.me API for Fear & Greed (no key required)
 const SENTIMENT_API = 'https://api.alternative.me/fng/?limit=1';
@@ -121,14 +122,17 @@ export default function MarketsPage() {
   const [orderSymbol, setOrderSymbol] = useState('');
   const [orderShares, setOrderShares] = useState('');
   const [orderPrice, setOrderPrice] = useState<number | null>(null);
-
   // Handle logout
   async function handleLogout() {
     try {
-      await fetch("/api/auth/logout", { method: "POST" });
+        await Promise.all([
+          fetch("/api/auth/logout", { method: "POST" }),
+          signOut({ redirect: false }),
+        ]);
       await refetch();
       setShowProfileMenu(false);
       router.push("/");
+        router.refresh();
     } catch (error) {
       console.error("Logout failed:", error);
     }

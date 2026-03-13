@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/app/hooks/useAuth";
 import { useState, useRef, useEffect } from "react";
+import { signOut } from "next-auth/react";
 
 export default function ProfilePage() {
   const router = useRouter();
@@ -65,7 +66,10 @@ export default function ProfilePage() {
 
   async function handleLogout() {
     try {
-      await fetch("/api/auth/logout", { method: "POST" });
+        await Promise.all([
+          fetch("/api/auth/logout", { method: "POST" }),
+          signOut({ redirect: false }),
+        ]);
       router.push("/");
       router.refresh();
     } catch (error) {
