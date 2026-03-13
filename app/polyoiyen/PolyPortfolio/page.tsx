@@ -312,7 +312,7 @@ export default function PolyPortfolioPage() {
   const [prices, setPrices] = useState<Record<string, PriceInfo>>({});
   const [loading, setLoading] = useState(true);
   const [tradeTarget, setTradeTarget] = useState<{ pos: Position; mode: "BUY" | "SELL" } | null>(null);
-  const [historyFilter, setHistoryFilter] = useState<"ALL" | "BUY" | "SELL" | "CLAIM">("ALL");
+  const [historyFilter, setHistoryFilter] = useState<"ALL" | "BUY" | "SELL" >("ALL");
 
   // Fetch positions + bets
   const fetchData = useCallback(async () => {
@@ -688,7 +688,7 @@ export default function PolyPortfolioPage() {
                     <span>📋</span> Activity History
                   </h2>
                   <div style={{ display: "flex", gap: 5 }}>
-                    {(["ALL", "BUY", "SELL", "CLAIM"] as const).map((f) => (
+                    {(["ALL", "BUY", "SELL"] as const).map((f) => (
                       <button key={f}
                         className={`pp-filter-btn${historyFilter === f ? " active" : ""}`}
                         onClick={() => setHistoryFilter(f)}
