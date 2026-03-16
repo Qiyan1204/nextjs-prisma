@@ -1,3 +1,13 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// PUBLIC ROUTE — No auth required.
+//
+// If you use Next.js middleware (middleware.ts) to protect routes, add this
+// path to the public allow-list. Example:
+//
+//   const PUBLIC_PATHS = ['/', '/learn-more', '/login', '/signup'];
+//   if (PUBLIC_PATHS.includes(req.nextUrl.pathname)) return NextResponse.next();
+//
+// ─────────────────────────────────────────────────────────────────────────────
 "use client";
 
 import Link from "next/link";
@@ -77,15 +87,7 @@ export default function LearnMore() {
         }
         .nav-back:hover { color: #f97316; }
 
-        /* ════════════════════════════════════════
-           HERO — Hard-cut split, editorial style
-           Left: white + dot texture  (Invest)
-           Right: #1c0f05 + grid      (PolyOiyen)
-           Seam: 1px orange rule + floating connector pill
-           Content on each side leans toward the center
-        ════════════════════════════════════════ */
-
-        /* Full-page split background — persists behind ALL sections */
+        /* Full-page split background */
         .page-split-bg {
           position: fixed; inset: 0; z-index: -1; pointer-events: none;
         }
@@ -105,23 +107,17 @@ export default function LearnMore() {
         /* LEFT — white Invest panel */
         .hero-left {
           background: transparent;
-          display: flex;
-          flex-direction: column;
-          /* center content horizontally toward the seam */
-          align-items: flex-end;
-          justify-content: center;
+          display: flex; flex-direction: column;
+          align-items: flex-end; justify-content: center;
           padding: 120px 80px 80px 60px;
-          position: relative;
-          overflow: hidden;
+          position: relative; overflow: hidden;
         }
-        /* dot grid texture */
         .hero-left::before {
           content: '';
           position: absolute; inset: 0; pointer-events: none;
           background-image: radial-gradient(circle, rgba(249,115,22,0.1) 1.2px, transparent 1.2px);
           background-size: 24px 24px;
         }
-        /* soft bottom-left warm wash */
         .hero-left::after {
           content: '';
           position: absolute; bottom: -100px; left: -100px;
@@ -132,7 +128,6 @@ export default function LearnMore() {
         .hero-left-content {
           position: relative; z-index: 2;
           width: 100%; max-width: 360px;
-          /* right-align so text leans toward the center seam */
           text-align: right;
           display: flex; flex-direction: column; align-items: flex-end;
         }
@@ -140,15 +135,11 @@ export default function LearnMore() {
         /* RIGHT — dark brown PolyOiyen panel */
         .hero-right {
           background: transparent;
-          display: flex;
-          flex-direction: column;
-          align-items: flex-start;
-          justify-content: center;
+          display: flex; flex-direction: column;
+          align-items: flex-start; justify-content: center;
           padding: 120px 60px 80px 80px;
-          position: relative;
-          overflow: hidden;
+          position: relative; overflow: hidden;
         }
-        /* financial grid texture */
         .hero-right::before {
           content: '';
           position: absolute; inset: 0; pointer-events: none;
@@ -157,7 +148,6 @@ export default function LearnMore() {
             linear-gradient(90deg, rgba(249,115,22,0.045) 1px, transparent 1px);
           background-size: 44px 44px;
         }
-        /* orange bleed from the seam */
         .hero-right::after {
           content: '';
           position: absolute; top: 50%; left: -80px;
@@ -173,7 +163,7 @@ export default function LearnMore() {
           display: flex; flex-direction: column; align-items: flex-start;
         }
 
-        /* THE SEAM — sharp orange rule */
+        /* THE SEAM */
         .hero-seam {
           position: absolute; top: 0; bottom: 0;
           left: 50%; width: 1px;
@@ -189,7 +179,7 @@ export default function LearnMore() {
           z-index: 20; pointer-events: none;
         }
 
-        /* Connector pill — bridges both worlds */
+        /* Connector pill */
         .hero-connector {
           position: absolute; top: 50%; left: 50%;
           transform: translate(-50%, -50%);
@@ -204,15 +194,8 @@ export default function LearnMore() {
             0 4px 16px rgba(0,0,0,0.25);
           white-space: nowrap;
         }
-        .conn-side {
-          font-size: 11px; font-weight: 700;
-          color: rgba(255,255,255,0.9);
-          letter-spacing: 0.02em;
-        }
-        .conn-rule {
-          width: 1px; height: 14px;
-          background: rgba(255,255,255,0.35);
-        }
+        .conn-side { font-size: 11px; font-weight: 700; color: rgba(255,255,255,0.9); letter-spacing: 0.02em; }
+        .conn-rule { width: 1px; height: 14px; background: rgba(255,255,255,0.35); }
 
         /* Eyebrows */
         .eyebrow-light {
@@ -232,7 +215,6 @@ export default function LearnMore() {
           margin-bottom: 20px;
         }
 
-        /* Left titles */
         .hl-title {
           font-family: 'DM Serif Display', serif;
           font-size: clamp(26px, 3.2vw, 46px);
@@ -246,12 +228,8 @@ export default function LearnMore() {
           color: rgba(26,22,18,0.45); font-style: italic;
           margin-bottom: 14px; line-height: 1.4;
         }
-        .hl-desc {
-          font-size: 13.5px; color: rgba(26,22,18,0.55);
-          line-height: 1.75; margin-bottom: 26px;
-        }
+        .hl-desc { font-size: 13.5px; color: rgba(26,22,18,0.55); line-height: 1.75; margin-bottom: 26px; }
 
-        /* Right titles */
         .hr-title {
           font-family: 'DM Serif Display', serif;
           font-size: clamp(26px, 3.2vw, 46px);
@@ -265,12 +243,8 @@ export default function LearnMore() {
           color: rgba(255,255,255,0.32); font-style: italic;
           margin-bottom: 14px; line-height: 1.4;
         }
-        .hr-desc {
-          font-size: 13.5px; color: rgba(255,255,255,0.42);
-          line-height: 1.75; margin-bottom: 26px; font-weight: 300;
-        }
+        .hr-desc { font-size: 13.5px; color: rgba(255,255,255,0.42); line-height: 1.75; margin-bottom: 26px; font-weight: 300; }
 
-        /* CTA buttons */
         .btn-invest {
           display: inline-flex; align-items: center; gap: 7px;
           background: var(--orange); color: white;
@@ -290,7 +264,6 @@ export default function LearnMore() {
         }
         .btn-poly:hover { background: rgba(249,115,22,0.1); transform: translateY(-2px); }
 
-        /* scroll hint */
         .scroll-hint {
           position: absolute; bottom: 28px; left: 50%; transform: translateX(-50%);
           display: flex; flex-direction: column; align-items: center; gap: 5px;
@@ -303,7 +276,6 @@ export default function LearnMore() {
           50%      { transform: translateX(-50%) translateY(6px); }
         }
 
-        /* ── Sections — sit on top of the split bg ── */
         .section { padding: 100px 40px; max-width: 1160px; margin: 0 auto; position: relative; z-index: 1; }
         .section-label {
           display: inline-flex; align-items: center; gap: 8px;
@@ -318,7 +290,6 @@ export default function LearnMore() {
           border-radius: 20px;
           border: 1px solid rgba(26,22,18,0.08);
           overflow: hidden;
-          /* layered shadow = depth */
           box-shadow:
             0 1px 0 rgba(255,255,255,0.8) inset,
             0 2px 4px rgba(0,0,0,0.04),
@@ -330,7 +301,7 @@ export default function LearnMore() {
         .invest-badge {
           display: inline-block; font-size: 11px; font-weight: 700;
           letter-spacing: 0.1em; text-transform: uppercase;
-          color: #15803d; background: #dcfce7; border: 1px solid #bbf7d0;
+          color: #fb923c; background: #ffffff; border: 1px solid #fb923c;
           padding: 4px 12px; border-radius: 100px; margin-bottom: 18px;
         }
         .card-title {
@@ -345,10 +316,7 @@ export default function LearnMore() {
           background: #f5f0ea;
           border-left: 3px solid var(--orange);
           border-radius: 0 10px 10px 0; padding: 18px 22px; margin-top: 24px;
-          box-shadow:
-            0 1px 0 rgba(255,255,255,0.7) inset,
-            0 2px 8px rgba(0,0,0,0.05),
-            0 6px 20px rgba(249,115,22,0.06);
+          box-shadow: 0 1px 0 rgba(255,255,255,0.7) inset, 0 2px 8px rgba(0,0,0,0.05), 0 6px 20px rgba(249,115,22,0.06);
         }
         .philos-label { font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--orange); margin-bottom: 7px; }
         .philos-q { font-family: 'DM Serif Display', serif; font-size: 16px; font-style: italic; color: var(--ink); line-height: 1.4; }
@@ -366,21 +334,12 @@ export default function LearnMore() {
         .mini-chart {
           flex: 1; background: #ffffff; border-radius: 12px; padding: 18px;
           border: 1px solid rgba(22,163,74,0.12);
-          /* raised card look */
-          box-shadow:
-            0 1px 0 rgba(255,255,255,0.9) inset,
-            0 2px 0 rgba(22,163,74,0.05),
-            0 4px 12px rgba(0,0,0,0.07),
-            0 12px 28px rgba(0,0,0,0.05);
+          box-shadow: 0 1px 0 rgba(255,255,255,0.9) inset, 0 2px 0 rgba(22,163,74,0.05), 0 4px 12px rgba(0,0,0,0.07), 0 12px 28px rgba(0,0,0,0.05);
           transition: transform 0.2s, box-shadow 0.2s;
         }
         .mini-chart:hover {
           transform: translateY(-3px);
-          box-shadow:
-            0 1px 0 rgba(255,255,255,0.9) inset,
-            0 2px 0 rgba(22,163,74,0.05),
-            0 8px 20px rgba(0,0,0,0.1),
-            0 20px 40px rgba(0,0,0,0.07);
+          box-shadow: 0 1px 0 rgba(255,255,255,0.9) inset, 0 2px 0 rgba(22,163,74,0.05), 0 8px 20px rgba(0,0,0,0.1), 0 20px 40px rgba(0,0,0,0.07);
         }
         .mc-lbl { font-size: 10px; font-weight: 600; color: var(--ink-35); letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 10px; }
         .mc-val { font-family: 'DM Mono', monospace; font-size: 18px; font-weight: 500; color: var(--ink); margin-bottom: 3px; }
@@ -395,7 +354,6 @@ export default function LearnMore() {
           border-radius: 20px; overflow: hidden;
           border: 1px solid rgba(255,255,255,0.07);
           position: relative;
-          /* on dark bg: top white highlight + bottom dark press */
           box-shadow:
             0 1px 0 rgba(255,255,255,0.08) inset,
             0 -1px 0 rgba(0,0,0,0.5) inset,
@@ -428,10 +386,7 @@ export default function LearnMore() {
           background: rgba(255,255,255,0.04);
           border-left: 3px solid var(--orange);
           border-radius: 0 10px 10px 0; padding: 18px 22px; margin-top: 24px;
-          box-shadow:
-            0 1px 0 rgba(255,255,255,0.07) inset,
-            0 -1px 0 rgba(0,0,0,0.3) inset,
-            0 4px 14px rgba(0,0,0,0.25);
+          box-shadow: 0 1px 0 rgba(255,255,255,0.07) inset, 0 -1px 0 rgba(0,0,0,0.3) inset, 0 4px 14px rgba(0,0,0,0.25);
         }
         .poly-feat-item { display: flex; gap: 16px; padding: 18px 0; border-bottom: 1px solid rgba(255,255,255,0.06); }
         .poly-feat-item:last-child { border-bottom: none; }
@@ -444,23 +399,13 @@ export default function LearnMore() {
           border: 1px solid rgba(255,255,255,0.09);
           border-radius: 10px; padding: 14px 16px;
           transition: all 0.22s;
-          /* white top-edge highlight = glass raised effect on dark */
-          box-shadow:
-            0 1px 0 rgba(255,255,255,0.12) inset,
-            0 -1px 0 rgba(0,0,0,0.35) inset,
-            0 2px 6px rgba(0,0,0,0.3),
-            0 8px 20px rgba(0,0,0,0.2);
+          box-shadow: 0 1px 0 rgba(255,255,255,0.12) inset, 0 -1px 0 rgba(0,0,0,0.35) inset, 0 2px 6px rgba(0,0,0,0.3), 0 8px 20px rgba(0,0,0,0.2);
         }
         .mkt-card:hover {
           border-color: rgba(255,255,255,0.18);
           background: rgba(255,255,255,0.09);
           transform: translateY(-3px);
-          box-shadow:
-            0 1px 0 rgba(255,255,255,0.18) inset,
-            0 -1px 0 rgba(0,0,0,0.4) inset,
-            0 6px 14px rgba(0,0,0,0.35),
-            0 16px 36px rgba(0,0,0,0.25),
-            0 0 0 1px rgba(255,255,255,0.06);
+          box-shadow: 0 1px 0 rgba(255,255,255,0.18) inset, 0 -1px 0 rgba(0,0,0,0.4) inset, 0 6px 14px rgba(0,0,0,0.35), 0 16px 36px rgba(0,0,0,0.25), 0 0 0 1px rgba(255,255,255,0.06);
         }
         .mkt-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 9px; }
         .mkt-tag { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.04em; }
@@ -483,11 +428,7 @@ export default function LearnMore() {
           border: 1px solid rgba(26,22,18,0.07);
           border-radius: 20px; padding: 68px 60px;
           position: relative; overflow: hidden;
-          box-shadow:
-            0 1px 0 rgba(255,255,255,0.8) inset,
-            0 2px 4px rgba(0,0,0,0.04),
-            0 8px 24px rgba(0,0,0,0.07),
-            0 32px 64px rgba(0,0,0,0.06);
+          box-shadow: 0 1px 0 rgba(255,255,255,0.8) inset, 0 2px 4px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.07), 0 32px 64px rgba(0,0,0,0.06);
         }
         .syn-wrap::after {
           content: ''; position: absolute; top: -60px; left: -60px;
@@ -509,25 +450,14 @@ export default function LearnMore() {
           border: 1px solid rgba(26,22,18,0.07);
           border-radius: 14px; padding: 28px 24px;
           transition: all 0.22s; position: relative; overflow: hidden;
-          box-shadow:
-            0 1px 0 rgba(255,255,255,0.9) inset,
-            0 2px 6px rgba(0,0,0,0.05),
-            0 8px 20px rgba(0,0,0,0.05);
+          box-shadow: 0 1px 0 rgba(255,255,255,0.9) inset, 0 2px 6px rgba(0,0,0,0.05), 0 8px 20px rgba(0,0,0,0.05);
         }
         .syn-card::before {
           content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
           background: linear-gradient(90deg, var(--orange), #fb923c);
           transform: scaleX(0); transform-origin: left; transition: transform 0.28s ease;
         }
-        .syn-card:hover {
-          transform: translateY(-5px);
-          border-color: rgba(249,115,22,0.2);
-          box-shadow:
-            0 1px 0 rgba(255,255,255,0.9) inset,
-            0 4px 12px rgba(0,0,0,0.08),
-            0 16px 40px rgba(0,0,0,0.09),
-            0 0 0 1px rgba(249,115,22,0.08);
-        }
+        .syn-card:hover { transform: translateY(-5px); border-color: rgba(249,115,22,0.2); box-shadow: 0 1px 0 rgba(255,255,255,0.9) inset, 0 4px 12px rgba(0,0,0,0.08), 0 16px 40px rgba(0,0,0,0.09), 0 0 0 1px rgba(249,115,22,0.08); }
         .syn-card:hover::before { transform: scaleX(1); }
         .syn-num { font-family: 'DM Mono', monospace; font-size: 32px; color: var(--orange); opacity: 0.15; line-height: 1; margin-bottom: 14px; }
         .syn-card-title { font-size: 15px; font-weight: 700; color: var(--ink); margin-bottom: 8px; }
@@ -536,10 +466,7 @@ export default function LearnMore() {
         .flow-node {
           background: #f5f0ea;
           border: 1px solid rgba(26,22,18,0.1); border-radius: 10px; padding: 14px 20px; text-align: center; min-width: 120px;
-          box-shadow:
-            0 1px 0 rgba(255,255,255,0.8) inset,
-            0 2px 6px rgba(0,0,0,0.07),
-            0 6px 16px rgba(0,0,0,0.05);
+          box-shadow: 0 1px 0 rgba(255,255,255,0.8) inset, 0 2px 6px rgba(0,0,0,0.07), 0 6px 16px rgba(0,0,0,0.05);
         }
         .flow-node-lbl { font-size: 10px; color: var(--ink-35); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 3px; }
         .flow-node-title { font-size: 13.5px; font-weight: 700; color: var(--ink); }
@@ -547,6 +474,175 @@ export default function LearnMore() {
         .flow-node.mid .flow-node-lbl { color: rgba(255,255,255,0.35); }
         .flow-node.mid .flow-node-title { color: white; }
         .flow-arr { padding: 0 8px; color: var(--orange); }
+
+        /* ════════════════════════════════════════
+           HOW TO PLAY — Split side-by-side cards
+        ════════════════════════════════════════ */
+        .howto-wrap {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 20px;
+        }
+
+        /* Invest side — white card */
+        .howto-invest {
+          background: #ffffff;
+          border-radius: 20px;
+          border: 1px solid rgba(26,22,18,0.08);
+          overflow: hidden;
+          box-shadow:
+            0 1px 0 rgba(255,255,255,0.8) inset,
+            0 2px 4px rgba(0,0,0,0.04),
+            0 8px 24px rgba(0,0,0,0.07),
+            0 32px 64px rgba(0,0,0,0.06);
+        }
+
+        /* Poly side — dark card */
+        .howto-poly {
+          background: var(--poly-bg);
+          border-radius: 20px;
+          border: 1px solid rgba(255,255,255,0.07);
+          overflow: hidden;
+          position: relative;
+          box-shadow:
+            0 1px 0 rgba(255,255,255,0.08) inset,
+            0 -1px 0 rgba(0,0,0,0.5) inset,
+            0 4px 8px rgba(0,0,0,0.4),
+            0 20px 50px rgba(0,0,0,0.35);
+        }
+        .howto-poly::before {
+          content: ''; position: absolute; top: -80px; right: -80px;
+          width: 360px; height: 360px;
+          background: radial-gradient(circle, rgba(249,115,22,0.1) 0%, transparent 65%);
+          pointer-events: none;
+        }
+
+        .howto-header {
+          padding: 40px 40px 0;
+        }
+        .howto-title {
+          font-family: 'DM Serif Display', serif;
+          font-size: clamp(20px, 2.2vw, 30px);
+          line-height: 1.15;
+          letter-spacing: -0.02em;
+          margin-bottom: 8px;
+        }
+        .howto-title-light { color: var(--ink); }
+        .howto-title-dark  { color: #ffffff; }
+        .howto-title span  { color: var(--orange); }
+        .howto-tagline {
+          font-size: 12.5px;
+          line-height: 1.6;
+          margin-bottom: 0;
+        }
+        .howto-tagline-light { color: var(--ink-60); }
+        .howto-tagline-dark  { color: rgba(255,255,255,0.4); font-weight: 300; }
+
+        /* Step list */
+        .howto-steps {
+          padding: 28px 40px 40px;
+          display: flex;
+          flex-direction: column;
+          gap: 0;
+        }
+        .howto-step {
+          display: flex;
+          gap: 18px;
+          padding: 20px 0;
+          position: relative;
+        }
+        /* Connector line between steps */
+        .howto-step:not(:last-child)::after {
+          content: '';
+          position: absolute;
+          left: 17px;
+          top: 52px;
+          width: 2px;
+          bottom: 0;
+          background: linear-gradient(to bottom, rgba(249,115,22,0.25), transparent);
+        }
+
+        .step-icon-wrap {
+          flex-shrink: 0;
+          width: 36px;
+          height: 36px;
+          border-radius: 10px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-family: 'DM Mono', monospace;
+          font-size: 12px;
+          font-weight: 500;
+          margin-top: 2px;
+        }
+        .step-icon-light {
+          background: #fff7ed;
+          border: 1.5px solid #fed7aa;
+          color: var(--orange);
+        }
+        .step-icon-dark {
+          background: rgba(249,115,22,0.12);
+          border: 1.5px solid rgba(249,115,22,0.25);
+          color: #fb923c;
+        }
+
+        .step-body { flex: 1; }
+        .step-title-light { font-size: 13.5px; font-weight: 700; color: var(--ink); margin-bottom: 5px; }
+        .step-title-dark  { font-size: 13.5px; font-weight: 700; color: rgba(255,255,255,0.9); margin-bottom: 5px; }
+        .step-desc-light  { font-size: 12.5px; color: var(--ink-60); line-height: 1.65; }
+        .step-desc-dark   { font-size: 12.5px; color: rgba(255,255,255,0.38); line-height: 1.65; font-weight: 300; }
+
+        /* Tip box at bottom of each card */
+        .howto-tip {
+          margin: 0 40px 40px;
+          border-radius: 12px;
+          padding: 16px 20px;
+          display: flex;
+          gap: 12px;
+          align-items: flex-start;
+        }
+        .howto-tip-light {
+          background: #f5f0ea;
+          border: 1px solid rgba(249,115,22,0.15);
+        }
+        .howto-tip-dark {
+          background: rgba(249,115,22,0.07);
+          border: 1px solid rgba(249,115,22,0.18);
+        }
+        .tip-icon {
+          width: 28px; height: 28px; border-radius: 8px;
+          display: flex; align-items: center; justify-content: center;
+          flex-shrink: 0; margin-top: 1px;
+          background: rgba(249,115,22,0.12);
+        }
+        .tip-label {
+          font-size: 9.5px; font-weight: 800; letter-spacing: 0.1em;
+          text-transform: uppercase; color: var(--orange); margin-bottom: 4px;
+        }
+        .tip-text-light { font-size: 12px; color: var(--ink-60); line-height: 1.6; }
+        .tip-text-dark  { font-size: 12px; color: rgba(255,255,255,0.38); line-height: 1.6; font-weight: 300; }
+
+        /* section header above How to Play */
+        .howto-section-head {
+          text-align: center;
+          margin-bottom: 36px;
+        }
+        .howto-section-title {
+          font-family: 'DM Serif Display', serif;
+          font-size: clamp(24px, 3vw, 38px);
+          color: var(--ink);
+          line-height: 1.15;
+          letter-spacing: -0.02em;
+          margin-bottom: 10px;
+        }
+        .howto-section-title span { color: var(--orange); }
+        .howto-section-sub {
+          font-size: 14px;
+          color: var(--ink-60);
+          max-width: 420px;
+          margin: 0 auto;
+          line-height: 1.7;
+        }
 
         /* ── CTA ── */
         .cta-wrap {
@@ -599,6 +695,10 @@ export default function LearnMore() {
           .cta-wrap { padding: 52px 28px; }
           .section { padding: 60px 20px; }
           .nav { padding: 0 20px; }
+          .howto-wrap { grid-template-columns: 1fr; }
+          .howto-header { padding: 32px 28px 0; }
+          .howto-steps { padding: 20px 28px 32px; }
+          .howto-tip { margin: 0 28px 32px; }
         }
       `}</style>
 
@@ -619,11 +719,7 @@ export default function LearnMore() {
 
       {/* ════════════════ HERO ════════════════ */}
       <section className="hero">
-
-        {/* The vertical seam line */}
         <div className="hero-seam" />
-
-        {/* Connector pill straddling the seam */}
         <div className="hero-connector">
           <span className="conn-side">Oiyen.Invest</span>
           <span className="conn-rule" />
@@ -676,7 +772,6 @@ export default function LearnMore() {
           </div>
         </div>
 
-        {/* Scroll hint */}
         <div className="scroll-hint">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><polyline points="6 9 12 15 18 9"/></svg>
           Scroll to explore
@@ -812,6 +907,139 @@ export default function LearnMore() {
             <div className="flow-node mid"><div className="flow-node-lbl">Unified</div><div className="flow-node-title">Your Account</div></div>
             <div className="flow-arr"><svg width="30" height="14" viewBox="0 0 30 14" fill="none"><path d="M0 7h26M20 1l8 6-8 6" stroke="currentColor" strokeWidth="1.5"/></svg></div>
             <div className="flow-node"><div className="flow-node-lbl">Product</div><div className="flow-node-title">PolyOiyen</div></div>
+          </div>
+        </div>
+      </div>
+
+      {/* ════════════════════════════════════════
+          Section 4: HOW TO PLAY 
+      ════════════════════════════════════════ */}
+      <div className="section" style={{ paddingTop: 0 }}>
+        <div id="s-howto" data-animate className={`fade-up${v("s-howto") ? " visible" : ""}`}>
+
+          {/* Section header */}
+          <div className="howto-section-head">
+            <div className="section-label" style={{ justifyContent:"center" }}>
+              <div className="label-line" />How to Play<div className="label-line" />
+            </div>
+            <h2 className="howto-section-title"><span>Your Step-by-Step Playbook</span></h2>
+            <p className="howto-section-sub">Whether you're growing wealth steadily or calling the next big market move — here's exactly how to get started.</p>
+          </div>
+
+          <div className="howto-wrap">
+
+            {/* ── LEFT: Oiyen.Invest ── */}
+            <div className="howto-invest">
+              <div className="howto-header">
+                <div className="invest-badge" style={{ marginBottom: 14 }}>Oiyen · Invest</div>
+                <h3 className="howto-title howto-title-light">
+                  How to Play<br /><span>Oiyen.Invest</span>
+                </h3>
+                <p className="howto-tagline howto-tagline-light">
+                  Build and grow your portfolio in four simple steps.
+                </p>
+              </div>
+
+              <div className="howto-steps">
+                {[
+                  {
+                    n: "01",
+                    t: "Fund Your Wallet",
+                    d: "Deposit funds into your unified Oiyen account via bank transfer, card, or crypto. Your balance is shared across both products.",
+                  },
+                  {
+                    n: "02",
+                    t: "Browse & Pick Assets",
+                    d: "Explore global stocks, ETFs, and top cryptocurrencies. Use our discovery tools to filter by sector, risk level, or return history.",
+                  },
+                  {
+                    n: "03",
+                    t: "Allocate with One Click",
+                    d: "Select your amount and confirm. Your position is live instantly. No complex order books — just clean, direct allocation.",
+                  },
+                  {
+                    n: "04",
+                    t: "Track & Rebalance",
+                    d: "Monitor your P&L in real time. When the market shifts, rebalance your holdings to stay aligned with your risk profile.",
+                  },
+                ].map((s) => (
+                  <div key={s.n} className="howto-step">
+                    <div className={`step-icon-wrap step-icon-light`}>{s.n}</div>
+                    <div className="step-body">
+                      <div className="step-title-light">{s.t}</div>
+                      <div className="step-desc-light">{s.d}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="howto-tip howto-tip-light">
+                <div className="tip-icon">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#f97316" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                </div>
+                <div>
+                  <div className="tip-label">Pro Tip</div>
+                  <p className="tip-text-light">Start with a diversified basket of 3–5 assets. Let compound returns do the heavy lifting while you layer in more positions over time.</p>
+                </div>
+              </div>
+            </div>
+
+            {/* ── RIGHT: PolyOiyen ── */}
+            <div className="howto-poly">
+              <div className="howto-header" style={{ position: "relative", zIndex: 1 }}>
+                <div className="poly-badge" style={{ marginBottom: 14 }}>PolyOiyen · Prediction Markets</div>
+                <h3 className="howto-title howto-title-dark">
+                  How to Play<br /><span>PolyOiyen</span>
+                </h3>
+                <p className="howto-tagline howto-tagline-dark">
+                  Turn your market instincts into real, tradeable edge.
+                </p>
+              </div>
+
+              <div className="howto-steps" style={{ position: "relative", zIndex: 1 }}>
+                {[
+                  {
+                    n: "01",
+                    t: "Browse Open Markets",
+                    d: "Discover prediction markets across macro events, equities, crypto, and more. Each market poses a real yes/no question about a future outcome.",
+                  },
+                  {
+                    n: "02",
+                    t: "Form Your View",
+                    d: "Analyze the current odds. If you believe YES is underpriced or NO is overpriced, that's your edge. Conviction is your currency here.",
+                  },
+                  {
+                    n: "03",
+                    t: "Buy YES or NO Shares",
+                    d: "Place your bet by buying YES or NO shares using your wallet balance. Shares are priced 0–100¢ based on collective probability estimates.",
+                  },
+                  {
+                    n: "04",
+                    t: "Resolve & Collect",
+                    d: "When the event resolves, correct predictions pay out at 100¢ per share. Wrong side pays zero. Sharp thinking pays — every time.",
+                  },
+                ].map((s) => (
+                  <div key={s.n} className="howto-step">
+                    <div className={`step-icon-wrap step-icon-dark`}>{s.n}</div>
+                    <div className="step-body">
+                      <div className="step-title-dark">{s.t}</div>
+                      <div className="step-desc-dark">{s.d}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="howto-tip howto-tip-dark" style={{ position: "relative", zIndex: 1 }}>
+                <div className="tip-icon">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#f97316" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                </div>
+                <div>
+                  <div className="tip-label">Pro Tip</div>
+                  <p className="tip-text-dark">Look for markets where your edge from Oiyen.Invest research gives you an information advantage. Cross-product insight is your biggest weapon.</p>
+                </div>
+              </div>
+            </div>
+
           </div>
         </div>
       </div>

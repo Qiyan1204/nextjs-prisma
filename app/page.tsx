@@ -19,7 +19,7 @@ export default function Home() {
 
   function handleLearnMore() {
     if (loading) return;
-    router.push(isLoggedIn ? "/learn_more" : "/login");
+    router.push("/learn_more"); 
   }
 
   function handlePolyOiyen() {
@@ -315,7 +315,7 @@ export default function Home() {
         /* ── PolyOiyen Section ── */
         .poly-section {
           padding: 80px 20px;
-          background: #0f172a;
+          background: rgba(22,12,3,0.92);
           position: relative;
           overflow: hidden;
         }
