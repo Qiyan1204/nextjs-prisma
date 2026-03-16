@@ -21,13 +21,20 @@ const NAV_LINKS = [
   { label: "🔔 Notification", href: "/polyoiyen/PolyNotification" },
 ];
 
+const MORE_LINKS = [
+  { label: "🏆 Leaderboard", href: "/polyoiyen/PolyLeaderboard", active: "Leaderboard" },
+  { label: "🎁 Reward", href: "/polyoiyen/PolyReward", active: "Reward" },
+];
+
 export default function PolyHeader({ active, children }: { active: string; children?: React.ReactNode }) {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [loading, setLoading] = useState(true);
   const [showMenu, setShowMenu] = useState(false);
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const moreRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     fetch("/api/auth/me")
@@ -41,6 +48,7 @@ export default function PolyHeader({ active, children }: { active: string; child
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) setShowMenu(false);
+      if (moreRef.current && !moreRef.current.contains(e.target as Node)) setShowMoreMenu(false);
     }
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
@@ -83,6 +91,46 @@ export default function PolyHeader({ active, children }: { active: string; child
         }
         .poly-header-link:hover { color: rgba(255,255,255,0.9); background: rgba(255,255,255,0.05); }
         .poly-header-link.active { color: #f97316; background: rgba(249,115,22,0.08); }
+        .poly-header-more-wrap { position: relative; }
+        .poly-header-more-btn {
+          border: none;
+          background: none;
+        }
+        .poly-header-more-menu {
+          position: absolute;
+          top: calc(100% + 8px);
+          right: 0;
+          min-width: 180px;
+          border-radius: 10px;
+          padding: 6px;
+          background: #1e1108;
+          border: 1px solid rgba(249,115,22,0.2);
+          box-shadow: 0 8px 30px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.04) inset;
+          animation: polyMenuIn 0.15s ease-out;
+          z-index: 220;
+        }
+        .poly-header-more-item {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          width: 100%;
+          padding: 9px 12px;
+          border-radius: 7px;
+          text-decoration: none;
+          font-size: 13px;
+          font-weight: 600;
+          color: rgba(255,255,255,0.72);
+          transition: all 0.15s;
+          white-space: nowrap;
+        }
+        .poly-header-more-item:hover {
+          color: rgba(255,255,255,0.95);
+          background: rgba(249,115,22,0.08);
+        }
+        .poly-header-more-item.active {
+          color: #f97316;
+          background: rgba(249,115,22,0.12);
+        }
         .poly-header-right { display: flex; align-items: center; gap: 12px; }
         .poly-profile-btn {
           width: 36px; height: 36px; border-radius: 50%;
@@ -143,6 +191,28 @@ export default function PolyHeader({ active, children }: { active: string; child
                 {l.label}
               </Link>
             ))}
+            <div className="poly-header-more-wrap" ref={moreRef}>
+              <button
+                className={`poly-header-link poly-header-more-btn${active === "Leaderboard" || active === "Reward" ? " active" : ""}`}
+                onClick={() => setShowMoreMenu((v) => !v)}
+              >
+                ➕ More
+              </button>
+              {showMoreMenu && (
+                <div className="poly-header-more-menu">
+                  {MORE_LINKS.map((item) => (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      className={`poly-header-more-item${active === item.active ? " active" : ""}`}
+                      onClick={() => setShowMoreMenu(false)}
+                    >
+                      {item.label}
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
 

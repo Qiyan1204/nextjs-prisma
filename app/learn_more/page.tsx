@@ -719,12 +719,6 @@ export default function LearnMore() {
 
       {/* ════════════════ HERO ════════════════ */}
       <section className="hero">
-        <div className="hero-seam" />
-        <div className="hero-connector">
-          <span className="conn-side">Oiyen.Invest</span>
-          <span className="conn-rule" />
-          <span className="conn-side">PolyOiyen</span>
-        </div>
 
         {/* LEFT — Invest */}
         <div className="hero-left">
