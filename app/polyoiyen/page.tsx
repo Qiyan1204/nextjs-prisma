@@ -86,12 +86,53 @@ interface LargeOrderItem {
   total: number;
 }
 
+interface PredictorsHistoryPoint {
+  label: string;
+  windowStart: string;
+  windowEnd: string;
+  uniquePredictors: number;
+  tradeCount: number;
+  notional: number;
+}
+
+interface PredictorsStats {
+  conditionId: string;
+  uniquePredictors: number;
+  totalTrades: number;
+  totalTradeNotional: number;
+  marketVolume: number;
+  averageTradeSizePerUser: number;
+  averageObservedTradeSizePerUser: number;
+  signal: "retail_hype" | "whale_accumulation" | "balanced";
+  history: {
+    daily: PredictorsHistoryPoint[];
+    weekly: PredictorsHistoryPoint[];
+  };
+  analysisWindow: {
+    daily: { startDate: string; endDate: string; days: number };
+    weekly: { startDate: string; endDate: string; weeks: number };
+  };
+  diagnostics?: {
+    fetchedTrades: number;
+    scannedPages: number;
+    pageSize: number;
+    firstTradeDate: string | null;
+    lastTradeDate: string | null;
+    nonZeroDailyPoints: number;
+    nonZeroWeeklyPoints: number;
+    tradesInDailyWindow: number;
+    tradesInWeeklyWindow: number;
+  };
+  fetchedAt: string;
+}
+
 const LIMIT = 12;
 const TAG_OPTIONS = [
   "All", "Politics", "Sports", "Crypto", "Pop Culture",
   "Business", "Science", "Technology",
 ];
 const LARGE_ORDER_THRESHOLD = 500; // default $500 for "large" orders
+const BOOKMARK_STORAGE_KEY = "polyoiyen-bookmarks-v1";
 
 // ═══════════════════════════════════════════════════════
 //  GLOBAL STYLES
@@ -281,6 +322,13 @@ function formatSize(s: number): string {
   if (s >= 1_000_000) return `${(s / 1_000_000).toFixed(1)}M`;
   if (s >= 1_000) return `${(s / 1_000).toFixed(1)}K`;
   return s.toFixed(1);
+}
+
+function formatMoney(v: number): string {
+  if (!Number.isFinite(v)) return "$0";
+  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
+  if (v >= 1_000) return `$${(v / 1_000).toFixed(1)}K`;
+  return `$${v.toFixed(2)}`;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -758,15 +806,284 @@ function LargeOrderBanner({ items }: { items: LargeOrderItem[] }) {
   );
 }
 
+function PredictorsPerMarketPanel({
+  conditionId,
+  volume,
+  tokenIds,
+}: {
+  conditionId?: string;
+  volume?: number;
+  tokenIds?: { yes: string; no: string };
+}) {
+  const [yesStats, setYesStats] = useState<PredictorsStats | null>(null);
+  const [noStats, setNoStats] = useState<PredictorsStats | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [interval, setInterval] = useState<"day" | "week">("day");
+
+  useEffect(() => {
+    const cid = conditionId;
+    const yesId = tokenIds?.yes || "";
+    const noId = tokenIds?.no || "";
+
+    if (!yesId || !noId) {
+      setYesStats(null);
+      setNoStats(null);
+      setError("This market has incomplete CLOB token IDs, so YES/NO comparison cannot be loaded.");
+      return;
+    }
+
+    let alive = true;
+    async function fetchPredictors() {
+      setLoading(true);
+      setError("");
+      try {
+        const buildParams = (assetId: string) => {
+          const params = new URLSearchParams();
+          if (cid) params.set("conditionId", String(cid));
+          params.set("assetIds", assetId);
+          params.set("volume", String(volume || 0));
+          params.set("limit", "250");
+          params.set("maxPages", "60");
+          return params;
+        };
+
+        const [yesRes, noRes] = await Promise.all([
+          fetch(`/api/polymarket/predictors?${buildParams(yesId).toString()}`),
+          fetch(`/api/polymarket/predictors?${buildParams(noId).toString()}`),
+        ]);
+
+        if (!yesRes.ok || !noRes.ok) {
+          const failed = !yesRes.ok ? yesRes : noRes;
+          let msg = "Failed to fetch YES/NO predictors metrics";
+          try {
+            const body = await failed.json();
+            if (body?.error) msg = String(body.error);
+          } catch {
+            // ignore
+          }
+          throw new Error(msg);
+        }
+
+        const [yesData, noData]: [PredictorsStats, PredictorsStats] = await Promise.all([
+          yesRes.json(),
+          noRes.json(),
+        ]);
+        if (!alive) return;
+        setYesStats(yesData);
+        setNoStats(noData);
+      } catch (e) {
+        if (!alive) return;
+        setError(e instanceof Error ? e.message : "Could not load predictors metrics right now.");
+      } finally {
+        if (alive) setLoading(false);
+      }
+    }
+
+    fetchPredictors();
+    return () => {
+      alive = false;
+    };
+  }, [conditionId, volume, tokenIds?.yes, tokenIds?.no]);
+
+  const yesHistory = interval === "day" ? (yesStats?.history.daily || []) : (yesStats?.history.weekly || []);
+  const noHistory = interval === "day" ? (noStats?.history.daily || []) : (noStats?.history.weekly || []);
+  const maxPredictors = Math.max(
+    ...yesHistory.map(h => h.uniquePredictors),
+    ...noHistory.map(h => h.uniquePredictors),
+    1
+  );
+  const rangeLabel = yesStats
+    ? interval === "day"
+      ? `${yesStats.analysisWindow.daily.startDate} to ${yesStats.analysisWindow.daily.endDate} (${yesStats.analysisWindow.daily.days} days)`
+      : `${yesStats.analysisWindow.weekly.startDate} to ${yesStats.analysisWindow.weekly.endDate} (${yesStats.analysisWindow.weekly.weeks} weeks)`
+    : "";
+  const noDataInWindow = yesStats && noStats
+    ? interval === "day"
+      ? (yesStats.diagnostics?.tradesInDailyWindow || 0) + (noStats.diagnostics?.tradesInDailyWindow || 0) === 0
+      : (yesStats.diagnostics?.tradesInWeeklyWindow || 0) + (noStats.diagnostics?.tradesInWeeklyWindow || 0) === 0
+    : false;
+
+  return (
+    <div className="card" style={{ padding: "20px 24px" }}>
+      <SectionTitle icon="🧠" text="Predictors per Market" />
+
+      {loading && (
+        <div style={{ fontSize: 13, color: "var(--muted)" }}><span className="spin" /> Loading predictors metrics...</div>
+      )}
+
+      {!loading && error && (
+        <div style={{ fontSize: 13, color: "var(--no)" }}>{error}</div>
+      )}
+
+      {!loading && !error && yesStats && noStats && (
+        <>
+          <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+            {([
+              ["day", "Daily view"],
+              ["week", "Weekly view"],
+            ] as const).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setInterval(key)}
+                style={{
+                  padding: "7px 12px",
+                  borderRadius: 7,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  border: interval === key ? "1px solid var(--yes-bdr)" : "1px solid var(--bdr)",
+                  background: interval === key ? "var(--yes-dim)" : "rgba(255,255,255,0.03)",
+                  color: interval === key ? "var(--yes)" : "var(--muted)",
+                  cursor: "pointer",
+                  fontFamily: "'DM Sans', sans-serif",
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <div style={{
+            marginBottom: 12,
+            padding: "9px 11px",
+            borderRadius: 8,
+            border: "1px solid var(--bdr)",
+            background: "rgba(255,255,255,0.02)",
+            fontSize: 11,
+            color: "var(--muted)",
+            fontFamily: "'DM Mono', monospace",
+          }}>
+            Analysis Window: {rangeLabel}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px,1fr))", gap: 10, marginBottom: 12 }}>
+            {[
+              { label: "YES Predictors", value: yesStats.uniquePredictors.toLocaleString() },
+              { label: "NO Predictors", value: noStats.uniquePredictors.toLocaleString() },
+              { label: "YES Trades", value: yesStats.totalTrades.toLocaleString() },
+              { label: "NO Trades", value: noStats.totalTrades.toLocaleString() },
+            ].map((item) => (
+              <div key={item.label} style={{
+                padding: "10px 12px", borderRadius: 9,
+                background: "rgba(255,255,255,0.03)", border: "1px solid var(--bdr)",
+              }}>
+                <div style={{ fontSize: 10, color: "var(--dim)", letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 4 }}>{item.label}</div>
+                <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 15, color: "var(--text)", fontWeight: 600 }}>{item.value}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
+            <div style={{ padding: "9px 11px", borderRadius: 8, border: "1px solid var(--yes-bdr)", background: "var(--yes-dim)", color: "var(--yes)", fontSize: 11.5, fontWeight: 700 }}>
+              YES Signal: {yesStats.signal}
+            </div>
+            <div style={{ padding: "9px 11px", borderRadius: 8, border: "1px solid var(--no-bdr)", background: "var(--no-dim)", color: "var(--no)", fontSize: 11.5, fontWeight: 700 }}>
+              NO Signal: {noStats.signal}
+            </div>
+          </div>
+
+          {noDataInWindow && (
+            <div style={{
+              marginBottom: 12,
+              padding: "10px 12px",
+              borderRadius: 9,
+              background: "rgba(251,191,36,0.08)",
+              border: "1px solid var(--warn-bdr)",
+              color: "var(--warn)",
+              fontSize: 11.5,
+              lineHeight: 1.5,
+            }}>
+              Current window has no trades on both YES and NO sides, so chart values are 0.
+              {yesStats.diagnostics?.lastTradeDate ? ` Last YES trade date: ${yesStats.diagnostics.lastTradeDate}.` : ""}
+              {noStats.diagnostics?.lastTradeDate ? ` Last NO trade date: ${noStats.diagnostics.lastTradeDate}.` : ""}
+            </div>
+          )}
+
+          {yesHistory.length > 0 || noHistory.length > 0 ? (
+            <div>
+              <div style={{ fontSize: 10, color: "var(--dim)", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 }}>
+                Predictors per Market Chart YES vs NO ({interval === "day" ? "10-day view" : "10-week view"})
+              </div>
+              <div style={{
+                height: 170,
+                display: "flex",
+                alignItems: "flex-end",
+                gap: 6,
+                padding: "10px 10px 6px",
+                borderRadius: 10,
+                background: "rgba(255,255,255,0.02)",
+                border: "1px solid var(--bdr)",
+              }}>
+                {yesHistory.map((p, i) => {
+                  const noPoint = noHistory[i] || {
+                    label: p.label,
+                    windowStart: p.windowStart,
+                    windowEnd: p.windowEnd,
+                    uniquePredictors: 0,
+                    tradeCount: 0,
+                    notional: 0,
+                  };
+                  const yesH = Math.max(8, Math.round((p.uniquePredictors / maxPredictors) * 130));
+                  const noH = Math.max(8, Math.round((noPoint.uniquePredictors / maxPredictors) * 130));
+                  return (
+                    <div key={`${p.windowStart}-${p.windowEnd}`} style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                      <div style={{ fontSize: 9, color: "var(--dim)", fontFamily: "'DM Mono', monospace" }}>
+                        Y:{p.uniquePredictors} N:{noPoint.uniquePredictors}
+                      </div>
+                      <div style={{ display: "flex", alignItems: "flex-end", gap: 3, width: "100%", justifyContent: "center" }}>
+                        <div
+                          title={`YES ${p.windowStart} ~ ${p.windowEnd} • ${p.uniquePredictors} predictors • ${p.tradeCount} trades`}
+                          style={{
+                            width: 10,
+                            height: yesH,
+                            borderRadius: "6px 6px 3px 3px",
+                            background: "linear-gradient(180deg, #34d399 0%, #059669 100%)",
+                            boxShadow: "0 3px 12px rgba(5,150,105,0.35)",
+                          }}
+                        />
+                        <div
+                          title={`NO ${noPoint.windowStart} ~ ${noPoint.windowEnd} • ${noPoint.uniquePredictors} predictors • ${noPoint.tradeCount} trades`}
+                          style={{
+                            width: 10,
+                            height: noH,
+                            borderRadius: "6px 6px 3px 3px",
+                            background: "linear-gradient(180deg, #f87171 0%, #dc2626 100%)",
+                            boxShadow: "0 3px 12px rgba(220,38,38,0.35)",
+                          }}
+                        />
+                      </div>
+                      <div style={{ fontSize: 9, color: "var(--dim)", fontFamily: "'DM Mono', monospace" }}>{p.label}</div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ display: "flex", gap: 12, marginTop: 8, fontSize: 10.5 }}>
+                <span style={{ color: "var(--yes)" }}>■ YES</span>
+                <span style={{ color: "var(--no)" }}>■ NO</span>
+              </div>
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: "var(--dim)" }}>No recent trades found for this market.</div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 // ═══════════════════════════════════════════════════════
 //  EVENT CARD
 // ═══════════════════════════════════════════════════════
 function EventCard({
   event,
   onSelect,
+  isBookmarked,
+  onToggleBookmark,
 }: {
   event: PolyEvent;
   onSelect: (e: PolyEvent) => void;
+  isBookmarked: boolean;
+  onToggleBookmark: (e: PolyEvent) => void;
 }) {
   const market = getActiveMarket(event.markets);
   const prices = market ? parsePrices(market) : { yes: 0.5, no: 0.5 };
@@ -774,6 +1091,39 @@ function EventCard({
 
   return (
     <div className="mcard" onClick={() => onSelect(event)}>
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggleBookmark(event);
+        }}
+        aria-label={isBookmarked ? "Remove favorite" : "Add favorites"}
+        title={isBookmarked ? "Remove favorite" : "Add favorites"}
+        style={{
+          position: "absolute",
+          top: 0,
+          right: 14,
+          width: 28,
+          height: 42,
+          border: "none",
+          cursor: "pointer",
+          clipPath: "polygon(0 0,100% 0,100% 84%,50% 100%,0 84%)",
+          background: isBookmarked
+            ? "linear-gradient(180deg,#f59e0b 0%,#b45309 100%)"
+            : "linear-gradient(180deg,rgba(255,255,255,0.22) 0%,rgba(255,255,255,0.08) 100%)",
+          color: "white",
+          boxShadow: isBookmarked
+            ? "0 5px 14px rgba(245,158,11,0.35)"
+            : "0 2px 8px rgba(0,0,0,0.24)",
+          zIndex: 2,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: 13,
+        }}
+      >
+        {isBookmarked ? "★" : "☆"}
+      </button>
+
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         {event.image && (
           <img src={event.image} alt="" style={{ width: 40, height: 40, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
@@ -829,9 +1179,13 @@ function EventCard({
 function DetailPage({
   event,
   onBack,
+  isBookmarked,
+  onToggleBookmark,
 }: {
   event: PolyEvent;
   onBack: () => void;
+  isBookmarked: boolean;
+  onToggleBookmark: (e: PolyEvent) => void;
 }) {
   const [side, setSide] = useState("YES");
   const [amount, setAmount] = useState("10");
@@ -841,6 +1195,7 @@ function DetailPage({
   const [loadingBets, setLoadingBets] = useState(true);
   const [largeOrders, setLargeOrders] = useState<LargeOrderItem[]>([]);
   const [detailTab, setDetailTab] = useState<"orderbook" | "positions">("orderbook");
+  const [showPredictors, setShowPredictors] = useState(false);
 
   const market = getActiveMarket(event.markets);
   const prices = market ? parsePrices(market) : { yes: 0.5, no: 0.5 };
@@ -941,7 +1296,38 @@ function DetailPage({
           {/* LEFT */}
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             {/* Market Header */}
-            <div className="card" style={{ padding: "26px 26px 22px" }}>
+            <div className="card" style={{ padding: "26px 26px 22px", position: "relative", overflow: "hidden" }}>
+              {/* Bookmark ribbon button */}
+              <button
+                onClick={() => onToggleBookmark(event)}
+                aria-label={isBookmarked ? "Remove bookmark" : "Add bookmark"}
+                title={isBookmarked ? "Remove bookmark" : "Add bookmark"}
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  right: 16,
+                  width: 32,
+                  height: 50,
+                  border: "none",
+                  cursor: "pointer",
+                  clipPath: "polygon(0 0,100% 0,100% 84%,50% 100%,0 84%)",
+                  background: isBookmarked
+                    ? "linear-gradient(180deg,#f59e0b 0%,#b45309 100%)"
+                    : "linear-gradient(180deg,rgba(255,255,255,0.22) 0%,rgba(255,255,255,0.08) 100%)",
+                  color: "white",
+                  boxShadow: isBookmarked
+                    ? "0 5px 14px rgba(245,158,11,0.35)"
+                    : "0 2px 8px rgba(0,0,0,0.24)",
+                  zIndex: 2,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 16,
+                  transition: "background 0.2s",
+                }}
+              >
+                {isBookmarked ? "★" : "☆"}
+              </button>
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
                 {event.image && (
                   <img src={event.image} alt="" style={{ width: 48, height: 48, borderRadius: 10, objectFit: "cover" }} />
@@ -1013,6 +1399,29 @@ function DetailPage({
                 <SectionTitle icon="📊" text="Description" />
                 <p style={{ fontSize: 13, lineHeight: 1.75, color: "rgba(255,255,255,0.65)" }}>{event.description}</p>
               </div>
+            )}
+
+            <div style={{ display: "flex", justifyContent: "flex-start" }}>
+              <button
+                onClick={() => setShowPredictors(prev => !prev)}
+                style={{
+                  padding: "9px 14px",
+                  borderRadius: 8,
+                  border: showPredictors ? "1px solid var(--yes-bdr)" : "1px solid var(--bdr)",
+                  background: showPredictors ? "var(--yes-dim)" : "rgba(255,255,255,0.04)",
+                  color: showPredictors ? "var(--yes)" : "var(--muted)",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  fontFamily: "'DM Sans', sans-serif",
+                  cursor: "pointer",
+                }}
+              >
+                📈 Predictors per Market
+              </button>
+            </div>
+
+            {showPredictors && (
+              <PredictorsPerMarketPanel conditionId={market?.conditionId} volume={event.volume} tokenIds={tokenIds} />
             )}
 
             {/* ORDER BOOK & POSITIONS TABS */}
@@ -1532,7 +1941,19 @@ function NewsSection() {
 // ═══════════════════════════════════════════════════════
 //  LIST PAGE
 // ═══════════════════════════════════════════════════════
-function ListPage({ onSelect }: { onSelect: (e: PolyEvent) => void }) {
+function ListPage({
+  onSelect,
+  bookmarkedIds,
+  bookmarkedEvents,
+  setBookmarkedEvents,
+  toggleBookmark,
+}: {
+  onSelect: (e: PolyEvent) => void;
+  bookmarkedIds: string[];
+  bookmarkedEvents: Record<string, PolyEvent>;
+  setBookmarkedEvents: React.Dispatch<React.SetStateAction<Record<string, PolyEvent>>>;
+  toggleBookmark: (e: PolyEvent) => void;
+}) {
   const [events, setEvents] = useState<PolyEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -1540,6 +1961,23 @@ function ListPage({ onSelect }: { onSelect: (e: PolyEvent) => void }) {
   const [hasMore, setHasMore] = useState(true);
   const [tag, setTag] = useState("All");
   const [search, setSearch] = useState("");
+  const [bookmarkFilter, setBookmarkFilter] = useState(false);
+
+  // Sync newly-loaded events into bookmarkedEvents cache
+  useEffect(() => {
+    if (bookmarkedIds.length === 0) return;
+    setBookmarkedEvents((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const e of events) {
+        if (bookmarkedIds.includes(e.id) && !next[e.id]) {
+          next[e.id] = e;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [events, bookmarkedIds, setBookmarkedEvents]);
 
   const fetchEvents = useCallback(
     async (currentOffset: number, append: boolean) => {
@@ -1579,14 +2017,20 @@ function ListPage({ onSelect }: { onSelect: (e: PolyEvent) => void }) {
     fetchEvents(offset, true);
   }
 
+  const sourceEvents = bookmarkFilter
+    ? bookmarkedIds
+        .map((id) => bookmarkedEvents[id])
+        .filter((e): e is PolyEvent => Boolean(e))
+    : events;
+
   const displayed = search
-    ? events.filter(
+    ? sourceEvents.filter(
         (e) =>
           e.title.toLowerCase().includes(search.toLowerCase()) ||
           e.description?.toLowerCase().includes(search.toLowerCase()) ||
           e.tags?.some((t) => t.label.toLowerCase().includes(search.toLowerCase()))
       )
-    : events;
+    : sourceEvents;
 
   return (
     <div style={{ background: "var(--bg)", minHeight: "100vh", fontFamily: "'DM Sans', sans-serif", color: "white" }}>
@@ -1652,6 +2096,39 @@ function ListPage({ onSelect }: { onSelect: (e: PolyEvent) => void }) {
               style={{ background: "transparent", border: "none", outline: "none", fontSize: 13, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", width: "100%" }} />
           </div>
           <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+            <button
+              onClick={() => setBookmarkFilter((v) => !v)}
+              style={{
+                position: "relative",
+                padding: "7px 14px 7px 18px",
+                borderRadius: 8,
+                fontSize: 12,
+                fontWeight: 700,
+                border: bookmarkFilter ? "1px solid rgba(245,158,11,0.55)" : "1px solid var(--bdr)",
+                background: bookmarkFilter
+                  ? "linear-gradient(135deg, rgba(245,158,11,0.2), rgba(180,83,9,0.18))"
+                  : "rgba(255,255,255,0.04)",
+                color: bookmarkFilter ? "#fbbf24" : "var(--muted)",
+                cursor: "pointer",
+                fontFamily: "'DM Sans', sans-serif",
+                transition: "all 0.15s",
+                overflow: "hidden",
+              }}
+            >
+              <span
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  top: 0,
+                  bottom: 0,
+                  width: 9,
+                  background: bookmarkFilter ? "#b45309" : "rgba(255,255,255,0.18)",
+                  clipPath: "polygon(0 0,100% 0,100% 100%,50% 86%,0 100%)",
+                }}
+              />
+              🔖 ({bookmarkedIds.length})
+            </button>
+
             {TAG_OPTIONS.map((t) => (
               <button key={t} onClick={() => setTag(t)} style={{
                 padding: "7px 14px", borderRadius: 8, fontSize: 12, fontWeight: 600,
@@ -1678,7 +2155,13 @@ function ListPage({ onSelect }: { onSelect: (e: PolyEvent) => void }) {
           <>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 16 }}>
               {displayed.map((e) => (
-                <EventCard key={e.id} event={e} onSelect={onSelect} />
+                <EventCard
+                  key={e.id}
+                  event={e}
+                  onSelect={onSelect}
+                  isBookmarked={bookmarkedIds.includes(e.id)}
+                  onToggleBookmark={toggleBookmark}
+                />
               ))}
             </div>
 
@@ -1712,14 +2195,59 @@ function ListPage({ onSelect }: { onSelect: (e: PolyEvent) => void }) {
 // ═══════════════════════════════════════════════════════
 export default function App() {
   const [currentEvent, setCurrentEvent] = useState<PolyEvent | null>(null);
+  const [bookmarkedIds, setBookmarkedIds] = useState<string[]>([]);
+  const [bookmarkedEvents, setBookmarkedEvents] = useState<Record<string, PolyEvent>>({});
+  const bookmarkSaveReady = useRef(false);
+
+  // Load bookmarks from localStorage on mount
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(BOOKMARK_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as { ids?: string[]; events?: Record<string, PolyEvent> };
+        if (Array.isArray(parsed.ids)) setBookmarkedIds(parsed.ids);
+        if (parsed.events && typeof parsed.events === "object") setBookmarkedEvents(parsed.events);
+      }
+    } catch { /* ignore invalid data */ }
+  }, []);
+
+  // Save bookmarks to localStorage — skip the very first run (initial mount with empty state)
+  // so we don't overwrite the just-loaded data before the state updates propagate.
+  useEffect(() => {
+    if (!bookmarkSaveReady.current) {
+      bookmarkSaveReady.current = true;
+      return;
+    }
+    localStorage.setItem(BOOKMARK_STORAGE_KEY, JSON.stringify({ ids: bookmarkedIds, events: bookmarkedEvents }));
+  }, [bookmarkedIds, bookmarkedEvents]);
+
+  function toggleBookmark(event: PolyEvent) {
+    const isOn = bookmarkedIds.includes(event.id);
+    setBookmarkedIds((prev) => (isOn ? prev.filter((id) => id !== event.id) : [event.id, ...prev]));
+    setBookmarkedEvents((prev) => {
+      if (isOn) { const next = { ...prev }; delete next[event.id]; return next; }
+      return { ...prev, [event.id]: event };
+    });
+  }
 
   return (
     <>
       <style>{GLOBAL_CSS}</style>
       {currentEvent ? (
-        <DetailPage event={currentEvent} onBack={() => setCurrentEvent(null)} />
+        <DetailPage
+          event={currentEvent}
+          onBack={() => setCurrentEvent(null)}
+          isBookmarked={bookmarkedIds.includes(currentEvent.id)}
+          onToggleBookmark={toggleBookmark}
+        />
       ) : (
-        <ListPage onSelect={setCurrentEvent} />
+        <ListPage
+          onSelect={setCurrentEvent}
+          bookmarkedIds={bookmarkedIds}
+          bookmarkedEvents={bookmarkedEvents}
+          setBookmarkedEvents={setBookmarkedEvents}
+          toggleBookmark={toggleBookmark}
+        />
       )}
     </>
   );

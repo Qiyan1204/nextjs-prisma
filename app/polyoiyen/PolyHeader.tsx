@@ -24,6 +24,7 @@ const NAV_LINKS = [
 const MORE_LINKS = [
   { label: "🏆 Leaderboard", href: "/polyoiyen/PolyLeaderboard", active: "Leaderboard" },
   { label: "🎁 Reward", href: "/polyoiyen/PolyReward", active: "Reward" },
+  { label: "🧩 MyAnalysis", href: "/polyoiyen/MyAnalysis", active: "MyAnalysis" },
 ];
 
 export default function PolyHeader({ active, children }: { active: string; children?: React.ReactNode }) {
