@@ -1,5 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useRouter } from "next/navigation";
 import PolyHeader from "./PolyHeader";
 
 // ═══════════════════════════════════════════════════════
@@ -15,7 +16,7 @@ interface PolyMarket {
   closed?: boolean;
 }
 
-interface PolyEvent {
+export interface PolyEvent {
   id: string;
   slug: string;
   title: string;
@@ -126,6 +127,29 @@ interface PredictorsStats {
   fetchedAt: string;
 }
 
+interface VolatilityPoint {
+  ts: number;
+  timeLabel: string;
+  windowStart: string;
+  windowEnd: string;
+  tradeCount: number;
+  notional: number;
+  yesTrades: number;
+  noTrades: number;
+  imbalanceRate: number;
+  volatilityRate: number;
+}
+
+interface VolatilityResponse {
+  range: "1H" | "6H" | "1D" | "1W" | "1M" | "ALL";
+  bucketSeconds: number;
+  startTime: string;
+  endTime: string;
+  points: VolatilityPoint[];
+}
+
+type VolatilityRange = "1H" | "6H" | "1D" | "1W" | "1M" | "ALL";
+
 const LIMIT = 12;
 const TAG_OPTIONS = [
   "All", "Politics", "Sports", "Crypto", "Pop Culture",
@@ -137,7 +161,7 @@ const BOOKMARK_STORAGE_KEY = "polyoiyen-bookmarks-v1";
 // ═══════════════════════════════════════════════════════
 //  GLOBAL STYLES
 // ═══════════════════════════════════════════════════════
-const GLOBAL_CSS = `
+export const GLOBAL_CSS = `
   @import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@400;500&display=swap');
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
@@ -329,6 +353,68 @@ function formatMoney(v: number): string {
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
   if (v >= 1_000) return `$${(v / 1_000).toFixed(1)}K`;
   return `$${v.toFixed(2)}`;
+}
+
+function mean(values: number[]): number {
+  if (values.length === 0) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function stdDev(values: number[]): number {
+  if (values.length === 0) return 0;
+  const avg = mean(values);
+  const variance = values.reduce((sum, value) => sum + (value - avg) ** 2, 0) / values.length;
+  return Math.sqrt(variance);
+}
+
+function zNormalize(values: number[]): number[] {
+  const avg = mean(values);
+  const sd = stdDev(values);
+  if (sd === 0) return values.map(() => 0);
+  return values.map((value) => (value - avg) / sd);
+}
+
+function pearson(xs: number[], ys: number[]): number {
+  if (xs.length !== ys.length || xs.length < 2) return 0;
+  const mx = mean(xs);
+  const my = mean(ys);
+  let num = 0;
+  let dx = 0;
+  let dy = 0;
+  for (let i = 0; i < xs.length; i += 1) {
+    const a = xs[i] - mx;
+    const b = ys[i] - my;
+    num += a * b;
+    dx += a * a;
+    dy += b * b;
+  }
+  const den = Math.sqrt(dx * dy);
+  return den > 0 ? num / den : 0;
+}
+
+function computeLagTable(
+  leader: number[],
+  follower: number[],
+  maxLag: number
+): Array<{ lag: number; correlation: number; sampleSize: number }> {
+  const table: Array<{ lag: number; correlation: number; sampleSize: number }> = [];
+  const n = Math.min(leader.length, follower.length);
+  for (let lag = -maxLag; lag <= maxLag; lag += 1) {
+    const a: number[] = [];
+    const b: number[] = [];
+    for (let i = 0; i < n; i += 1) {
+      const j = i + lag;
+      if (j < 0 || j >= n) continue;
+      a.push(leader[i]);
+      b.push(follower[j]);
+    }
+    table.push({
+      lag,
+      correlation: pearson(a, b),
+      sampleSize: a.length,
+    });
+  }
+  return table;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -820,6 +906,7 @@ function PredictorsPerMarketPanel({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [interval, setInterval] = useState<"day" | "week">("day");
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
   useEffect(() => {
     const cid = conditionId;
@@ -903,6 +990,21 @@ function PredictorsPerMarketPanel({
       ? (yesStats.diagnostics?.tradesInDailyWindow || 0) + (noStats.diagnostics?.tradesInDailyWindow || 0) === 0
       : (yesStats.diagnostics?.tradesInWeeklyWindow || 0) + (noStats.diagnostics?.tradesInWeeklyWindow || 0) === 0
     : false;
+  const hoveredYes = hoveredIndex != null ? yesHistory[hoveredIndex] : null;
+  const hoveredNo = hoveredIndex != null
+    ? noHistory[hoveredIndex] || {
+        label: hoveredYes?.label || "",
+        windowStart: hoveredYes?.windowStart || "",
+        windowEnd: hoveredYes?.windowEnd || "",
+        uniquePredictors: 0,
+        tradeCount: 0,
+        notional: 0,
+      }
+    : null;
+
+  useEffect(() => {
+    setHoveredIndex(null);
+  }, [interval, yesHistory.length, noHistory.length]);
 
   return (
     <div className="card" style={{ padding: "20px 24px" }}>
@@ -1026,7 +1128,12 @@ function PredictorsPerMarketPanel({
                   const yesH = Math.max(8, Math.round((p.uniquePredictors / maxPredictors) * 130));
                   const noH = Math.max(8, Math.round((noPoint.uniquePredictors / maxPredictors) * 130));
                   return (
-                    <div key={`${p.windowStart}-${p.windowEnd}`} style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                    <div
+                      key={`${p.windowStart}-${p.windowEnd}`}
+                      onMouseEnter={() => setHoveredIndex(i)}
+                      onMouseLeave={() => setHoveredIndex((current) => (current === i ? null : current))}
+                      style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}
+                    >
                       <div style={{ fontSize: 9, color: "var(--dim)", fontFamily: "'DM Mono', monospace" }}>
                         Y:{p.uniquePredictors} N:{noPoint.uniquePredictors}
                       </div>
@@ -1057,6 +1164,25 @@ function PredictorsPerMarketPanel({
                   );
                 })}
               </div>
+              {hoveredYes && hoveredNo && (
+                <div style={{
+                  marginTop: 10,
+                  padding: "10px 12px",
+                  borderRadius: 9,
+                  border: "1px solid var(--bdr)",
+                  background: "rgba(255,255,255,0.03)",
+                  fontSize: 11,
+                  color: "var(--muted)",
+                  fontFamily: "'DM Mono', monospace",
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+                  gap: 8,
+                }}>
+                  <div style={{ color: "var(--text)", fontWeight: 600 }}>{hoveredYes.windowStart} ~ {hoveredYes.windowEnd}</div>
+                  <div style={{ color: "var(--yes)" }}>YES: {hoveredYes.uniquePredictors} predictors · {hoveredYes.tradeCount} trades · {formatMoney(hoveredYes.notional)}</div>
+                  <div style={{ color: "var(--no)" }}>NO: {hoveredNo.uniquePredictors} predictors · {hoveredNo.tradeCount} trades · {formatMoney(hoveredNo.notional)}</div>
+                </div>
+              )}
               <div style={{ display: "flex", gap: 12, marginTop: 8, fontSize: 10.5 }}>
                 <span style={{ color: "var(--yes)" }}>■ YES</span>
                 <span style={{ color: "var(--no)" }}>■ NO</span>
@@ -1066,6 +1192,473 @@ function PredictorsPerMarketPanel({
             <div style={{ fontSize: 12, color: "var(--dim)" }}>No recent trades found for this market.</div>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+function VolatilityClusterPanel({ tokenIds }: { tokenIds?: { yes: string; no: string } }) {
+  const [range, setRange] = useState<VolatilityRange>("1W");
+  const [points, setPoints] = useState<VolatilityPoint[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+
+  useEffect(() => {
+    const yesId = tokenIds?.yes || "";
+    const noId = tokenIds?.no || "";
+    if (!yesId || !noId) {
+      setPoints([]);
+      setError("This market has incomplete CLOB token IDs, so Volatility Cluster cannot be loaded.");
+      return;
+    }
+
+    let alive = true;
+    async function fetchVolatility() {
+      setLoading(true);
+      setError("");
+      try {
+        const params = new URLSearchParams();
+        params.set("yesAssetId", yesId);
+        params.set("noAssetId", noId);
+        params.set("range", range);
+        params.set("limit", "300");
+        params.set("maxPages", "120");
+
+        const res = await fetch(`/api/polymarket/volatility?${params.toString()}`);
+        if (!res.ok) {
+          let msg = "Failed to fetch volatility cluster";
+          try {
+            const body = await res.json();
+            if (body?.error) msg = String(body.error);
+          } catch {
+            // ignore
+          }
+          throw new Error(msg);
+        }
+        const data: VolatilityResponse = await res.json();
+        if (!alive) return;
+        setPoints(Array.isArray(data.points) ? data.points : []);
+      } catch (e) {
+        if (!alive) return;
+        setPoints([]);
+        setError(e instanceof Error ? e.message : "Could not load volatility cluster data right now.");
+      } finally {
+        if (alive) setLoading(false);
+      }
+    }
+
+    fetchVolatility();
+    return () => {
+      alive = false;
+    };
+  }, [range, tokenIds?.yes, tokenIds?.no]);
+
+  useEffect(() => {
+    setHoveredIndex(null);
+  }, [range, points.length]);
+
+  const chartW = 860;
+  const chartH = 250;
+  const padL = 52;
+  const padR = 18;
+  const padT = 18;
+  const padB = 44;
+  const plotW = chartW - padL - padR;
+  const plotH = chartH - padT - padB;
+  const maxValue = Math.max(...points.map((p) => p.volatilityRate), 1);
+
+  const linePoints = points.map((p, i) => {
+    const x = padL + (points.length <= 1 ? plotW / 2 : (i / (points.length - 1)) * plotW);
+    const y = padT + (1 - p.volatilityRate / maxValue) * plotH;
+    return { x, y, point: p };
+  });
+
+  const line = linePoints.map((pt) => `${pt.x},${pt.y}`).join(" ");
+  const hovered = hoveredIndex != null ? linePoints[hoveredIndex] : null;
+
+  return (
+    <div className="card" style={{ padding: "20px 24px" }}>
+      <SectionTitle icon="📉" text="Volatility Cluster" />
+
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+        {(["1H", "6H", "1D", "1W", "1M", "ALL"] as VolatilityRange[]).map((key) => (
+          <button
+            key={key}
+            onClick={() => setRange(key)}
+            style={{
+              padding: "7px 12px",
+              borderRadius: 7,
+              fontSize: 11,
+              fontWeight: 700,
+              border: range === key ? "1px solid var(--yes-bdr)" : "1px solid var(--bdr)",
+              background: range === key ? "var(--yes-dim)" : "rgba(255,255,255,0.03)",
+              color: range === key ? "var(--yes)" : "var(--muted)",
+              cursor: "pointer",
+              fontFamily: "'DM Sans', sans-serif",
+            }}
+          >
+            {key}
+          </button>
+        ))}
+      </div>
+
+      {loading && <div style={{ fontSize: 13, color: "var(--muted)" }}><span className="spin" /> Loading volatility data...</div>}
+      {!loading && error && <div style={{ fontSize: 13, color: "var(--no)" }}>{error}</div>}
+
+      {!loading && !error && points.length > 0 && (
+        <>
+          <div style={{ fontSize: 10, color: "var(--dim)", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 }}>
+            Volatility Cluster Rate Line Chart ({range})
+          </div>
+          <div style={{ overflowX: "auto", border: "1px solid var(--bdr)", borderRadius: 10, background: "rgba(255,255,255,0.02)" }}>
+            <svg viewBox={`0 0 ${chartW} ${chartH}`} style={{ width: "100%", minWidth: 660, height: 250, display: "block" }}>
+              {[0, 25, 50, 75, 100].map((tick) => {
+                const y = padT + (1 - tick / 100) * plotH;
+                return (
+                  <g key={tick}>
+                    <line x1={padL} y1={y} x2={padL + plotW} y2={y} stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
+                    <text x={padL - 8} y={y + 4} textAnchor="end" fill="rgba(255,255,255,0.36)" fontSize="10" fontFamily="'DM Mono', monospace">
+                      {tick}
+                    </text>
+                  </g>
+                );
+              })}
+
+              <line x1={padL} y1={padT + plotH} x2={padL + plotW} y2={padT + plotH} stroke="rgba(255,255,255,0.2)" strokeWidth="1" />
+              <line x1={padL} y1={padT} x2={padL} y2={padT + plotH} stroke="rgba(255,255,255,0.2)" strokeWidth="1" />
+
+              <polyline
+                fill="none"
+                stroke="#34d399"
+                strokeWidth="2.4"
+                strokeLinejoin="round"
+                strokeLinecap="round"
+                points={line}
+              />
+
+              {linePoints.map((pt, i) => (
+                <g
+                  key={pt.point.ts}
+                  onMouseEnter={() => setHoveredIndex(i)}
+                  onMouseLeave={() => setHoveredIndex((current) => (current === i ? null : current))}
+                >
+                  <circle cx={pt.x} cy={pt.y} r={hoveredIndex === i ? 4.2 : 2.6} fill="#34d399" opacity={hoveredIndex === i ? 1 : 0.82} />
+                </g>
+              ))}
+
+              {points.map((p, i) => {
+                const x = padL + (points.length <= 1 ? plotW / 2 : (i / (points.length - 1)) * plotW);
+                if (i % Math.ceil(points.length / 8) !== 0 && i !== points.length - 1) return null;
+                return (
+                  <text
+                    key={`${p.ts}-label`}
+                    x={x}
+                    y={padT + plotH + 16}
+                    textAnchor="middle"
+                    fill="rgba(255,255,255,0.36)"
+                    fontSize="10"
+                    fontFamily="'DM Mono', monospace"
+                  >
+                    {p.timeLabel}
+                  </text>
+                );
+              })}
+            </svg>
+          </div>
+
+          {hovered && (
+            <div style={{
+              marginTop: 10,
+              padding: "10px 12px",
+              borderRadius: 9,
+              border: "1px solid var(--bdr)",
+              background: "rgba(255,255,255,0.03)",
+              fontSize: 11,
+              color: "var(--muted)",
+              fontFamily: "'DM Mono', monospace",
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+              gap: 8,
+            }}>
+              <div style={{ color: "var(--text)", fontWeight: 600 }}>{hovered.point.windowStart} ~ {hovered.point.windowEnd}</div>
+              <div style={{ color: "var(--yes)" }}>Volatility: {hovered.point.volatilityRate.toFixed(2)}</div>
+              <div>Trades: {hovered.point.tradeCount} · Notional: {formatMoney(hovered.point.notional)}</div>
+              <div>YES trades: {hovered.point.yesTrades} · NO trades: {hovered.point.noTrades}</div>
+              <div>Imbalance: {hovered.point.imbalanceRate.toFixed(2)}%</div>
+            </div>
+          )}
+        </>
+      )}
+
+      {!loading && !error && points.length === 0 && (
+        <div style={{ fontSize: 12, color: "var(--dim)" }}>No volatility data found for this range.</div>
+      )}
+    </div>
+  );
+}
+
+function SignalLeadLagPanel({ tokenIds }: { tokenIds?: { yes: string; no: string } }) {
+  const [range, setRange] = useState<VolatilityRange>("1W");
+  const [points, setPoints] = useState<VolatilityPoint[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+
+  useEffect(() => {
+    const yesId = tokenIds?.yes || "";
+    const noId = tokenIds?.no || "";
+    if (!yesId || !noId) {
+      setPoints([]);
+      setError("This market has incomplete CLOB token IDs, so Signal Lead-Lag cannot be loaded.");
+      return;
+    }
+
+    let alive = true;
+    async function fetchSignals() {
+      setLoading(true);
+      setError("");
+      try {
+        const params = new URLSearchParams();
+        params.set("yesAssetId", yesId);
+        params.set("noAssetId", noId);
+        params.set("range", range);
+        params.set("limit", "300");
+        params.set("maxPages", "120");
+
+        const res = await fetch(`/api/polymarket/volatility?${params.toString()}`);
+        if (!res.ok) {
+          let msg = "Failed to fetch signal data";
+          try {
+            const body = await res.json();
+            if (body?.error) msg = String(body.error);
+          } catch {
+            // ignore
+          }
+          throw new Error(msg);
+        }
+        const data: VolatilityResponse = await res.json();
+        if (!alive) return;
+        setPoints(Array.isArray(data.points) ? data.points : []);
+      } catch (e) {
+        if (!alive) return;
+        setPoints([]);
+        setError(e instanceof Error ? e.message : "Could not load signal data right now.");
+      } finally {
+        if (alive) setLoading(false);
+      }
+    }
+
+    fetchSignals();
+    return () => {
+      alive = false;
+    };
+  }, [range, tokenIds?.yes, tokenIds?.no]);
+
+  useEffect(() => {
+    setHoveredIndex(null);
+  }, [range, points.length]);
+
+  const imbalanceSeries = zNormalize(points.map((p) => p.imbalanceRate));
+  const volatilitySeries = zNormalize(points.map((p) => p.volatilityRate));
+  const maxLag = Math.min(12, Math.max(2, Math.floor(points.length / 4)));
+  const lagTable = computeLagTable(imbalanceSeries, volatilitySeries, maxLag);
+  const best = lagTable.reduce(
+    (acc, row) => (Math.abs(row.correlation) > Math.abs(acc.correlation) ? row : acc),
+    { lag: 0, correlation: 0, sampleSize: 0 }
+  );
+  const confidence = Math.abs(best.correlation);
+  const confidenceLabel = confidence >= 0.65 ? "High" : confidence >= 0.4 ? "Medium" : "Low";
+  const leadText =
+    best.lag > 0
+      ? `Imbalance leads Volatility by ${best.lag} bucket(s)`
+      : best.lag < 0
+        ? `Volatility leads Imbalance by ${Math.abs(best.lag)} bucket(s)`
+        : "Signals mostly move in-sync (lag 0)";
+
+  const chartW = 860;
+  const chartH = 260;
+  const padL = 52;
+  const padR = 18;
+  const padT = 18;
+  const padB = 44;
+  const plotW = chartW - padL - padR;
+  const plotH = chartH - padT - padB;
+
+  const coords = points.map((point, i) => {
+    const x = padL + (points.length <= 1 ? plotW / 2 : (i / (points.length - 1)) * plotW);
+    const yImbalance = padT + ((2.5 - Math.max(-2.5, Math.min(2.5, imbalanceSeries[i] || 0))) / 5) * plotH;
+    const yVolatility = padT + ((2.5 - Math.max(-2.5, Math.min(2.5, volatilitySeries[i] || 0))) / 5) * plotH;
+    return { x, yImbalance, yVolatility, point, i };
+  });
+
+  const imbalanceLine = coords.map((pt) => `${pt.x},${pt.yImbalance}`).join(" ");
+  const volatilityLine = coords.map((pt) => `${pt.x},${pt.yVolatility}`).join(" ");
+  const hovered = hoveredIndex != null ? coords[hoveredIndex] : null;
+
+  return (
+    <div className="card" style={{ padding: "20px 24px" }}>
+      <SectionTitle icon="📡" text="Signal Lead-Lag Tracker" />
+
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+        {(["1H", "6H", "1D", "1W", "1M", "ALL"] as VolatilityRange[]).map((key) => (
+          <button
+            key={key}
+            onClick={() => setRange(key)}
+            style={{
+              padding: "7px 12px",
+              borderRadius: 7,
+              fontSize: 11,
+              fontWeight: 700,
+              border: range === key ? "1px solid var(--yes-bdr)" : "1px solid var(--bdr)",
+              background: range === key ? "var(--yes-dim)" : "rgba(255,255,255,0.03)",
+              color: range === key ? "var(--yes)" : "var(--muted)",
+              cursor: "pointer",
+              fontFamily: "'DM Sans', sans-serif",
+            }}
+          >
+            {key}
+          </button>
+        ))}
+      </div>
+
+      {loading && <div style={{ fontSize: 13, color: "var(--muted)" }}><span className="spin" /> Loading signal data...</div>}
+      {!loading && error && <div style={{ fontSize: 13, color: "var(--no)" }}>{error}</div>}
+
+      {!loading && !error && points.length > 1 && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px,1fr))", gap: 10, marginBottom: 12 }}>
+            <div style={{ padding: "10px 12px", borderRadius: 9, background: "rgba(255,255,255,0.03)", border: "1px solid var(--bdr)", fontSize: 11.5, color: "var(--muted)" }}>
+              Best Lag: <span style={{ color: "var(--text)", fontFamily: "'DM Mono', monospace", fontWeight: 700 }}>{best.lag}</span>
+            </div>
+            <div style={{ padding: "10px 12px", borderRadius: 9, background: "rgba(255,255,255,0.03)", border: "1px solid var(--bdr)", fontSize: 11.5, color: "var(--muted)" }}>
+              Correlation: <span style={{ color: "var(--text)", fontFamily: "'DM Mono', monospace", fontWeight: 700 }}>{best.correlation.toFixed(3)}</span>
+            </div>
+            <div style={{ padding: "10px 12px", borderRadius: 9, background: "rgba(255,255,255,0.03)", border: "1px solid var(--bdr)", fontSize: 11.5, color: "var(--muted)" }}>
+              Confidence: <span style={{ color: "var(--yes)", fontFamily: "'DM Mono', monospace", fontWeight: 700 }}>{confidenceLabel}</span>
+            </div>
+          </div>
+
+          <div style={{
+            marginBottom: 12,
+            padding: "10px 12px",
+            borderRadius: 9,
+            border: "1px solid var(--bdr)",
+            background: "rgba(255,255,255,0.02)",
+            fontSize: 11,
+            color: "var(--muted)",
+            fontFamily: "'DM Mono', monospace",
+          }}>
+            {leadText}
+          </div>
+
+          <div style={{ fontSize: 10, color: "var(--dim)", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 }}>
+            Signal Lead-Lag Chart ({range})
+          </div>
+          <div style={{ overflowX: "auto", border: "1px solid var(--bdr)", borderRadius: 10, background: "rgba(255,255,255,0.02)" }}>
+            <svg viewBox={`0 0 ${chartW} ${chartH}`} style={{ width: "100%", minWidth: 660, height: 260, display: "block" }}>
+              {[-2, -1, 0, 1, 2].map((tick) => {
+                const y = padT + ((2.5 - tick) / 5) * plotH;
+                return (
+                  <g key={tick}>
+                    <line x1={padL} y1={y} x2={padL + plotW} y2={y} stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
+                    <text x={padL - 8} y={y + 4} textAnchor="end" fill="rgba(255,255,255,0.36)" fontSize="10" fontFamily="'DM Mono', monospace">
+                      {tick}
+                    </text>
+                  </g>
+                );
+              })}
+
+              <line x1={padL} y1={padT + plotH} x2={padL + plotW} y2={padT + plotH} stroke="rgba(255,255,255,0.2)" strokeWidth="1" />
+              <line x1={padL} y1={padT} x2={padL} y2={padT + plotH} stroke="rgba(255,255,255,0.2)" strokeWidth="1" />
+
+              <polyline fill="none" stroke="#f59e0b" strokeWidth="2.2" strokeLinejoin="round" strokeLinecap="round" points={imbalanceLine} />
+              <polyline fill="none" stroke="#60a5fa" strokeWidth="2.2" strokeLinejoin="round" strokeLinecap="round" points={volatilityLine} />
+
+              {coords.map((pt) => (
+                <g
+                  key={pt.point.ts}
+                  onMouseEnter={() => setHoveredIndex(pt.i)}
+                  onMouseLeave={() => setHoveredIndex((current) => (current === pt.i ? null : current))}
+                >
+                  <circle cx={pt.x} cy={pt.yImbalance} r={hoveredIndex === pt.i ? 3.8 : 2.3} fill="#f59e0b" opacity={hoveredIndex === pt.i ? 1 : 0.84} />
+                  <circle cx={pt.x} cy={pt.yVolatility} r={hoveredIndex === pt.i ? 3.8 : 2.3} fill="#60a5fa" opacity={hoveredIndex === pt.i ? 1 : 0.84} />
+                </g>
+              ))}
+
+              {points.map((p, i) => {
+                const x = padL + (points.length <= 1 ? plotW / 2 : (i / (points.length - 1)) * plotW);
+                if (i % Math.ceil(points.length / 8) !== 0 && i !== points.length - 1) return null;
+                return (
+                  <text
+                    key={`${p.ts}-signal-label`}
+                    x={x}
+                    y={padT + plotH + 16}
+                    textAnchor="middle"
+                    fill="rgba(255,255,255,0.36)"
+                    fontSize="10"
+                    fontFamily="'DM Mono', monospace"
+                  >
+                    {p.timeLabel}
+                  </text>
+                );
+              })}
+            </svg>
+          </div>
+
+          {hovered && (
+            <div style={{
+              marginTop: 10,
+              padding: "10px 12px",
+              borderRadius: 9,
+              border: "1px solid var(--bdr)",
+              background: "rgba(255,255,255,0.03)",
+              fontSize: 11,
+              color: "var(--muted)",
+              fontFamily: "'DM Mono', monospace",
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+              gap: 8,
+            }}>
+              <div style={{ color: "var(--text)", fontWeight: 600 }}>{hovered.point.windowStart} ~ {hovered.point.windowEnd}</div>
+              <div style={{ color: "#f59e0b" }}>Imbalance z-score: {(imbalanceSeries[hovered.i] || 0).toFixed(3)}</div>
+              <div style={{ color: "#60a5fa" }}>Volatility z-score: {(volatilitySeries[hovered.i] || 0).toFixed(3)}</div>
+              <div>Imbalance rate: {hovered.point.imbalanceRate.toFixed(2)}%</div>
+              <div>Volatility rate: {hovered.point.volatilityRate.toFixed(2)}</div>
+            </div>
+          )}
+
+          <div style={{ marginTop: 12, overflowX: "auto", border: "1px solid var(--bdr)", borderRadius: 9 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+              <thead>
+                <tr style={{ background: "rgba(255,255,255,0.03)", color: "var(--dim)", letterSpacing: "0.08em", textTransform: "uppercase", fontSize: 10 }}>
+                  <th style={{ padding: "9px 10px", textAlign: "left", borderBottom: "1px solid var(--bdr)" }}>Lag</th>
+                  <th style={{ padding: "9px 10px", textAlign: "center", borderBottom: "1px solid var(--bdr)" }}>Correlation</th>
+                  <th style={{ padding: "9px 10px", textAlign: "right", borderBottom: "1px solid var(--bdr)" }}>Samples</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lagTable
+                  .slice()
+                  .sort((a, b) => Math.abs(b.correlation) - Math.abs(a.correlation))
+                  .slice(0, 5)
+                  .map((row) => (
+                    <tr key={row.lag}>
+                      <td style={{ padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.05)", color: "var(--muted)", fontFamily: "'DM Mono', monospace" }}>{row.lag}</td>
+                      <td style={{ padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.05)", textAlign: "center", color: "var(--text)", fontFamily: "'DM Mono', monospace", fontWeight: 700 }}>
+                        {row.correlation.toFixed(3)}
+                      </td>
+                      <td style={{ padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.05)", textAlign: "right", color: "var(--muted)", fontFamily: "'DM Mono', monospace" }}>{row.sampleSize}</td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {!loading && !error && points.length <= 1 && (
+        <div style={{ fontSize: 12, color: "var(--dim)" }}>Not enough points to compute lag correlation for this range.</div>
       )}
     </div>
   );
@@ -1176,7 +1769,7 @@ function EventCard({
 // ═══════════════════════════════════════════════════════
 //  DETAIL PAGE
 // ═══════════════════════════════════════════════════════
-function DetailPage({
+export function DetailPage({
   event,
   onBack,
   isBookmarked,
@@ -1196,6 +1789,8 @@ function DetailPage({
   const [largeOrders, setLargeOrders] = useState<LargeOrderItem[]>([]);
   const [detailTab, setDetailTab] = useState<"orderbook" | "positions">("orderbook");
   const [showPredictors, setShowPredictors] = useState(false);
+  const [showVolatility, setShowVolatility] = useState(false);
+  const [showSignal, setShowSignal] = useState(false);
 
   const market = getActiveMarket(event.markets);
   const prices = market ? parsePrices(market) : { yes: 0.5, no: 0.5 };
@@ -1401,7 +1996,7 @@ function DetailPage({
               </div>
             )}
 
-            <div style={{ display: "flex", justifyContent: "flex-start" }}>
+            <div style={{ display: "flex", justifyContent: "flex-start", gap: 8, flexWrap: "wrap" }}>
               <button
                 onClick={() => setShowPredictors(prev => !prev)}
                 style={{
@@ -1418,10 +2013,52 @@ function DetailPage({
               >
                 📈 Predictors per Market
               </button>
+
+              <button
+                onClick={() => setShowVolatility(prev => !prev)}
+                style={{
+                  padding: "9px 14px",
+                  borderRadius: 8,
+                  border: showVolatility ? "1px solid var(--yes-bdr)" : "1px solid var(--bdr)",
+                  background: showVolatility ? "var(--yes-dim)" : "rgba(255,255,255,0.04)",
+                  color: showVolatility ? "var(--yes)" : "var(--muted)",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  fontFamily: "'DM Sans', sans-serif",
+                  cursor: "pointer",
+                }}
+              >
+                📉 Volatility Cluster
+              </button>
+
+              <button
+                onClick={() => setShowSignal(prev => !prev)}
+                style={{
+                  padding: "9px 14px",
+                  borderRadius: 8,
+                  border: showSignal ? "1px solid var(--yes-bdr)" : "1px solid var(--bdr)",
+                  background: showSignal ? "var(--yes-dim)" : "rgba(255,255,255,0.04)",
+                  color: showSignal ? "var(--yes)" : "var(--muted)",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  fontFamily: "'DM Sans', sans-serif",
+                  cursor: "pointer",
+                }}
+              >
+                📡 Signal Lead-Lag
+              </button>
             </div>
 
             {showPredictors && (
               <PredictorsPerMarketPanel conditionId={market?.conditionId} volume={event.volume} tokenIds={tokenIds} />
+            )}
+
+            {showVolatility && (
+              <VolatilityClusterPanel tokenIds={tokenIds} />
+            )}
+
+            {showSignal && (
+              <SignalLeadLagPanel tokenIds={tokenIds} />
             )}
 
             {/* ORDER BOOK & POSITIONS TABS */}
@@ -2194,7 +2831,7 @@ function ListPage({
 //  ROOT — ROUTER
 // ═══════════════════════════════════════════════════════
 export default function App() {
-  const [currentEvent, setCurrentEvent] = useState<PolyEvent | null>(null);
+  const router = useRouter();
   const [bookmarkedIds, setBookmarkedIds] = useState<string[]>([]);
   const [bookmarkedEvents, setBookmarkedEvents] = useState<Record<string, PolyEvent>>({});
   const bookmarkSaveReady = useRef(false);
@@ -2233,22 +2870,13 @@ export default function App() {
   return (
     <>
       <style>{GLOBAL_CSS}</style>
-      {currentEvent ? (
-        <DetailPage
-          event={currentEvent}
-          onBack={() => setCurrentEvent(null)}
-          isBookmarked={bookmarkedIds.includes(currentEvent.id)}
-          onToggleBookmark={toggleBookmark}
-        />
-      ) : (
-        <ListPage
-          onSelect={setCurrentEvent}
-          bookmarkedIds={bookmarkedIds}
-          bookmarkedEvents={bookmarkedEvents}
-          setBookmarkedEvents={setBookmarkedEvents}
-          toggleBookmark={toggleBookmark}
-        />
-      )}
+      <ListPage
+        onSelect={(event) => router.push(`/polyoiyen/${encodeURIComponent(event.id)}`)}
+        bookmarkedIds={bookmarkedIds}
+        bookmarkedEvents={bookmarkedEvents}
+        setBookmarkedEvents={setBookmarkedEvents}
+        toggleBookmark={toggleBookmark}
+      />
     </>
   );
 }
