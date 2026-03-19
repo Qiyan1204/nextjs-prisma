@@ -254,7 +254,7 @@ export default function VolatilitySurgeRankingPage() {
           1H chart with 5-minute points · Left click row to switch · Right click row for actions
         </div>
         <div style={{ fontSize: 14, color: "#f97316", fontWeight: 700, marginBottom: 8 }}>
-          1H Volatility Step Chart (5m) · {row.title}
+           · {row.title}
         </div>
 
         <div style={{ overflowX: "auto", border: "1px solid rgba(255,255,255,0.09)", borderRadius: 10, background: "rgba(255,255,255,0.01)" }}>
@@ -368,7 +368,7 @@ export default function VolatilitySurgeRankingPage() {
           🌋 Volatility Surge Ranking
         </h1>
         <p style={{ marginTop: 8, color: "rgba(255,255,255,0.48)", fontSize: 14 }}>
-          依据过去 1 小时 Volatility Rating 排名，谁跳得最凶，谁就是当前 Active Period。
+        
         </p>
         <div style={{ marginTop: 8, fontSize: 12, color: "rgba(255,255,255,0.6)" }}>
           Data source: live market list from /api/polymarket + live 1H volatility scoring from /api/polymarket/volatility-rating.
