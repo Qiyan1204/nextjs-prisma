@@ -27,6 +27,24 @@ const MORE_LINKS = [
   { label: "🧩 PolyAnalysis", href: "/polyoiyen/PolyAnalysis", active: "PolyAnalysis" },
 ];
 
+const ELITE_LINKS = [
+  {
+    label: "🌋 Volatility Surge Ranking",
+    href: "/polyoiyen/VolatilitySurgeRanking",
+    active: "EliteVolatilitySurge",
+  },
+  {
+    label: "🛡️ Signal Confidence Ranking",
+    href: "/polyoiyen/SignalConfidenceRanking",
+    active: "EliteSignalConfidence",
+  },
+  {
+    label: "🚀 Lead-Lag Ranking",
+    href: "/polyoiyen/LeadLagRanking",
+    active: "EliteLeadLag",
+  },
+];
+
 export default function PolyHeader({ active, children }: { active: string; children?: React.ReactNode }) {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
@@ -34,8 +52,10 @@ export default function PolyHeader({ active, children }: { active: string; child
   const [loading, setLoading] = useState(true);
   const [showMenu, setShowMenu] = useState(false);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [showEliteMenu, setShowEliteMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const moreRef = useRef<HTMLDivElement>(null);
+  const eliteRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     fetch("/api/auth/me")
@@ -50,6 +70,7 @@ export default function PolyHeader({ active, children }: { active: string; child
     function handleClickOutside(e: MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) setShowMenu(false);
       if (moreRef.current && !moreRef.current.contains(e.target as Node)) setShowMoreMenu(false);
+      if (eliteRef.current && !eliteRef.current.contains(e.target as Node)) setShowEliteMenu(false);
     }
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
@@ -195,7 +216,10 @@ export default function PolyHeader({ active, children }: { active: string; child
             <div className="poly-header-more-wrap" ref={moreRef}>
               <button
                 className={`poly-header-link poly-header-more-btn${active === "Leaderboard" || active === "Reward" ? " active" : ""}`}
-                onClick={() => setShowMoreMenu((v) => !v)}
+                onClick={() => {
+                  setShowMoreMenu((v) => !v);
+                  setShowEliteMenu(false);
+                }}
               >
                 ➕ More
               </button>
@@ -207,6 +231,32 @@ export default function PolyHeader({ active, children }: { active: string; child
                       href={item.href}
                       className={`poly-header-more-item${active === item.active ? " active" : ""}`}
                       onClick={() => setShowMoreMenu(false)}
+                    >
+                      {item.label}
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="poly-header-more-wrap" ref={eliteRef}>
+              <button
+                className={`poly-header-link poly-header-more-btn${ELITE_LINKS.some((x) => x.active === active) ? " active" : ""}`}
+                onClick={() => {
+                  setShowEliteMenu((v) => !v);
+                  setShowMoreMenu(false);
+                }}
+              >
+                🏆 PolyPulse Elite Ranking
+              </button>
+              {showEliteMenu && (
+                <div className="poly-header-more-menu" style={{ minWidth: 260 }}>
+                  {ELITE_LINKS.map((item) => (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      className={`poly-header-more-item${active === item.active ? " active" : ""}`}
+                      onClick={() => setShowEliteMenu(false)}
                     >
                       {item.label}
                     </Link>

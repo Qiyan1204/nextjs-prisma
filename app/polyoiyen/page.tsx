@@ -148,7 +148,64 @@ interface VolatilityResponse {
   points: VolatilityPoint[];
 }
 
+interface VolatilityRatingPoint {
+  ts: number;
+  timeLabel: string;
+  yesPrice: number | null;
+  noPrice: number | null;
+  yesStepScore: number;
+  noStepScore: number;
+}
+
+interface VolatilityRatingSide {
+  totalVolatilityRating: number;
+  averageVolatilityRatingPerHour: number;
+  totalHours: number;
+  hoursWithPrice: number;
+}
+
+interface VolatilityRatingResponse {
+  window: {
+    startTime: string;
+    endTime: string;
+  };
+  bucketSeconds: number;
+  rule: string;
+  metrics: {
+    yes: VolatilityRatingSide;
+    no: VolatilityRatingSide;
+  };
+  diagnostics?: {
+    scannedPages: number;
+    pageSize: number;
+    fetchedTrades: number;
+    yesPriceObservations: number;
+    noPriceObservations: number;
+  };
+  points: VolatilityRatingPoint[];
+  fetchedAt: string;
+}
+
 type VolatilityRange = "1H" | "6H" | "1D" | "1W" | "1M" | "ALL";
+
+function getRangeHours(range: VolatilityRange): number {
+  switch (range) {
+    case "1H":
+      return 1;
+    case "6H":
+      return 6;
+    case "1D":
+      return 24;
+    case "1W":
+      return 7 * 24;
+    case "1M":
+      return 30 * 24;
+    case "ALL":
+      return 120 * 24;
+    default:
+      return 7 * 24;
+  }
+}
 
 const LIMIT = 12;
 const TAG_OPTIONS = [
@@ -1199,16 +1256,19 @@ function PredictorsPerMarketPanel({
 
 function VolatilityClusterPanel({ tokenIds }: { tokenIds?: { yes: string; no: string } }) {
   const [range, setRange] = useState<VolatilityRange>("1W");
-  const [points, setPoints] = useState<VolatilityPoint[]>([]);
+  const [clusterPoints, setClusterPoints] = useState<VolatilityPoint[]>([]);
+  const [ratingPayload, setRatingPayload] = useState<VolatilityRatingResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const [hoveredClusterIndex, setHoveredClusterIndex] = useState<number | null>(null);
+  const [hoveredRatingIndex, setHoveredRatingIndex] = useState<number | null>(null);
 
   useEffect(() => {
     const yesId = tokenIds?.yes || "";
     const noId = tokenIds?.no || "";
     if (!yesId || !noId) {
-      setPoints([]);
+      setClusterPoints([]);
+      setRatingPayload(null);
       setError("This market has incomplete CLOB token IDs, so Volatility Cluster cannot be loaded.");
       return;
     }
@@ -1218,30 +1278,62 @@ function VolatilityClusterPanel({ tokenIds }: { tokenIds?: { yes: string; no: st
       setLoading(true);
       setError("");
       try {
-        const params = new URLSearchParams();
-        params.set("yesAssetId", yesId);
-        params.set("noAssetId", noId);
-        params.set("range", range);
-        params.set("limit", "300");
-        params.set("maxPages", "120");
+        const clusterParams = new URLSearchParams();
+        clusterParams.set("yesAssetId", yesId);
+        clusterParams.set("noAssetId", noId);
+        clusterParams.set("range", range);
+        clusterParams.set("limit", "300");
+        clusterParams.set("maxPages", "120");
 
-        const res = await fetch(`/api/polymarket/volatility?${params.toString()}`);
-        if (!res.ok) {
+        const rangeHours = getRangeHours(range);
+        const now = Date.now();
+        const startTime = new Date(now - rangeHours * 3600 * 1000).toISOString();
+        const endTime = new Date(now).toISOString();
+
+        const ratingParams = new URLSearchParams();
+        ratingParams.set("yesAssetId", yesId);
+        ratingParams.set("noAssetId", noId);
+        ratingParams.set("startTime", startTime);
+        ratingParams.set("endTime", endTime);
+        ratingParams.set("limit", "300");
+        ratingParams.set("maxPages", "220");
+
+        const [clusterRes, ratingRes] = await Promise.all([
+          fetch(`/api/polymarket/volatility?${clusterParams.toString()}`),
+          fetch(`/api/polymarket/volatility-rating?${ratingParams.toString()}`),
+        ]);
+
+        if (!clusterRes.ok) {
           let msg = "Failed to fetch volatility cluster";
           try {
-            const body = await res.json();
+            const body = await clusterRes.json();
             if (body?.error) msg = String(body.error);
           } catch {
             // ignore
           }
           throw new Error(msg);
         }
-        const data: VolatilityResponse = await res.json();
+
+        if (!ratingRes.ok) {
+          let msg = "Failed to fetch volatility rating";
+          try {
+            const body = await ratingRes.json();
+            if (body?.error) msg = String(body.error);
+          } catch {
+            // ignore
+          }
+          throw new Error(msg);
+        }
+
+        const data: VolatilityResponse = await clusterRes.json();
+        const ratingData: VolatilityRatingResponse = await ratingRes.json();
         if (!alive) return;
-        setPoints(Array.isArray(data.points) ? data.points : []);
+        setClusterPoints(Array.isArray(data.points) ? data.points : []);
+        setRatingPayload(ratingData || null);
       } catch (e) {
         if (!alive) return;
-        setPoints([]);
+        setClusterPoints([]);
+        setRatingPayload(null);
         setError(e instanceof Error ? e.message : "Could not load volatility cluster data right now.");
       } finally {
         if (alive) setLoading(false);
@@ -1255,8 +1347,9 @@ function VolatilityClusterPanel({ tokenIds }: { tokenIds?: { yes: string; no: st
   }, [range, tokenIds?.yes, tokenIds?.no]);
 
   useEffect(() => {
-    setHoveredIndex(null);
-  }, [range, points.length]);
+    setHoveredClusterIndex(null);
+    setHoveredRatingIndex(null);
+  }, [range, clusterPoints.length, ratingPayload?.points?.length]);
 
   const chartW = 860;
   const chartH = 250;
@@ -1266,16 +1359,36 @@ function VolatilityClusterPanel({ tokenIds }: { tokenIds?: { yes: string; no: st
   const padB = 44;
   const plotW = chartW - padL - padR;
   const plotH = chartH - padT - padB;
-  const maxValue = Math.max(...points.map((p) => p.volatilityRate), 1);
+  const maxValue = Math.max(...clusterPoints.map((p) => p.volatilityRate), 1);
 
-  const linePoints = points.map((p, i) => {
-    const x = padL + (points.length <= 1 ? plotW / 2 : (i / (points.length - 1)) * plotW);
+  const linePoints = clusterPoints.map((p, i) => {
+    const x = padL + (clusterPoints.length <= 1 ? plotW / 2 : (i / (clusterPoints.length - 1)) * plotW);
     const y = padT + (1 - p.volatilityRate / maxValue) * plotH;
     return { x, y, point: p };
   });
 
   const line = linePoints.map((pt) => `${pt.x},${pt.y}`).join(" ");
-  const hovered = hoveredIndex != null ? linePoints[hoveredIndex] : null;
+  const hovered = hoveredClusterIndex != null ? linePoints[hoveredClusterIndex] : null;
+
+  const ratingPoints = ratingPayload?.points || [];
+  const ratingChartH = 250;
+  const ratingPlotH = ratingChartH - padT - padB;
+  const yesMax = Math.max(...ratingPoints.map((p) => p.yesStepScore), 1);
+  const noMax = Math.max(...ratingPoints.map((p) => p.noStepScore), 1);
+  const ratingMax = Math.max(yesMax, noMax, 1);
+
+  const ratingCoords = ratingPoints.map((p, i) => {
+    const x = padL + (ratingPoints.length <= 1 ? plotW / 2 : (i / (ratingPoints.length - 1)) * plotW);
+    const yYes = padT + (1 - p.yesStepScore / ratingMax) * ratingPlotH;
+    const yNo = padT + (1 - p.noStepScore / ratingMax) * ratingPlotH;
+    return { x, yYes, yNo, point: p, i };
+  });
+
+  const yesLine = ratingCoords.map((pt) => `${pt.x},${pt.yYes}`).join(" ");
+  const noLine = ratingCoords.map((pt) => `${pt.x},${pt.yNo}`).join(" ");
+  const hoveredRating = hoveredRatingIndex != null ? ratingCoords[hoveredRatingIndex] : null;
+  const ratingYes = ratingPayload?.metrics.yes;
+  const ratingNo = ratingPayload?.metrics.no;
 
   return (
     <div className="card" style={{ padding: "20px 24px" }}>
@@ -1306,7 +1419,7 @@ function VolatilityClusterPanel({ tokenIds }: { tokenIds?: { yes: string; no: st
       {loading && <div style={{ fontSize: 13, color: "var(--muted)" }}><span className="spin" /> Loading volatility data...</div>}
       {!loading && error && <div style={{ fontSize: 13, color: "var(--no)" }}>{error}</div>}
 
-      {!loading && !error && points.length > 0 && (
+      {!loading && !error && clusterPoints.length > 0 && (
         <>
           <div style={{ fontSize: 10, color: "var(--dim)", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 }}>
             Volatility Cluster Rate Line Chart ({range})
@@ -1340,16 +1453,16 @@ function VolatilityClusterPanel({ tokenIds }: { tokenIds?: { yes: string; no: st
               {linePoints.map((pt, i) => (
                 <g
                   key={pt.point.ts}
-                  onMouseEnter={() => setHoveredIndex(i)}
-                  onMouseLeave={() => setHoveredIndex((current) => (current === i ? null : current))}
+                  onMouseEnter={() => setHoveredClusterIndex(i)}
+                  onMouseLeave={() => setHoveredClusterIndex((current) => (current === i ? null : current))}
                 >
-                  <circle cx={pt.x} cy={pt.y} r={hoveredIndex === i ? 4.2 : 2.6} fill="#34d399" opacity={hoveredIndex === i ? 1 : 0.82} />
+                  <circle cx={pt.x} cy={pt.y} r={hoveredClusterIndex === i ? 4.2 : 2.6} fill="#34d399" opacity={hoveredClusterIndex === i ? 1 : 0.82} />
                 </g>
               ))}
 
-              {points.map((p, i) => {
-                const x = padL + (points.length <= 1 ? plotW / 2 : (i / (points.length - 1)) * plotW);
-                if (i % Math.ceil(points.length / 8) !== 0 && i !== points.length - 1) return null;
+              {clusterPoints.map((p, i) => {
+                const x = padL + (clusterPoints.length <= 1 ? plotW / 2 : (i / (clusterPoints.length - 1)) * plotW);
+                if (i % Math.ceil(clusterPoints.length / 8) !== 0 && i !== clusterPoints.length - 1) return null;
                 return (
                   <text
                     key={`${p.ts}-label`}
@@ -1388,10 +1501,108 @@ function VolatilityClusterPanel({ tokenIds }: { tokenIds?: { yes: string; no: st
               <div>Imbalance: {hovered.point.imbalanceRate.toFixed(2)}%</div>
             </div>
           )}
+
+          {ratingPayload && ratingYes && ratingNo && (
+            <>
+              <div style={{ marginTop: 16, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px,1fr))", gap: 10, marginBottom: 10 }}>
+                <div style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid var(--yes-bdr)", background: "var(--yes-dim)" }}>
+                  <div style={{ fontSize: 10, color: "var(--yes)", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 4 }}>YES Volatility Rating</div>
+                  <div style={{ color: "var(--yes)", fontFamily: "'DM Mono', monospace", fontSize: 20, fontWeight: 700 }}>{ratingYes.totalVolatilityRating.toFixed(2)}</div>
+                  <div style={{ fontSize: 11, color: "var(--muted)" }}>Avg/hour: <span style={{ color: "var(--text)", fontFamily: "'DM Mono', monospace" }}>{ratingYes.averageVolatilityRatingPerHour.toFixed(4)}</span></div>
+                  <div style={{ fontSize: 11, color: "var(--dim)" }}>Hours tracked: {ratingYes.totalHours}</div>
+                </div>
+                <div style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid var(--no-bdr)", background: "var(--no-dim)" }}>
+                  <div style={{ fontSize: 10, color: "var(--no)", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 4 }}>NO Volatility Rating</div>
+                  <div style={{ color: "var(--no)", fontFamily: "'DM Mono', monospace", fontSize: 20, fontWeight: 700 }}>{ratingNo.totalVolatilityRating.toFixed(2)}</div>
+                  <div style={{ fontSize: 11, color: "var(--muted)" }}>Avg/hour: <span style={{ color: "var(--text)", fontFamily: "'DM Mono', monospace" }}>{ratingNo.averageVolatilityRatingPerHour.toFixed(4)}</span></div>
+                  <div style={{ fontSize: 11, color: "var(--dim)" }}>Hours tracked: {ratingNo.totalHours}</div>
+                </div>
+              </div>
+
+              <div style={{ fontSize: 10, color: "var(--dim)", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 }}>
+                Hourly Volatility Rating Points ({range})
+              </div>
+              <div style={{ overflowX: "auto", border: "1px solid var(--bdr)", borderRadius: 10, background: "rgba(255,255,255,0.02)" }}>
+                <svg viewBox={`0 0 ${chartW} ${ratingChartH}`} style={{ width: "100%", minWidth: 660, height: 250, display: "block" }}>
+                  {[0, 25, 50, 75, 100].map((tick) => {
+                    const y = padT + (1 - tick / 100) * ratingPlotH;
+                    return (
+                      <g key={tick}>
+                        <line x1={padL} y1={y} x2={padL + plotW} y2={y} stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
+                        <text x={padL - 8} y={y + 4} textAnchor="end" fill="rgba(255,255,255,0.36)" fontSize="10" fontFamily="'DM Mono', monospace">
+                          {Math.round((tick / 100) * ratingMax)}
+                        </text>
+                      </g>
+                    );
+                  })}
+
+                  <line x1={padL} y1={padT + ratingPlotH} x2={padL + plotW} y2={padT + ratingPlotH} stroke="rgba(255,255,255,0.2)" strokeWidth="1" />
+                  <line x1={padL} y1={padT} x2={padL} y2={padT + ratingPlotH} stroke="rgba(255,255,255,0.2)" strokeWidth="1" />
+
+                  <polyline fill="none" stroke="#34d399" strokeWidth="2.2" strokeLinejoin="round" strokeLinecap="round" points={yesLine} />
+                  <polyline fill="none" stroke="#f87171" strokeWidth="2.2" strokeLinejoin="round" strokeLinecap="round" points={noLine} />
+
+                  {ratingCoords.map((pt) => (
+                    <g
+                      key={pt.point.ts}
+                      onMouseEnter={() => setHoveredRatingIndex(pt.i)}
+                      onMouseLeave={() => setHoveredRatingIndex((current) => (current === pt.i ? null : current))}
+                    >
+                      <circle cx={pt.x} cy={pt.yYes} r={hoveredRatingIndex === pt.i ? 3.8 : 2.2} fill="#34d399" opacity={hoveredRatingIndex === pt.i ? 1 : 0.85} />
+                      <circle cx={pt.x} cy={pt.yNo} r={hoveredRatingIndex === pt.i ? 3.8 : 2.2} fill="#f87171" opacity={hoveredRatingIndex === pt.i ? 1 : 0.85} />
+                    </g>
+                  ))}
+
+                  {ratingPoints.map((p, i) => {
+                    const x = padL + (ratingPoints.length <= 1 ? plotW / 2 : (i / (ratingPoints.length - 1)) * plotW);
+                    if (i % Math.ceil(ratingPoints.length / 8) !== 0 && i !== ratingPoints.length - 1) return null;
+                    return (
+                      <text
+                        key={`${p.ts}-rating-label`}
+                        x={x}
+                        y={padT + ratingPlotH + 16}
+                        textAnchor="middle"
+                        fill="rgba(255,255,255,0.36)"
+                        fontSize="10"
+                        fontFamily="'DM Mono', monospace"
+                      >
+                        {p.timeLabel}
+                      </text>
+                    );
+                  })}
+                </svg>
+              </div>
+
+              {hoveredRating && (
+                <div style={{
+                  marginTop: 10,
+                  padding: "10px 12px",
+                  borderRadius: 9,
+                  border: "1px solid var(--bdr)",
+                  background: "rgba(255,255,255,0.03)",
+                  fontSize: 11,
+                  color: "var(--muted)",
+                  fontFamily: "'DM Mono', monospace",
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+                  gap: 8,
+                }}>
+                  <div style={{ color: "var(--text)", fontWeight: 600 }}>{hoveredRating.point.timeLabel}</div>
+                  <div style={{ color: "var(--yes)" }}>YES step: {hoveredRating.point.yesStepScore.toFixed(2)}</div>
+                  <div style={{ color: "var(--no)" }}>NO step: {hoveredRating.point.noStepScore.toFixed(2)}</div>
+                </div>
+              )}
+
+              <div style={{ display: "flex", gap: 12, marginTop: 8, fontSize: 10.5 }}>
+                <span style={{ color: "var(--yes)" }}>■ YES hourly points</span>
+                <span style={{ color: "var(--no)" }}>■ NO hourly points</span>
+              </div>
+            </>
+          )}
         </>
       )}
 
-      {!loading && !error && points.length === 0 && (
+      {!loading && !error && clusterPoints.length === 0 && (
         <div style={{ fontSize: 12, color: "var(--dim)" }}>No volatility data found for this range.</div>
       )}
     </div>
