@@ -1,8 +1,374 @@
 "use client";
 
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import PolyHeader from "../PolyHeader";
 
+interface PolyMarket {
+  clobTokenIds?: string;
+  active?: boolean;
+  closed?: boolean;
+}
+
+interface PolyEvent {
+  id: string;
+  title: string;
+  volume?: number;
+  markets: PolyMarket[];
+}
+
+interface VolatilityPoint {
+  ts: number;
+  timeLabel: string;
+  yesStepScore: number;
+  noStepScore: number;
+}
+
+interface VolatilityRatingResponse {
+  metrics: {
+    yes: { totalVolatilityRating: number; averageVolatilityRatingPerHour: number; totalHours: number; hoursWithPrice: number };
+    no: { totalVolatilityRating: number; averageVolatilityRatingPerHour: number; totalHours: number; hoursWithPrice: number };
+  };
+  points?: VolatilityPoint[];
+}
+
+interface LeadLagRow {
+  eventId: string;
+  title: string;
+  volume: number;
+  leadLagScore: number;
+  leadingSignal: "YES" | "NO";
+  leadStrength: number;
+  yesVolatility: number;
+  noVolatility: number;
+  points: VolatilityPoint[];
+}
+
+function parseTokenIds(raw?: string): { yes: string; no: string } {
+  if (!raw) return { yes: "", no: "" };
+  try {
+    const arr = JSON.parse(raw);
+    if (Array.isArray(arr)) {
+      return {
+        yes: String(arr[0] || ""),
+        no: String(arr[1] || ""),
+      };
+    }
+  } catch {
+    // ignore invalid payload
+  }
+  return { yes: "", no: "" };
+}
+
+function pickActiveMarket(markets: PolyMarket[]): PolyMarket | null {
+  if (!Array.isArray(markets) || markets.length === 0) return null;
+  const active = markets.find((m) => m.active !== false && m.closed !== true);
+  return active || markets[0] || null;
+}
+
+function formatVolume(v: number): string {
+  if (!Number.isFinite(v) || v <= 0) return "$0";
+  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000) return `$${(v / 1_000).toFixed(1)}K`;
+  return `$${v.toFixed(0)}`;
+}
+
+function computeLeadLag(points: VolatilityPoint[]): { score: number; leading: "YES" | "NO"; strength: number; yesVol: number; noVol: number } {
+  // Use last 12 points (60 minutes at 5-minute buckets)
+  const recentPoints = (points || []).slice(-12);
+
+  if (recentPoints.length < 2) {
+    return { score: 0, leading: "YES", strength: 0, yesVol: 0, noVol: 0 };
+  }
+
+  // Calculate changes and volatility metrics
+  const yesChanges: number[] = [];
+  const noChanges: number[] = [];
+
+  for (let i = 1; i < recentPoints.length; i++) {
+    yesChanges.push(recentPoints[i].yesStepScore - recentPoints[i - 1].yesStepScore);
+    noChanges.push(recentPoints[i].noStepScore - recentPoints[i - 1].noStepScore);
+  }
+
+  const yesAvg = yesChanges.reduce((a, b) => a + b, 0) / yesChanges.length;
+  const noAvg = noChanges.reduce((a, b) => a + b, 0) / noChanges.length;
+  const yesMax = Math.max(...yesChanges.map(Math.abs));
+  const noMax = Math.max(...noChanges.map(Math.abs));
+
+  // Lead-lag score: positive = YES leads, negative = NO leads
+  const yesVolatility = yesMax * 0.7 + Math.abs(yesAvg) * 0.3;
+  const noVolatility = noMax * 0.7 + Math.abs(noAvg) * 0.3;
+
+  const leadLagScore = yesVolatility - noVolatility;
+  const leading = leadLagScore >= 0 ? "YES" : "NO";
+  const strength = Math.abs(leadLagScore);
+
+  return { score: leadLagScore, leading, strength, yesVol: yesVolatility, noVol: noVolatility };
+}
+
 export default function LeadLagRankingPage() {
+  const router = useRouter();
+  const [rows, setRows] = useState<LeadLagRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [updatedAt, setUpdatedAt] = useState<string>("");
+  const [selectedEventId, setSelectedEventId] = useState<string>("");
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; row: LeadLagRow } | null>(null);
+  const [hoveredPoint, setHoveredPoint] = useState<{
+    eventId: string;
+    timeLabel: string;
+    yesStepScore: number;
+    noStepScore: number;
+  } | null>(null);
+
+  const loadRanking = useCallback(async (isRefresh = false) => {
+    if (isRefresh) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
+    setError(null);
+
+    const nowIso = new Date().toISOString();
+    const oneHourAgoIso = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
+    try {
+      const eventsRes = await fetch("/api/polymarket?limit=24&offset=0");
+      if (!eventsRes.ok) throw new Error("Failed to fetch active markets");
+
+      const events: PolyEvent[] = await eventsRes.json();
+      const candidates = (Array.isArray(events) ? events : [])
+        .filter((e) => Array.isArray(e.markets) && e.markets.length > 0)
+        .slice(0, 18);
+
+      const mapped = await Promise.all(
+        candidates.map(async (event) => {
+          const market = pickActiveMarket(event.markets || []);
+          const tokenIds = parseTokenIds(market?.clobTokenIds);
+          if (!tokenIds.yes || !tokenIds.no) return null;
+
+          const params = new URLSearchParams();
+          params.set("yesAssetId", tokenIds.yes);
+          params.set("noAssetId", tokenIds.no);
+          params.set("startTime", oneHourAgoIso);
+          params.set("endTime", nowIso);
+          params.set("bucketSeconds", "300");
+          params.set("limit", "250");
+          params.set("maxPages", "120");
+
+          const res = await fetch(`/api/polymarket/volatility-rating?${params.toString()}`);
+          if (!res.ok) return null;
+
+          const data: VolatilityRatingResponse = await res.json();
+          const points = Array.isArray(data?.points) ? data.points : [];
+
+          if (points.length < 2) return null;
+
+          const { score, leading, strength, yesVol, noVol } = computeLeadLag(points);
+
+          return {
+            eventId: event.id,
+            title: event.title,
+            volume: Number(event.volume || 0),
+            leadLagScore: score,
+            leadingSignal: leading,
+            leadStrength: strength,
+            yesVolatility: yesVol,
+            noVolatility: noVol,
+            points,
+          } as LeadLagRow;
+        })
+      );
+
+      const ranked = mapped
+        .filter((x): x is LeadLagRow => Boolean(x))
+        .sort((a, b) => {
+          if (b.leadStrength !== a.leadStrength) return b.leadStrength - a.leadStrength;
+          return b.volume - a.volume;
+        });
+
+      setRows(ranked);
+      if (ranked.length > 0) {
+        const exists = ranked.some((r) => r.eventId === selectedEventId);
+        if (!exists) setSelectedEventId(ranked[0].eventId);
+      } else {
+        setSelectedEventId("");
+      }
+      setUpdatedAt(new Date().toLocaleTimeString());
+    } catch (e) {
+      setRows([]);
+      setError(e instanceof Error ? e.message : "Failed to compute lead-lag ranking");
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [selectedEventId]);
+
+  function navigateToEvent(eventId: string) {
+    setContextMenu(null);
+    router.push(`/polyoiyen/${encodeURIComponent(eventId)}`);
+  }
+
+  function renderInlineChart(row: LeadLagRow) {
+    const chartW = 920;
+    const chartH = 250;
+    const padL = 46;
+    const padR = 16;
+    const padT = 16;
+    const padB = 42;
+    const plotW = chartW - padL - padR;
+    const plotH = chartH - padT - padB;
+
+    const points = row.points || [];
+    const maxPrice = Math.max(1, ...points.map((p) => Math.max(Number(p.yesStepScore || 0), 100 - Number(p.noStepScore || 0))));
+
+    const coords = points.map((p, i) => {
+      const x = padL + (points.length <= 1 ? plotW / 2 : (i / (points.length - 1)) * plotW);
+      const yesVal = Number(p.yesStepScore || 0);
+      const noVal = Number(p.noStepScore || 0);
+      const noInverted = 100 - noVal;
+
+      const yYes = padT + (1 - yesVal / maxPrice) * plotH;
+      const yNo = padT + (1 - noInverted / maxPrice) * plotH;
+
+      return { x, yYes, yNo, point: p, yesVal, noInverted };
+    });
+
+    const yesLine = coords.map((pt) => `${pt.x},${pt.yYes}`).join(" ");
+    const noLine = coords.map((pt) => `${pt.x},${pt.yNo}`).join(" ");
+
+    return (
+      <div style={{ borderBottom: "1px solid rgba(255,255,255,0.05)", padding: "12px 12px 14px" }}>
+        <div style={{ fontSize: 12, color: "rgba(255,255,255,0.62)", marginBottom: 8 }}>
+          🌘 Mirror Discrepancy Plot · Left click row to switch · Right click row for actions
+        </div>
+        <div style={{ fontSize: 14, color: "#f97316", fontWeight: 700, marginBottom: 8 }}>
+           · {row.title}
+        </div>
+
+        <div style={{ overflowX: "auto", border: "1px solid rgba(255,255,255,0.09)", borderRadius: 10, background: "rgba(255,255,255,0.01)" }}>
+          <svg viewBox={`0 0 ${chartW} ${chartH}`} style={{ width: "100%", minWidth: 700, height: 250, display: "block" }}>
+            {[0, 25, 50, 75, 100].map((tick) => {
+              const y = padT + (1 - tick / 100) * plotH;
+              return (
+                <g key={tick}>
+                  <line x1={padL} y1={y} x2={padL + plotW} y2={y} stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
+                  <text x={padL - 8} y={y + 4} textAnchor="end" fill="rgba(255,255,255,0.36)" fontSize="10" fontFamily="'DM Mono', monospace">
+                    {((tick / 100) * maxPrice).toFixed(2)}
+                  </text>
+                </g>
+              );
+            })}
+
+            <line x1={padL} y1={padT + plotH} x2={padL + plotW} y2={padT + plotH} stroke="rgba(255,255,255,0.2)" strokeWidth="1" />
+            <line x1={padL} y1={padT} x2={padL} y2={padT + plotH} stroke="rgba(255,255,255,0.2)" strokeWidth="1" />
+
+            <polyline fill="none" stroke="#34d399" strokeWidth="2.2" strokeLinejoin="round" strokeLinecap="round" points={yesLine} />
+            <polyline fill="none" stroke="#f87171" strokeWidth="2.2" strokeLinejoin="round" strokeLinecap="round" points={noLine} />
+
+            {coords.map((pt) => (
+              <g key={pt.point.ts}>
+                <circle
+                  cx={pt.x}
+                  cy={pt.yYes}
+                  r={3.2}
+                  fill="#34d399"
+                  opacity={0.95}
+                  onMouseEnter={() => {
+                    setHoveredPoint({
+                      eventId: row.eventId,
+                      timeLabel: pt.point.timeLabel,
+                      yesStepScore: pt.yesVal,
+                      noStepScore: 100 - pt.noInverted,
+                    });
+                  }}
+                >
+                  <title>{`${pt.point.timeLabel}\nYES: ${pt.yesVal.toFixed(2)}\nNO: ${(100 - pt.noInverted).toFixed(2)}`}</title>
+                </circle>
+                <circle
+                  cx={pt.x}
+                  cy={pt.yNo}
+                  r={3.2}
+                  fill="#f87171"
+                  opacity={0.95}
+                  onMouseEnter={() => {
+                    setHoveredPoint({
+                      eventId: row.eventId,
+                      timeLabel: pt.point.timeLabel,
+                      yesStepScore: pt.yesVal,
+                      noStepScore: 100 - pt.noInverted,
+                    });
+                  }}
+                >
+                  <title>{`${pt.point.timeLabel}\nNO Inverted (100-NO): ${pt.noInverted.toFixed(2)}`}</title>
+                </circle>
+              </g>
+            ))}
+
+            {points.map((p, i) => {
+              const x = padL + (points.length <= 1 ? plotW / 2 : (i / (points.length - 1)) * plotW);
+              if (i % Math.ceil(points.length / 8) !== 0 && i !== points.length - 1) return null;
+              return (
+                <text
+                  key={`${p.ts}-label`}
+                  x={x}
+                  y={padT + plotH + 16}
+                  textAnchor="middle"
+                  fill="rgba(255,255,255,0.36)"
+                  fontSize="10"
+                  fontFamily="'DM Mono', monospace"
+                >
+                  {p.timeLabel}
+                </text>
+              );
+            })}
+          </svg>
+        </div>
+
+        <div style={{ display: "flex", gap: 12, marginTop: 8, fontSize: 11 }}>
+          <span style={{ color: "#34d399" }}>■ YES (upwards)</span>
+          <span style={{ color: "#f87171" }}>■ NO Opposite direction (100 - NO，downwards)</span>
+        </div>
+
+        <div style={{
+          marginTop: 8,
+          border: "1px solid rgba(255,255,255,0.08)",
+          borderRadius: 8,
+          background: "rgba(255,255,255,0.02)",
+          padding: "8px 10px",
+          fontSize: 11,
+          color: "rgba(255,255,255,0.72)",
+          fontFamily: "'DM Mono', monospace",
+        }}>
+          {hoveredPoint && hoveredPoint.eventId === row.eventId
+            ? `Tooltip: ${hoveredPoint.timeLabel} | YES ${hoveredPoint.yesStepScore.toFixed(2)} | NO ${hoveredPoint.noStepScore.toFixed(2)}`
+            : "Tooltip: hover any chart point to inspect YES/NO (actual) values. Gap = lead-lag缺口."}
+        </div>
+      </div>
+    );
+  }
+
+  useEffect(() => {
+    let alive = true;
+    async function initialLoad() {
+      if (!alive) return;
+      await loadRanking(false);
+    }
+    initialLoad();
+
+    const interval = setInterval(() => {
+      loadRanking(true);
+    }, 60_000);
+
+    return () => {
+      alive = false;
+      clearInterval(interval);
+    };
+  }, [loadRanking]);
+
+  const top = useMemo(() => (rows.length > 0 ? rows[0] : null), [rows]);
+
   return (
     <div style={{ background: "#160c03", minHeight: "100vh", color: "white", fontFamily: "'DM Sans', sans-serif" }}>
       <PolyHeader active="EliteLeadLag" />
@@ -12,19 +378,178 @@ export default function LeadLagRankingPage() {
           🚀 Lead-Lag Ranking
         </h1>
         <p style={{ marginTop: 8, color: "rgba(255,255,255,0.48)", fontSize: 14 }}>
-          Rank markets by lead-lag strength between imbalance and volatility signals.
+          Detecting the leading nature of YES/NO signals—identifying which breaks out first and with what intensity—is typically a precursor to a 'major market move'.
         </p>
+        <div style={{ marginTop: 8, fontSize: 12, color: "rgba(255,255,255,0.6)" }}>
+          Data source: /api/polymarket + /api/polymarket/volatility-rating (live lead-lag analysis over 1H window).
+        </div>
 
-        <div style={{
-          marginTop: 18,
-          border: "1px solid rgba(249,115,22,0.22)",
-          borderRadius: 14,
-          background: "linear-gradient(135deg, rgba(249,115,22,0.1), rgba(255,255,255,0.02))",
-          padding: "16px 18px",
-        }}>
-          <div style={{ fontSize: 12, color: "rgba(255,255,255,0.6)", lineHeight: 1.6 }}>
-            This page is now independent from leaderboard and reserved for PolyPulse elite lead-lag ranking.
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 16, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 12, color: "rgba(255,255,255,0.55)" }}>
+            Updated: {updatedAt || "--:--:--"}
           </div>
+          <button
+            onClick={() => loadRanking(true)}
+            disabled={refreshing}
+            style={{
+              border: "1px solid rgba(249,115,22,0.3)",
+              background: refreshing ? "rgba(249,115,22,0.06)" : "rgba(249,115,22,0.12)",
+              color: refreshing ? "rgba(255,255,255,0.5)" : "#f97316",
+              borderRadius: 9,
+              padding: "8px 12px",
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: refreshing ? "not-allowed" : "pointer",
+              fontFamily: "'DM Sans', sans-serif",
+            }}
+          >
+            {refreshing ? "Refreshing..." : "Refresh"}
+          </button>
+        </div>
+
+        {top && (
+          <div style={{
+            marginTop: 14,
+            border: "1px solid rgba(249,115,22,0.35)",
+            borderRadius: 14,
+            background: "linear-gradient(135deg, rgba(249,115,22,0.14), rgba(255,255,255,0.02))",
+            padding: "14px 16px",
+          }}>
+            <div style={{ fontSize: 10, fontWeight: 800, color: "#fb923c", letterSpacing: "0.1em", textTransform: "uppercase" }}>
+              🔥 Biggest Lead-Lag Anomaly (Precursor to Big Move)
+            </div>
+            <div style={{ marginTop: 6, fontSize: 17, fontWeight: 700, color: "white" }}>{top.title}</div>
+            <div style={{ marginTop: 5, fontSize: 12, color: "rgba(255,255,255,0.62)" }}>
+              <span style={{ color: top.leadingSignal === "YES" ? "#34d399" : "#f87171", fontWeight: 800 }}>
+                {top.leadingSignal} leads
+              </span>
+              {" · "}
+              Lead Strength: <span style={{ color: "#f97316", fontWeight: 800 }}>{top.leadStrength.toFixed(2)}</span>
+              {" · "}
+              YES Volatility: <span style={{ color: "#34d399", fontWeight: 700 }}>{top.yesVolatility.toFixed(2)}</span>
+              {" · "}
+              NO Volatility: <span style={{ color: "#f87171", fontWeight: 700 }}>{top.noVolatility.toFixed(2)}</span>
+            </div>
+          </div>
+        )}
+
+        <div style={{ marginTop: 14, border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, overflow: "hidden", background: "rgba(255,255,255,0.02)" }}>
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "70px minmax(260px, 1fr) 110px 130px 110px 110px 120px",
+            gap: 8,
+            padding: "10px 12px",
+            background: "rgba(255,255,255,0.03)",
+            borderBottom: "1px solid rgba(255,255,255,0.08)",
+            fontSize: 10,
+            color: "rgba(255,255,255,0.52)",
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            fontWeight: 700,
+          }}>
+            <span>Rank</span>
+            <span>Market</span>
+            <span style={{ textAlign: "right" }}>Leading</span>
+            <span style={{ textAlign: "right" }}>Lead Strength</span>
+            <span style={{ textAlign: "right" }}>YES Vol</span>
+            <span style={{ textAlign: "right" }}>NO Vol</span>
+            <span style={{ textAlign: "right" }}>Volume</span>
+          </div>
+
+          {loading && (
+            <div style={{ padding: "16px 12px", color: "rgba(255,255,255,0.62)", fontSize: 13 }}>Loading lead-lag ranking...</div>
+          )}
+
+          {!loading && error && (
+            <div style={{ padding: "16px 12px", color: "#fca5a5", fontSize: 13 }}>{error}</div>
+          )}
+
+          {!loading && !error && rows.length === 0 && (
+            <div style={{ padding: "16px 12px", color: "rgba(255,255,255,0.55)", fontSize: 13 }}>No markets have meaningful lead-lag activity yet.</div>
+          )}
+
+          {!loading && !error && rows.map((row, index) => (
+            <div key={row.eventId}>
+              {selectedEventId === row.eventId && row.points.length > 0 && renderInlineChart(row)}
+              <div
+                onClick={() => {
+                  setSelectedEventId(row.eventId);
+                  setContextMenu(null);
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setSelectedEventId(row.eventId);
+                  setContextMenu({ x: e.clientX, y: e.clientY, row });
+                }}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "70px minmax(260px, 1fr) 110px 130px 110px 110px 120px",
+                  gap: 8,
+                  padding: "11px 12px",
+                  borderBottom: "1px solid rgba(255,255,255,0.05)",
+                  alignItems: "center",
+                  background:
+                    selectedEventId === row.eventId
+                      ? "rgba(249,115,22,0.16)"
+                      : index === 0
+                        ? "rgba(249,115,22,0.07)"
+                        : "transparent",
+                  cursor: "pointer",
+                }}
+              >
+                <span style={{ color: index === 0 ? "#f97316" : "rgba(255,255,255,0.75)", fontWeight: 800 }}>
+                  #{index + 1}
+                </span>
+                <span style={{ color: "rgba(255,255,255,0.9)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {row.title}
+                </span>
+                <span style={{ textAlign: "right", color: row.leadingSignal === "YES" ? "#34d399" : "#f87171", fontWeight: 800 }}>
+                  {row.leadingSignal}
+                </span>
+                <span style={{ textAlign: "right", color: "#f97316", fontWeight: 800 }}>{row.leadStrength.toFixed(2)}</span>
+                <span style={{ textAlign: "right", color: "#34d399", fontWeight: 700 }}>{row.yesVolatility.toFixed(2)}</span>
+                <span style={{ textAlign: "right", color: "#f87171", fontWeight: 700 }}>{row.noVolatility.toFixed(2)}</span>
+                <span style={{ textAlign: "right", color: "rgba(255,255,255,0.62)", fontWeight: 600 }}>{formatVolume(row.volume)}</span>
+              </div>
+            </div>
+          ))}
+
+          {contextMenu && (
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                position: "fixed",
+                top: contextMenu.y,
+                left: contextMenu.x,
+                zIndex: 999,
+                border: "1px solid rgba(249,115,22,0.24)",
+                borderRadius: 10,
+                background: "#1e1108",
+                boxShadow: "0 10px 28px rgba(0,0,0,0.6)",
+                padding: 6,
+                minWidth: 170,
+              }}
+            >
+              <button
+                onClick={() => navigateToEvent(contextMenu.row.eventId)}
+                style={{
+                  width: "100%",
+                  border: "none",
+                  borderRadius: 8,
+                  background: "transparent",
+                  color: "rgba(255,255,255,0.85)",
+                  textAlign: "left",
+                  padding: "8px 10px",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  fontFamily: "'DM Sans', sans-serif",
+                }}
+              >
+                View the Event
+              </button>
+            </div>
+          )}
         </div>
       </main>
     </div>
