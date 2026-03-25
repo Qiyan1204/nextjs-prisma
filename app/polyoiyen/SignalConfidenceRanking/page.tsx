@@ -40,6 +40,8 @@ interface ConfidenceRow {
   title: string;
   participants: number;
   archiveHealth: number;
+  recurrenceFactor: number;
+  recurrenceCategory: string;
   confidenceScore: number;
   volume: number;
   points: VolatilityPoint[];
@@ -89,6 +91,41 @@ function computeArchiveHealth(yes: PredictorsStats, no: PredictorsStats): number
   return (dailyCompleteness * 0.7 + weeklyCompleteness * 0.3) * 100;
 }
 
+interface RecurrenceProfile {
+  factor: number;
+  category: string;
+}
+
+const RECURRENCE_RULES: Array<{ category: string; factor: number; keywords: string[] }> = [
+  {
+    category: "Elon Tweets",
+    factor: 20,
+    keywords: ["elon", "musk", "tesla", "spacex", "x.com", "twitter"],
+  },
+  {
+    category: "Sports",
+    factor: 20,
+    keywords: ["sports", "nba", "nfl", "mlb", "soccer", "football", "championship", "playoff"],
+  },
+  {
+    category: "Politics/Drama",
+    factor: -30,
+    keywords: ["politics", "drama", "election", "debate", "scandal", "impeachment", "senate", "congress"],
+  },
+];
+
+function getRecurrenceProfile(title: string): RecurrenceProfile {
+  const normalized = String(title || "").toLowerCase();
+
+  for (const rule of RECURRENCE_RULES) {
+    if (rule.keywords.some((k) => normalized.includes(k))) {
+      return { factor: rule.factor, category: rule.category };
+    }
+  }
+
+  return { factor: 0, category: "Neutral" };
+}
+
 export default function SignalConfidenceRankingPage() {
   const router = useRouter();
   const [rows, setRows] = useState<ConfidenceRow[]>([]);
@@ -114,13 +151,17 @@ export default function SignalConfidenceRankingPage() {
     setError(null);
 
     try {
-      const eventsRes = await fetch("/api/polymarket?limit=24&offset=0");
+      const eventsRes = await fetch("/api/polymarket?limit=120&offset=0");
       if (!eventsRes.ok) throw new Error("Failed to fetch active markets");
 
       const events: PolyEvent[] = await eventsRes.json();
-      const candidates = (Array.isArray(events) ? events : [])
-        .filter((e) => Array.isArray(e.markets) && e.markets.length > 0)
-        .slice(0, 18);
+      const pool = (Array.isArray(events) ? events : [])
+        .filter((e) => Array.isArray(e.markets) && e.markets.length > 0);
+
+      // Prioritize events that match recurrence rules so recurring categories are visible.
+      const recurrenceCandidates = pool.filter((e) => getRecurrenceProfile(e.title).factor !== 0);
+      const neutralCandidates = pool.filter((e) => getRecurrenceProfile(e.title).factor === 0);
+      const candidates = [...recurrenceCandidates, ...neutralCandidates].slice(0, 18);
 
       const nowIso = new Date().toISOString();
       const oneHourAgoIso = new Date(Date.now() - 60 * 60 * 1000).toISOString();
@@ -157,7 +198,8 @@ export default function SignalConfidenceRankingPage() {
           const participants = Number(yesData.uniquePredictors || 0) + Number(noData.uniquePredictors || 0);
           const archiveHealth = computeArchiveHealth(yesData, noData);
           const participantsScore = participantsToScore(participants);
-          const confidenceScore = participantsScore * 0.65 + archiveHealth * 0.35;
+          const recurrence = getRecurrenceProfile(event.title);
+          const confidenceScore = participantsScore * 0.65 + archiveHealth * 0.35 + recurrence.factor;
 
           let points: VolatilityPoint[] = [];
           if (volRes.ok) {
@@ -170,6 +212,8 @@ export default function SignalConfidenceRankingPage() {
             title: event.title,
             participants,
             archiveHealth,
+            recurrenceFactor: recurrence.factor,
+            recurrenceCategory: recurrence.category,
             confidenceScore,
             volume: Number(event.volume || 0),
             points,
@@ -181,6 +225,7 @@ export default function SignalConfidenceRankingPage() {
         .filter((x): x is ConfidenceRow => Boolean(x))
         .sort((a, b) => {
           if (b.confidenceScore !== a.confidenceScore) return b.confidenceScore - a.confidenceScore;
+          if (b.recurrenceFactor !== a.recurrenceFactor) return b.recurrenceFactor - a.recurrenceFactor;
           if (b.participants !== a.participants) return b.participants - a.participants;
           return b.archiveHealth - a.archiveHealth;
         });
@@ -368,7 +413,7 @@ export default function SignalConfidenceRankingPage() {
           🛡️ Signal Confidence Ranking
         </h1>
         <p style={{ marginTop: 8, color: "rgba(255,255,255,0.48)", fontSize: 14 }}>
-          Rank by 'Predictors per Market' (participation volume) and 'Archive Health' (data integrity). Higher participation and more robust data translate to signals that are less susceptible to manipulation.
+          Rank by Predictors per Market, Archive Health, and Recurrence Factor. Recurring themes (Elon Tweets, Sports) get +20, while one-off Politics/Drama events get -30.
         </p>
         <div style={{ marginTop: 8, fontSize: 12, color: "rgba(255,255,255,0.6)" }}>
           Data source: /api/polymarket + /api/polymarket/predictors (live query).
@@ -412,6 +457,10 @@ export default function SignalConfidenceRankingPage() {
             <div style={{ marginTop: 5, fontSize: 12, color: "rgba(255,255,255,0.62)" }}>
               Confidence: <span style={{ color: "#f97316", fontWeight: 800 }}>{top.confidenceScore.toFixed(2)}</span>
               {" · "}
+              RF: <span style={{ color: top.recurrenceFactor >= 0 ? "#34d399" : "#f87171", fontWeight: 700 }}>{top.recurrenceFactor >= 0 ? `+${top.recurrenceFactor}` : top.recurrenceFactor}</span>
+              {" · "}
+              Category: <span style={{ color: "rgba(255,255,255,0.86)", fontWeight: 600 }}>{top.recurrenceCategory}</span>
+              {" · "}
               Participants: <span style={{ color: "#34d399", fontWeight: 700 }}>{top.participants.toLocaleString()}</span>
               {" · "}
               Archive Health: <span style={{ color: "#60a5fa", fontWeight: 700 }}>{top.archiveHealth.toFixed(1)}%</span>
@@ -422,7 +471,7 @@ export default function SignalConfidenceRankingPage() {
         <div style={{ marginTop: 14, border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, overflow: "hidden", background: "rgba(255,255,255,0.02)" }}>
           <div style={{
             display: "grid",
-            gridTemplateColumns: "70px minmax(260px, 1fr) 130px 150px 140px 120px",
+            gridTemplateColumns: "70px minmax(220px, 1fr) 120px 120px 140px 140px 140px 120px",
             gap: 8,
             padding: "10px 12px",
             background: "rgba(255,255,255,0.03)",
@@ -436,6 +485,8 @@ export default function SignalConfidenceRankingPage() {
             <span>Rank</span>
             <span>Market</span>
             <span style={{ textAlign: "right" }}>Confidence</span>
+            <span style={{ textAlign: "right" }}>RF</span>
+            <span style={{ textAlign: "right" }}>Category</span>
             <span style={{ textAlign: "right" }}>Participants</span>
             <span style={{ textAlign: "right" }}>Archive Health</span>
             <span style={{ textAlign: "right" }}>Volume</span>
@@ -468,7 +519,7 @@ export default function SignalConfidenceRankingPage() {
                 }}
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "70px minmax(260px, 1fr) 130px 150px 140px 120px",
+                  gridTemplateColumns: "70px minmax(220px, 1fr) 120px 120px 140px 140px 140px 120px",
                   gap: 8,
                   padding: "11px 12px",
                   borderBottom: "1px solid rgba(255,255,255,0.05)",
@@ -489,6 +540,12 @@ export default function SignalConfidenceRankingPage() {
                   {row.title}
                 </span>
                 <span style={{ textAlign: "right", color: "#f97316", fontWeight: 800 }}>{row.confidenceScore.toFixed(2)}</span>
+                <span style={{ textAlign: "right", color: row.recurrenceFactor >= 0 ? "#34d399" : "#f87171", fontWeight: 700 }}>
+                  {row.recurrenceFactor >= 0 ? `+${row.recurrenceFactor}` : row.recurrenceFactor}
+                </span>
+                <span style={{ textAlign: "right", color: "rgba(255,255,255,0.82)", fontWeight: 600 }}>
+                  {row.recurrenceCategory}
+                </span>
                 <span style={{ textAlign: "right", color: "#34d399", fontWeight: 700 }}>{row.participants.toLocaleString()}</span>
                 <span style={{ textAlign: "right", color: "#60a5fa", fontWeight: 700 }}>{row.archiveHealth.toFixed(1)}%</span>
                 <span style={{ textAlign: "right", color: "rgba(255,255,255,0.62)", fontWeight: 600 }}>{formatVolume(row.volume)}</span>

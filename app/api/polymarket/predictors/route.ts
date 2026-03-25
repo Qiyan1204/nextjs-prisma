@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { recordPull } from "@/lib/pullMetrics";
 
 interface TradeItem {
   id?: string;
@@ -12,13 +13,6 @@ interface TradeItem {
 }
 
 const ORDERBOOK_SUBGRAPH_URL = "https://api.goldsky.com/api/public/project_cl6mb8i9h0003e201j6li0diw/subgraphs/orderbook-subgraph/0.0.1/gn";
-
-interface DailyBucket {
-  date: string;
-  uniquePredictors: number;
-  tradeCount: number;
-  notional: number;
-}
 
 interface HistoryPoint {
   label: string;
@@ -124,6 +118,7 @@ async function fetchSubgraphPage(
 }
 
 export async function GET(req: NextRequest) {
+  recordPull("poly_probe");
   const { searchParams } = new URL(req.url);
   const conditionId = searchParams.get("conditionId")?.trim();
   const assetIdsParam = searchParams.get("assetIds")?.trim() || "";

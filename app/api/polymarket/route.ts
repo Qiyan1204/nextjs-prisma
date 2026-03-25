@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import { recordPull } from "@/lib/pullMetrics";
 
 // Proxy to Polymarket gamma API to avoid CORS issues
 export async function GET(req: NextRequest) {
+  recordPull("poly_probe");
   const { searchParams } = new URL(req.url);
 
   const id = searchParams.get("id");

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { recordPull } from "@/lib/pullMetrics";
 
 interface TradeItem {
   id?: string;
@@ -155,6 +156,7 @@ async function fetchSubgraphPage(
 }
 
 export async function GET(req: NextRequest) {
+  recordPull("poly_probe");
   const { searchParams } = new URL(req.url);
   const yesAssetId = searchParams.get("yesAssetId")?.trim() || "";
   const noAssetId = searchParams.get("noAssetId")?.trim() || "";

@@ -372,3 +372,13 @@ model PolyAlert {
   @@index([userId])
   @@index([eventId])
 }
+
+// Persistent API pull/execution telemetry for OiyenCompare density charts
+model PullMetric {
+  id        Int      @id @default(autoincrement())
+  kind      String   // "poly_probe" | "invest_pull" | "invest_action"
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([kind, createdAt])
+}

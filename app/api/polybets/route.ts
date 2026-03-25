@@ -2,12 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { getAuthUser } from "@/lib/auth";
 import { checkAndTriggerLargeOrderAlerts } from "@/lib/triggerAlerts";
+import { recordPull } from "@/lib/pullMetrics";
 
 // GET: fetch user's bets, positions, or check if a large order exists
 // ?positions=true → computed grouped portfolio positions
 // ?checkLargeOrder=true&eventId=X&side=YES&threshold=500 → large order detection
 // default → raw bet list
 export async function GET(req: NextRequest) {
+  recordPull("invest_pull");
   try {
     const authUser = await getAuthUser();
     if (!authUser) {
@@ -132,6 +134,7 @@ export async function GET(req: NextRequest) {
 
 // POST: place a new bet (BUY, SELL, or CLAIM)
 export async function POST(req: NextRequest) {
+  recordPull("invest_action");
   try {
     const authUser = await getAuthUser();
     if (!authUser) {
