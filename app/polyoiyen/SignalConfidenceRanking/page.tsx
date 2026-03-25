@@ -108,7 +108,7 @@ const RECURRENCE_RULES: Array<{ category: string; factor: number; keywords: stri
     keywords: ["sports", "nba", "nfl", "mlb", "soccer", "football", "championship", "playoff"],
   },
   {
-    category: "Politics/Drama",
+    category: "Politics",
     factor: -30,
     keywords: ["politics", "drama", "election", "debate", "scandal", "impeachment", "senate", "congress"],
   },
