@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { recordPull } from "@/lib/pullMetrics";
+import { recordAvailability, recordPull } from "@/lib/pullMetrics";
 
 // Proxy to Polymarket gamma API to avoid CORS issues
 export async function GET(req: NextRequest) {
@@ -34,6 +34,7 @@ export async function GET(req: NextRequest) {
     });
 
     if (!res.ok) {
+      recordAvailability(false);
       return NextResponse.json(
         { error: "Upstream API error" },
         { status: res.status }
@@ -41,12 +42,14 @@ export async function GET(req: NextRequest) {
     }
 
     const data = await res.json();
+    recordAvailability(true);
     // When fetching by id, wrap in array under 'events' key for consistency
     if (id) {
       return NextResponse.json({ events: [data] });
     }
     return NextResponse.json(data);
   } catch (error) {
+    recordAvailability(false);
     console.error("Polymarket proxy error:", error);
     return NextResponse.json(
       { error: "Failed to fetch from Polymarket" },

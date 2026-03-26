@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { recordPull } from "@/lib/pullMetrics";
+import { recordAvailability, recordPull } from "@/lib/pullMetrics";
 
 interface TradeItem {
   id?: string;
@@ -281,6 +281,7 @@ export async function GET(req: NextRequest) {
       signal = "whale_accumulation";
     }
 
+    recordAvailability(true);
     return NextResponse.json({
       conditionId,
       assetIds: Array.from(assetIdSet),
@@ -321,6 +322,7 @@ export async function GET(req: NextRequest) {
       fetchedAt: new Date().toISOString(),
     });
   } catch (error) {
+    recordAvailability(false);
     console.error("Predictors metrics proxy error:", error);
     return NextResponse.json({ error: "Failed to fetch predictors metrics" }, { status: 500 });
   }

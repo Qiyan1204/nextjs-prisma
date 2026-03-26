@@ -176,18 +176,65 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const bet = await prisma.polyBet.create({
-      data: {
-        userId: authUser.userId,
-        eventId: String(eventId),
-        marketQuestion: String(marketQuestion),
-        side: String(side),
-        type: betType,
-        amount: Number(amount),
-        shares: Number(shares),
-        price: Number(price),
-        category: category ? String(category) : "Other",
-      },
+    const amountNumber = Number(amount);
+
+    const bet = await prisma.$transaction(async (tx) => {
+      const currentUser = await tx.user.findUnique({
+        where: { id: authUser.userId },
+        select: { walletBalance: true },
+      });
+
+      if (!currentUser) {
+        throw new Error("User not found");
+      }
+
+      const currentBalance = Number(currentUser.walletBalance);
+      let balanceDelta = 0;
+      if (betType === "BUY") {
+        balanceDelta = -amountNumber;
+      } else {
+        // SELL / CLAIM increase wallet cash.
+        balanceDelta = amountNumber;
+      }
+
+      const newBalance = currentBalance + balanceDelta;
+      if (newBalance < 0) {
+        throw new Error("INSUFFICIENT_BALANCE");
+      }
+
+      await tx.user.update({
+        where: { id: authUser.userId },
+        data: {
+          walletBalance: {
+            increment: balanceDelta,
+          },
+        },
+      });
+
+      const createdBet = await tx.polyBet.create({
+        data: {
+          userId: authUser.userId,
+          eventId: String(eventId),
+          marketQuestion: String(marketQuestion),
+          side: String(side),
+          type: betType,
+          amount: amountNumber,
+          shares: Number(shares),
+          price: Number(price),
+          category: category ? String(category) : "Other",
+        },
+      });
+
+      await tx.polyTransaction.create({
+        data: {
+          userId: authUser.userId,
+          type: "TRADE",
+          amount: balanceDelta,
+          balanceAfter: newBalance,
+        },
+      });
+
+      return createdBet;
     });
 
     // Check if this bet triggers any user's LARGE_ORDER alerts (any user, not just the bettor)
@@ -199,6 +246,9 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ bet }, { status: 201 });
   } catch (error) {
+    if (error instanceof Error && error.message === "INSUFFICIENT_BALANCE") {
+      return NextResponse.json({ error: "Insufficient wallet balance" }, { status: 400 });
+    }
     console.error("Create bet error:", error);
     return NextResponse.json({ error: "Failed to create bet" }, { status: 500 });
   }

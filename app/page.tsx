@@ -6,11 +6,41 @@ import { useAuth } from "@/app/hooks/useAuth";
 import { useState, useRef, useEffect } from "react";
 import { signOut } from "next-auth/react";
 
+type PlatformMetrics = {
+  aum: number;
+  activeInvestors: number;
+  uptimePercent: number;
+  avgAnnualReturn: number | null;
+  hasReturnData: boolean;
+};
+
+function formatCompactCurrency(value: number) {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
+function formatCompactNumber(value: number) {
+  return new Intl.NumberFormat("en-US", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
+function formatPercent(value: number) {
+  const rounded = Number.isFinite(value) ? value.toFixed(2) : "0.00";
+  return `${rounded}%`;
+}
+
 export default function Home() {
   const router = useRouter();
   const { isLoggedIn, loading, user, refetch } = useAuth();
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const [platformMetrics, setPlatformMetrics] = useState<PlatformMetrics | null>(null);
 
   function handleProtectedNav() {
     if (loading) return;
@@ -49,6 +79,29 @@ export default function Home() {
     }
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadPlatformMetrics() {
+      try {
+        const response = await fetch("/api/platform-metrics", { cache: "no-store" });
+        if (!response.ok) return;
+        const data: PlatformMetrics = await response.json();
+        if (isMounted) {
+          setPlatformMetrics(data);
+        }
+      } catch (error) {
+        console.error("Failed to load platform metrics:", error);
+      }
+    }
+
+    loadPlatformMetrics();
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   return (
@@ -564,10 +617,34 @@ export default function Home() {
       <section className="stats-section">
         <div className="container">
           <div className="stats-grid">
-            <div><div className="stat-number">$2.4B+</div><div className="stat-label">Assets Under Management</div></div>
-            <div><div className="stat-number">180K+</div><div className="stat-label">Active Investors</div></div>
-            <div><div className="stat-number">99.97%</div><div className="stat-label">Uptime</div></div>
-            <div><div className="stat-number">12.4%</div><div className="stat-label">Avg. Annual Return</div></div>
+            <div>
+              <div className="stat-number">
+                {platformMetrics ? formatCompactCurrency(platformMetrics.aum) : "-"}
+              </div>
+              <div className="stat-label">Assets Under Management</div>
+            </div>
+            <div>
+              <div className="stat-number">
+                {platformMetrics ? formatCompactNumber(platformMetrics.activeInvestors) : "-"}
+              </div>
+              <div className="stat-label">Active Investors</div>
+            </div>
+            <div>
+              <div className="stat-number">
+                {platformMetrics ? formatPercent(platformMetrics.uptimePercent) : "-"}
+              </div>
+              <div className="stat-label">Uptime</div>
+            </div>
+            <div>
+              <div className="stat-number">
+                {platformMetrics
+                  ? platformMetrics.hasReturnData && platformMetrics.avgAnnualReturn !== null
+                    ? formatPercent(platformMetrics.avgAnnualReturn)
+                    : "N/A"
+                  : "-"}
+              </div>
+              <div className="stat-label">Avg. Annual Return</div>
+            </div>
           </div>
         </div>
       </section>

@@ -166,7 +166,7 @@ export default function ProfilePage() {
   };
 
   // Execute top-up
-  const executeTopUp = () => {
+  const executeTopUp = async () => {
     const amount = parseFloat(topUpAmount);
     if (!amount || amount <= 0) {
       setMessage({ type: 'error', text: 'Please enter a valid amount' });
@@ -189,6 +189,25 @@ export default function ProfilePage() {
     const userId = (user as any)?.id;
     if (!userId) {
       setMessage({ type: 'error', text: 'User not found' });
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/wallet/deposit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amount }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to deposit funds');
+      }
+    } catch (error) {
+      setMessage({
+        type: 'error',
+        text: error instanceof Error ? error.message : 'Failed to deposit funds',
+      });
       return;
     }
 

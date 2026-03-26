@@ -523,7 +523,7 @@ export default function InvestmentPage() {
     }
   };
 
-  const executeTopUp = () => {
+  const executeTopUp = async () => {
   const amount = parseFloat(topUpAmount);
   if (!amount || amount <= 0) {
     setError("Please enter a valid amount");
@@ -539,6 +539,22 @@ export default function InvestmentPage() {
   // Maximum top-up: $1,000,000 per transaction
   if (amount > 1000000) {
     setError("Maximum top-up amount is $1,000,000 per transaction");
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/wallet/deposit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amount }),
+    });
+
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || 'Failed to deposit funds');
+    }
+  } catch (error) {
+    setError(error instanceof Error ? error.message : 'Failed to deposit funds');
     return;
   }
 

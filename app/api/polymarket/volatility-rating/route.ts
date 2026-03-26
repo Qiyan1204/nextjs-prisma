@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { recordPull } from "@/lib/pullMetrics";
+import { recordAvailability, recordPull } from "@/lib/pullMetrics";
 
 interface TradeItem {
   id?: string;
@@ -307,6 +307,7 @@ export async function GET(req: NextRequest) {
     const yesAvgPerHour = totalHours > 0 ? yesTotalScore / totalHours : 0;
     const noAvgPerHour = totalHours > 0 ? noTotalScore / totalHours : 0;
 
+    recordAvailability(true);
     return NextResponse.json({
       window: {
         startTime: toIsoUtc(startSec),
@@ -339,6 +340,7 @@ export async function GET(req: NextRequest) {
       fetchedAt: new Date().toISOString(),
     });
   } catch (error) {
+    recordAvailability(false);
     console.error("Volatility rating API error:", error);
     return NextResponse.json({ error: "Failed to compute volatility rating" }, { status: 500 });
   }

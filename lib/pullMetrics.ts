@@ -1,6 +1,6 @@
 import prisma from "@/lib/prisma";
 
-type PullKind = "poly_probe" | "invest_pull" | "invest_action";
+type PullKind = "poly_probe" | "invest_pull" | "invest_action" | "health_ok" | "health_fail";
 
 type PullMetricDelegate = {
   create: (args: { data: { kind: PullKind; createdAt: Date } }) => Promise<unknown>;
@@ -27,6 +27,10 @@ export function recordPull(kind: PullKind, ts = Date.now()): void {
     .catch(() => {
       // Telemetry failure should never block core API behavior.
     });
+}
+
+export function recordAvailability(ok: boolean, ts = Date.now()): void {
+  recordPull(ok ? "health_ok" : "health_fail", ts);
 }
 
 export async function getPullSeries(options: {
@@ -68,7 +72,7 @@ export async function getPullSeries(options: {
 
     if (row.kind === "poly_probe") {
       polyCounts.set(b, (polyCounts.get(b) || 0) + 1);
-    } else {
+    } else if (row.kind === "invest_pull" || row.kind === "invest_action") {
       investCounts.set(b, (investCounts.get(b) || 0) + 1);
     }
   }
