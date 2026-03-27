@@ -145,17 +145,21 @@ export async function GET(req: NextRequest) {
   }
 
   const notifyTimeZone = process.env.POLYOIYEN_NOTIFY_TZ || "Asia/Kuala_Lumpur";
+  const strictMinuteOnly = process.env.POLYOIYEN_NOTIFY_STRICT_MINUTE === "true";
   const now = new Date();
   const { hour, minute } = getHourMinuteInTimeZone(now, notifyTimeZone);
 
-  if (!force && !(hour === "00" && minute === "01")) {
+  const inNotificationWindow = strictMinuteOnly ? hour === "00" && minute === "01" : hour === "00";
+
+  if (!force && !inNotificationWindow) {
     return NextResponse.json({
       ok: true,
       skipped: true,
-      reason: "Not notification minute yet",
+      reason: strictMinuteOnly ? "Not notification minute yet" : "Not midnight notification window yet",
       now: now.toISOString(),
       timezone: notifyTimeZone,
       localTime: `${hour}:${minute}`,
+      strictMinuteOnly,
     });
   }
 
@@ -241,7 +245,7 @@ export async function GET(req: NextRequest) {
       const embed = {
         embeds: [
           {
-            title: "Event Ends Today (00:01 Reminder)",
+            title: strictMinuteOnly ? "Event Ends Today (00:01 Reminder)" : "Event Ends Today (Midnight Reminder)",
             description: [
               `User: **${user?.name || "User"}** (${user?.email || `ID ${target.userId}`})`,
               `Market: **${meta.title || target.marketQuestion}**`,
