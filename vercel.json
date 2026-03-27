@@ -1,6 +1,10 @@
 {
   "crons": [
     {
+      "path": "/api/polyoiyen/end-date-notify",
+      "schedule": "1 * * * *"
+    },
+    {
       "path": "/api/health",
       "schedule": "0 8 * * *"
     }
