@@ -29,6 +29,7 @@ type DraftEvent = {
 };
 
 const STORAGE_KEY = "polyoiyen-mycalendar-events-v1";
+const VOLATILITY_HIGH_THRESHOLD = 11;
 
 const WEEK_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -53,12 +54,35 @@ type PolyBetLite = {
 	side: PositionSide;
 	type?: string;
 	shares?: string | number;
+	amount?: string | number;
+};
+
+type PolyMarketLite = {
+	clobTokenIds?: string;
+	closed?: boolean;
 };
 
 type PolyEventLite = {
 	id: string;
 	title?: string;
 	endDate?: string;
+	markets?: PolyMarketLite[];
+};
+
+type EventInsightState = {
+	open: boolean;
+	loading: boolean;
+	error: string | null;
+	title: string;
+	endDateLabel: string;
+	eventId: string;
+	side?: PositionSide;
+	tradeVolume: number;
+	tradeCount: number;
+	sideVolume: number;
+	volatilityScore: number | null;
+	volatilityTotal: number | null;
+	windowLabel: string;
 };
 
 const SEED_EVENTS: CalendarEvent[] = [
@@ -148,6 +172,45 @@ function toNum(v: unknown) {
 	return Number.isFinite(n) ? n : 0;
 }
 
+function formatUsd(value: number) {
+	return new Intl.NumberFormat("en-US", {
+		style: "currency",
+		currency: "USD",
+		maximumFractionDigits: 2,
+	}).format(value);
+}
+
+function parseClobTokenIds(raw?: string) {
+	if (!raw) return null;
+	try {
+		const parsed = JSON.parse(raw) as unknown;
+		if (Array.isArray(parsed) && parsed.length >= 2) {
+			const yes = String(parsed[0] ?? "").trim();
+			const no = String(parsed[1] ?? "").trim();
+			if (yes && no) return { yes, no };
+		}
+	} catch {
+		// Ignore malformed token id payload.
+	}
+	return null;
+}
+
+function extractTokenIds(event?: PolyEventLite) {
+	if (!event?.markets?.length) return null;
+	const active = event.markets.find((m) => m.closed !== true);
+	const first = active ?? event.markets[0];
+	return parseClobTokenIds(first?.clobTokenIds);
+}
+
+function getVolatilityTone(score: number | null) {
+	if (score == null) return "vol-tone-1";
+	if (score >= 16) return "vol-tone-5";
+	if (score >= 11) return "vol-tone-4";
+	if (score >= 7) return "vol-tone-3";
+	if (score >= 4) return "vol-tone-2";
+	return "vol-tone-1";
+}
+
 function buildPositionReminders(bets: PolyBetLite[], eventMap: Map<string, PolyEventLite>) {
 	const byPosition = new Map<string, { netShares: number; title: string; side: PositionSide; eventId: string }>();
 
@@ -210,7 +273,11 @@ export default function MyCalendarPage() {
 	const [selectedDateKey, setSelectedDateKey] = useState(todayKey);
 	const [manualEvents, setManualEvents] = useState<CalendarEvent[]>([]);
 	const [positionEvents, setPositionEvents] = useState<CalendarEvent[]>([]);
+	const [userBets, setUserBets] = useState<PolyBetLite[]>([]);
+	const [eventMetaById, setEventMetaById] = useState<Record<string, PolyEventLite>>({});
+	const [eventVolatilityById, setEventVolatilityById] = useState<Record<string, number>>({});
 	const [positionSyncError, setPositionSyncError] = useState<string | null>(null);
+	const [insight, setInsight] = useState<EventInsightState | null>(null);
 	const [draft, setDraft] = useState<DraftEvent>({
 		title: "",
 		time: "09:00",
@@ -253,10 +320,14 @@ export default function MyCalendarPage() {
 
 				const betPayload = await betRes.json();
 				const bets = (betPayload?.bets ?? []) as PolyBetLite[];
+				if (alive) setUserBets(bets);
 				const eventIds = Array.from(new Set(bets.map((b) => b.eventId).filter(Boolean)));
 
 				if (eventIds.length === 0) {
-					if (alive) setPositionEvents([]);
+					if (alive) {
+						setPositionEvents([]);
+						setEventVolatilityById({});
+					}
 					return;
 				}
 
@@ -272,6 +343,12 @@ export default function MyCalendarPage() {
 								id: eventId,
 								title: event.title,
 								endDate: event.endDate,
+								markets: Array.isArray(event.markets)
+									? event.markets.map((m: { clobTokenIds?: string; closed?: boolean }) => ({
+										clobTokenIds: m?.clobTokenIds,
+										closed: m?.closed,
+									}))
+									: [],
 							} as PolyEventLite;
 						} catch {
 							return null;
@@ -283,12 +360,70 @@ export default function MyCalendarPage() {
 				for (const row of detailRows) {
 					if (row?.id) eventMap.set(row.id, row);
 				}
+				if (alive) {
+					const nextMeta: Record<string, PolyEventLite> = {};
+					for (const [id, meta] of eventMap.entries()) nextMeta[id] = meta;
+					setEventMetaById(nextMeta);
+				}
 
 				const reminders = buildPositionReminders(bets, eventMap);
-				if (alive) setPositionEvents(reminders);
+
+				const reminderEventIds = Array.from(new Set(reminders.map((r) => r.eventId).filter(Boolean))) as string[];
+				const volatilityRows: Array<{ eventId: string; score: number } | null> = [];
+				for (const eventId of reminderEventIds) {
+					const meta = eventMap.get(eventId);
+					const tokenIds = extractTokenIds(meta);
+					if (!meta?.endDate || !tokenIds) {
+						volatilityRows.push(null);
+						continue;
+					}
+
+					const now = new Date();
+					const rawEnd = new Date(meta.endDate);
+					if (Number.isNaN(rawEnd.getTime())) {
+						volatilityRows.push(null);
+						continue;
+					}
+					const endTime = rawEnd.getTime() > now.getTime() ? now : rawEnd;
+					const startTime = new Date(endTime.getTime() - 7 * 24 * 3600 * 1000);
+
+					try {
+						const params = new URLSearchParams({
+							yesAssetId: tokenIds.yes,
+							noAssetId: tokenIds.no,
+							startTime: startTime.toISOString(),
+							endTime: endTime.toISOString(),
+							bucketSeconds: "3600",
+						});
+						const res = await fetch(`/api/polymarket/volatility-rating?${params.toString()}`, { cache: "no-store" });
+						if (!res.ok) {
+							volatilityRows.push(null);
+							continue;
+						}
+
+						const payload = await res.json();
+						const yes = toNum(payload?.metrics?.yes?.averageVolatilityRatingPerHour);
+						const no = toNum(payload?.metrics?.no?.averageVolatilityRatingPerHour);
+						volatilityRows.push({ eventId, score: yes + no });
+					} catch {
+						volatilityRows.push(null);
+					}
+				}
+
+				if (alive) {
+					const nextVolatility: Record<string, number> = {};
+					for (const row of volatilityRows) {
+						if (row?.eventId) nextVolatility[row.eventId] = row.score;
+					}
+					setEventVolatilityById(nextVolatility);
+					setPositionEvents(reminders);
+				}
 			} catch (error) {
 				if (!alive) return;
 				setPositionEvents([]);
+				setUserBets([]);
+				setEventMetaById({});
+				setEventVolatilityById({});
 				setPositionSyncError(error instanceof Error ? error.message : "Failed to sync position reminders");
 			}
 		}
@@ -393,6 +528,110 @@ export default function MyCalendarPage() {
 		setManualEvents((prev) => prev.filter((event) => event.id !== eventId));
 	};
 
+	const openEventInsight = async (event: CalendarEvent) => {
+		if (!event.eventId) return;
+
+		const meta = eventMetaById[event.eventId];
+		const endDateLabel = meta?.endDate ? new Date(meta.endDate).toLocaleDateString("en-US") : "N/A";
+		const title = meta?.title || event.title || "Market Event";
+
+		const eventBets = userBets.filter((bet) => bet.eventId === event.eventId);
+		const tradeVolume = eventBets.reduce((acc, bet) => acc + Math.abs(toNum(bet.amount)), 0);
+		const tradeCount = eventBets.length;
+		const sideVolume = event.side
+			? eventBets
+					.filter((bet) => bet.side === event.side)
+					.reduce((acc, bet) => acc + Math.abs(toNum(bet.amount)), 0)
+			: 0;
+
+		setInsight({
+			open: true,
+			loading: true,
+			error: null,
+			title,
+			endDateLabel,
+			eventId: event.eventId,
+			side: event.side,
+			tradeVolume,
+			tradeCount,
+			sideVolume,
+			volatilityScore: null,
+			volatilityTotal: null,
+			windowLabel: "Past closes (7D)",
+		});
+
+		const tokenIds = extractTokenIds(meta);
+		const cachedScore = eventVolatilityById[event.eventId];
+		const hasCachedScore = Number.isFinite(cachedScore);
+		if (!tokenIds) {
+			setInsight((prev) => {
+				if (!prev || !prev.open || prev.eventId !== event.eventId) return prev;
+				return {
+					...prev,
+					loading: false,
+					error: "This event has no valid YES/NO token ids, so volatility score is unavailable.",
+				};
+			});
+			return;
+		}
+		if (hasCachedScore) {
+			setInsight((prev) => {
+				if (!prev || !prev.open || prev.eventId !== event.eventId) return prev;
+				return {
+					...prev,
+					loading: false,
+					volatilityScore: cachedScore,
+					volatilityTotal: null,
+					windowLabel: "Past closes (cached 7D score)",
+				};
+			});
+			return;
+		}
+
+		const now = new Date();
+		const rawEnd = meta?.endDate ? new Date(meta.endDate) : now;
+		const endTime = rawEnd.getTime() > now.getTime() ? now : rawEnd;
+		const startTime = new Date(endTime.getTime() - 7 * 24 * 3600 * 1000);
+
+		try {
+			const params = new URLSearchParams({
+				yesAssetId: tokenIds.yes,
+				noAssetId: tokenIds.no,
+				startTime: startTime.toISOString(),
+				endTime: endTime.toISOString(),
+				bucketSeconds: "3600",
+			});
+			const res = await fetch(`/api/polymarket/volatility-rating?${params.toString()}`, { cache: "no-store" });
+			if (!res.ok) throw new Error("Failed to load volatility score");
+
+			const payload = await res.json();
+			const yes = toNum(payload?.metrics?.yes?.averageVolatilityRatingPerHour);
+			const no = toNum(payload?.metrics?.no?.averageVolatilityRatingPerHour);
+			const yesTotal = toNum(payload?.metrics?.yes?.totalVolatilityRating);
+			const noTotal = toNum(payload?.metrics?.no?.totalVolatilityRating);
+
+			setInsight((prev) => {
+				if (!prev || !prev.open || prev.eventId !== event.eventId) return prev;
+				return {
+					...prev,
+					loading: false,
+					volatilityScore: yes + no,
+					volatilityTotal: yesTotal + noTotal,
+					windowLabel: `Past closes (${startTime.toLocaleDateString("en-US")} to ${endTime.toLocaleDateString("en-US")})`,
+				};
+			});
+		} catch (error) {
+			setInsight((prev) => {
+				if (!prev || !prev.open || prev.eventId !== event.eventId) return prev;
+				return {
+					...prev,
+					loading: false,
+					error: error instanceof Error ? error.message : "Failed to load volatility score",
+				};
+			});
+		}
+	};
+
 	return (
 		<div className="cal-root">
 			<style>{CALENDAR_CSS}</style>
@@ -458,11 +697,22 @@ export default function MyCalendarPage() {
 								const isToday = dateKey === todayKey;
 								const isSelected = dateKey === selectedDateKey;
 								const hasHighImpact = dayEvents.some((event) => event.impact === "high");
+								const dayPositionVolatility = dayEvents
+									.filter((event) => event.source === "position" && Boolean(event.eventId))
+									.map((event) => eventVolatilityById[event.eventId as string])
+									.filter((score): score is number => Number.isFinite(score));
+								const maxPositionVolatility = dayPositionVolatility.length > 0 ? Math.max(...dayPositionVolatility) : null;
+								const volatilityClass =
+									maxPositionVolatility == null
+										? ""
+										: maxPositionVolatility >= VOLATILITY_HIGH_THRESHOLD
+											? " vol-high"
+											: " vol-low";
 
 								return (
 									<button
 										key={dateKey}
-										className={`cal-day${inMonth ? "" : " muted"}${isToday ? " today" : ""}${isSelected ? " selected" : ""}`}
+										className={`cal-day${inMonth ? "" : " muted"}${isToday ? " today" : ""}${isSelected ? " selected" : ""}${volatilityClass}`}
 										onClick={() => setSelectedDateKey(dateKey)}
 									>
 										<div className="cal-day-top">
@@ -508,10 +758,17 @@ export default function MyCalendarPage() {
 										</div>
 										<p className="event-title">{event.title}</p>
 										<div className="agenda-item-bottom">
-											<span className="category">
-												{CATEGORY_LABEL[event.category]}
-												{event.source === "position" && event.side ? ` · ${event.side}` : ""}
-											</span>
+											<div className="agenda-meta">
+												<span className="category">
+													{CATEGORY_LABEL[event.category]}
+													{event.source === "position" && event.side ? ` · ${event.side}` : ""}
+												</span>
+												{event.source === "position" && event.eventId && eventMetaById[event.eventId]?.endDate && (
+													<button className="end-date-link" onClick={() => void openEventInsight(event)}>
+														End Date: {new Date(eventMetaById[event.eventId].endDate as string).toLocaleDateString("en-US")}
+													</button>
+												)}
+											</div>
 											{event.source === "position" && event.eventId ? (
 												<Link className="open-link" href={`/polyoiyen/${event.eventId}`}>Open</Link>
 											) : (
@@ -563,6 +820,54 @@ export default function MyCalendarPage() {
 						</form>
 					</aside>
 				</div>
+
+				{insight?.open && (
+					<div className="insight-overlay" onClick={() => setInsight(null)}>
+						<div className="insight-card" onClick={(e) => e.stopPropagation()}>
+							<div className="insight-head">
+								<div>
+									<p className="insight-kicker">Event End Date Insight</p>
+									<h3>{insight.title}</h3>
+									<p className="insight-sub">End Date: {insight.endDateLabel}</p>
+								</div>
+								<button className="chip" onClick={() => setInsight(null)}>Close</button>
+							</div>
+
+							<div className="insight-grid">
+								<div className="insight-block">
+									<p className="insight-label">My Trade Volume</p>
+									<p className="insight-value">{formatUsd(insight.tradeVolume)}</p>
+									<p className="insight-note">{insight.tradeCount} fills for this event</p>
+								</div>
+								<div className="insight-block">
+									<p className="insight-label">My {insight.side || "Selected"} Side Volume</p>
+									<p className="insight-value">{formatUsd(insight.sideVolume)}</p>
+									<p className="insight-note">Includes BUY / SELL / CLAIM notional</p>
+								</div>
+							</div>
+
+							<div className={`volatility-panel ${getVolatilityTone(insight.volatilityScore)}`}>
+								<p className="insight-label">Volatility Score</p>
+								{insight.loading ? (
+									<p className="insight-note">Computing from past market closes...</p>
+								) : insight.error ? (
+									<p className="insight-note warn-text">{insight.error}</p>
+								) : (
+									<>
+										<p className="insight-value">
+											{(insight.volatilityScore ?? 0).toFixed(2)}
+											<span className="insight-suffix"> pts/hour</span>
+										</p>
+										<p className="insight-note">
+											Total window score: {(insight.volatilityTotal ?? 0).toFixed(2)} points.
+										</p>
+										<p className="insight-note">{insight.windowLabel}. Stronger color means larger expected volatility.</p>
+									</>
+								)}
+							</div>
+						</div>
+					</div>
+				)}
 			</div>
 		</div>
 	);
@@ -765,6 +1070,28 @@ const CALENDAR_CSS = `
 		border-color: rgba(249,115,22,0.66);
 	}
 
+	.cal-day.vol-high {
+		background: rgba(239, 68, 68, 0.22);
+		border-color: rgba(248, 113, 113, 0.8);
+		box-shadow: inset 0 0 0 1px rgba(248, 113, 113, 0.35);
+	}
+
+	.cal-day.vol-low {
+		background: rgba(16, 185, 129, 0.2);
+		border-color: rgba(52, 211, 153, 0.7);
+		box-shadow: inset 0 0 0 1px rgba(16, 185, 129, 0.32);
+	}
+
+	.cal-day.selected.vol-high {
+		background: linear-gradient(180deg, rgba(239,68,68,0.3), rgba(239,68,68,0.2));
+		border-color: rgba(248, 113, 113, 0.95);
+	}
+
+	.cal-day.selected.vol-low {
+		background: linear-gradient(180deg, rgba(16,185,129,0.3), rgba(16,185,129,0.2));
+		border-color: rgba(52, 211, 153, 0.95);
+	}
+
 	.cal-day-top {
 		display: flex;
 		justify-content: space-between;
@@ -896,11 +1223,33 @@ const CALENDAR_CSS = `
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
+		gap: 8px;
+	}
+
+	.agenda-meta {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 4px;
 	}
 
 	.category {
 		font-size: 11px;
 		color: rgba(255,255,255,0.45);
+	}
+
+	.end-date-link {
+		font-size: 10px;
+		font-weight: 700;
+		letter-spacing: 0.02em;
+		color: #fbbf24;
+		background: transparent;
+		border: none;
+		padding: 0;
+		cursor: pointer;
+	}
+	.end-date-link:hover {
+		text-decoration: underline;
 	}
 
 	.delete {
@@ -994,6 +1343,115 @@ const CALENDAR_CSS = `
 	}
 	.create-btn:hover { transform: translateY(-1px); filter: brightness(1.05); }
 
+	.insight-overlay {
+		position: fixed;
+		inset: 0;
+		z-index: 1000;
+		background: rgba(9, 6, 2, 0.72);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 16px;
+	}
+
+	.insight-card {
+		width: min(620px, 96vw);
+		background: #201107;
+		border: 1px solid rgba(255,255,255,0.13);
+		border-radius: 14px;
+		padding: 14px;
+		box-shadow: 0 24px 56px rgba(0,0,0,0.45);
+		display: grid;
+		gap: 12px;
+	}
+
+	.insight-head {
+		display: flex;
+		justify-content: space-between;
+		align-items: flex-start;
+		gap: 8px;
+	}
+
+	.insight-kicker {
+		margin: 0;
+		font-size: 10px;
+		letter-spacing: 0.09em;
+		text-transform: uppercase;
+		color: rgba(255,255,255,0.5);
+	}
+
+	.insight-head h3 {
+		margin: 4px 0 0;
+		font-size: 18px;
+		line-height: 1.3;
+		color: #fb923c;
+	}
+
+	.insight-sub {
+		margin: 4px 0 0;
+		font-size: 12px;
+		color: rgba(255,255,255,0.62);
+	}
+
+	.insight-grid {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 10px;
+	}
+
+	.insight-block {
+		border: 1px solid rgba(255,255,255,0.1);
+		border-radius: 10px;
+		background: rgba(255,255,255,0.03);
+		padding: 10px;
+	}
+
+	.insight-label {
+		margin: 0;
+		font-size: 11px;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: rgba(255,255,255,0.52);
+	}
+
+	.insight-value {
+		margin: 8px 0 2px;
+		font-size: 24px;
+		font-weight: 800;
+		line-height: 1.1;
+		color: rgba(255,255,255,0.94);
+	}
+
+	.insight-suffix {
+		font-size: 12px;
+		font-weight: 600;
+		color: rgba(255,255,255,0.66);
+	}
+
+	.insight-note {
+		margin: 0;
+		font-size: 12px;
+		line-height: 1.5;
+		color: rgba(255,255,255,0.62);
+	}
+
+	.volatility-panel {
+		border: 1px solid rgba(255,255,255,0.14);
+		border-radius: 12px;
+		padding: 10px;
+		transition: background 0.2s ease, border-color 0.2s ease;
+	}
+
+	.vol-tone-1 { background: rgba(96,165,250,0.09); border-color: rgba(96,165,250,0.35); }
+	.vol-tone-2 { background: rgba(56,189,248,0.12); border-color: rgba(56,189,248,0.42); }
+	.vol-tone-3 { background: rgba(251,191,36,0.16); border-color: rgba(251,191,36,0.45); }
+	.vol-tone-4 { background: rgba(249,115,22,0.19); border-color: rgba(249,115,22,0.56); }
+	.vol-tone-5 { background: rgba(239,68,68,0.22); border-color: rgba(239,68,68,0.62); }
+
+	.warn-text {
+		color: #fca5a5;
+	}
+
 	@media (max-width: 1080px) {
 		.cal-main-grid {
 			grid-template-columns: 1fr;
@@ -1019,6 +1477,9 @@ const CALENDAR_CSS = `
 			padding: 6px;
 		}
 		.dot-row { margin-top: 12px; }
+		.insight-grid {
+			grid-template-columns: 1fr;
+		}
 	}
 `;
 

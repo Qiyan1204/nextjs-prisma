@@ -18,6 +18,103 @@ interface PriceObservation {
 const ORDERBOOK_SUBGRAPH_URL =
   "https://api.goldsky.com/api/public/project_cl6mb8i9h0003e201j6li0diw/subgraphs/orderbook-subgraph/0.0.1/gn";
 
+const VOL_CACHE_TTL_MS = 90 * 1000;
+const VOL_CACHE_MAX_ITEMS = 300;
+
+type VolatilityRatingPayload = {
+  window: {
+    startTime: string;
+    endTime: string;
+  };
+  bucketSeconds: number;
+  rule: string;
+  metrics: {
+    yes: {
+      totalVolatilityRating: number;
+      averageVolatilityRatingPerHour: number;
+      totalHours: number;
+      hoursWithPrice: number;
+    };
+    no: {
+      totalVolatilityRating: number;
+      averageVolatilityRatingPerHour: number;
+      totalHours: number;
+      hoursWithPrice: number;
+    };
+  };
+  diagnostics: {
+    scannedPages: number;
+    pageSize: number;
+    fetchedTrades: number;
+    yesPriceObservations: number;
+    noPriceObservations: number;
+  };
+  points: Array<{
+    ts: number;
+    timeLabel: string;
+    yesPrice: number | null;
+    noPrice: number | null;
+    yesStepScore: number;
+    noStepScore: number;
+  }>;
+  fetchedAt: string;
+};
+
+const volatilityCache = new Map<string, { expiresAt: number; payload: VolatilityRatingPayload }>();
+
+function makeCacheKey(params: {
+  yesAssetId: string;
+  noAssetId: string;
+  startSec: number;
+  endSec: number;
+  bucketSec: number;
+  pageSize: number;
+  maxPages: number;
+}) {
+  return [
+    params.yesAssetId,
+    params.noAssetId,
+    params.startSec,
+    params.endSec,
+    params.bucketSec,
+    params.pageSize,
+    params.maxPages,
+  ].join("|");
+}
+
+function getCachedVolatility(key: string): VolatilityRatingPayload | null {
+  const now = Date.now();
+  const hit = volatilityCache.get(key);
+  if (!hit) return null;
+  if (hit.expiresAt <= now) {
+    volatilityCache.delete(key);
+    return null;
+  }
+  return hit.payload;
+}
+
+function setCachedVolatility(key: string, payload: VolatilityRatingPayload) {
+  const now = Date.now();
+  volatilityCache.set(key, {
+    expiresAt: now + VOL_CACHE_TTL_MS,
+    payload,
+  });
+
+  if (volatilityCache.size <= VOL_CACHE_MAX_ITEMS) return;
+
+  for (const [cacheKey, cacheValue] of volatilityCache.entries()) {
+    if (cacheValue.expiresAt <= now) {
+      volatilityCache.delete(cacheKey);
+    }
+  }
+
+  while (volatilityCache.size > VOL_CACHE_MAX_ITEMS) {
+    const oldestKey = volatilityCache.keys().next().value;
+    if (!oldestKey) break;
+    volatilityCache.delete(oldestKey);
+  }
+}
+
 function toNum(v: unknown): number {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
@@ -112,6 +209,7 @@ function extractPriceForAsset(trade: TradeItem, assetId: string): number | null 
 async function fetchSubgraphPage(
   assetIds: string[],
   timestampGte: number,
+  timestampLte: number,
   first: number,
   skip: number,
   side: "maker" | "taker"
@@ -123,7 +221,7 @@ async function fetchSubgraphPage(
       orderFilledEvents(
         first: ${first}
         skip: ${skip}
-        where: { ${whereField}: [${list}], timestamp_gte: \"${timestampGte}\" }
+        where: { ${whereField}: [${list}], timestamp_gte: "${timestampGte}", timestamp_lte: "${timestampLte}" }
         orderBy: timestamp
         orderDirection: desc
       ) {
@@ -148,7 +246,12 @@ async function fetchSubgraphPage(
 
   const payload = await res.json();
   if (payload?.errors?.length) {
-    throw new Error(payload.errors[0]?.message || "Subgraph query error");
+    const message = String(payload.errors[0]?.message || "Subgraph query error");
+    // Upstream subgraph can timeout for hot assets. Return an empty page so caller can continue safely.
+    if (message.toLowerCase().includes("statement timeout")) {
+      return [];
+    }
+    throw new Error(message);
   }
 
   const rows = payload?.data?.orderFilledEvents;
@@ -179,6 +282,22 @@ export async function GET(req: NextRequest) {
   const bucketRaw = Math.floor(toNum(searchParams.get("bucketSeconds")));
   const bucketSec = [300, 600, 900, 1800, 3600].includes(bucketRaw) ? bucketRaw : 3600;
 
+  const cacheKey = makeCacheKey({
+    yesAssetId,
+    noAssetId,
+    startSec,
+    endSec,
+    bucketSec,
+    pageSize,
+    maxPages,
+  });
+
+  const cached = getCachedVolatility(cacheKey);
+  if (cached) {
+    recordAvailability(true);
+    return NextResponse.json(cached);
+  }
+
   try {
     const assetIds = [yesAssetId, noAssetId];
     const tradeMap = new Map<string, TradeItem>();
@@ -187,8 +306,8 @@ export async function GET(req: NextRequest) {
     for (let page = 0; page < maxPages; page += 1) {
       const skip = page * pageSize;
       const [makerRows, takerRows] = await Promise.all([
-        fetchSubgraphPage(assetIds, startSec, pageSize, skip, "maker"),
-        fetchSubgraphPage(assetIds, startSec, pageSize, skip, "taker"),
+        fetchSubgraphPage(assetIds, startSec, endSec, pageSize, skip, "maker"),
+        fetchSubgraphPage(assetIds, startSec, endSec, pageSize, skip, "taker"),
       ]);
 
       const pageRows = [...makerRows, ...takerRows];
@@ -307,8 +426,7 @@ export async function GET(req: NextRequest) {
     const yesAvgPerHour = totalHours > 0 ? yesTotalScore / totalHours : 0;
     const noAvgPerHour = totalHours > 0 ? noTotalScore / totalHours : 0;
 
-    recordAvailability(true);
-    return NextResponse.json({
+    const payload: VolatilityRatingPayload = {
       window: {
         startTime: toIsoUtc(startSec),
         endTime: toIsoUtc(endSec),
@@ -338,7 +456,11 @@ export async function GET(req: NextRequest) {
       },
       points: history,
       fetchedAt: new Date().toISOString(),
-    });
+    };
+
+    setCachedVolatility(cacheKey, payload);
+    recordAvailability(true);
+    return NextResponse.json(payload);
   } catch (error) {
     recordAvailability(false);
     console.error("Volatility rating API error:", error);
