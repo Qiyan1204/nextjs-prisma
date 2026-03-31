@@ -25,6 +25,7 @@ const MORE_LINKS = [
   { label: "🏆 Leaderboard", href: "/polyoiyen/PolyLeaderboard", active: "Leaderboard" },
   { label: "🎁 Reward", href: "/polyoiyen/PolyReward", active: "Reward" },
   { label: "🧩 PolyAnalysis", href: "/polyoiyen/PolyAnalysis", active: "PolyAnalysis" },
+  { label: "🕸️ Cross-Category Event Analysis", href: "/polyoiyen/Cross-CategoryEventAnalysis", active: "Cross-CategoryEventAnalysis" },
   { label: "🆚 About", href: "/polyoiyen/OiyenCompare", active: "OiyenCompare" },
   { label: "🗓️ MyCalendar", href: "/polyoiyen/MyCalendar", active: "MyCalendar" }
 ];

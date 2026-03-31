@@ -212,6 +212,13 @@ const TAG_OPTIONS = [
   "All", "Politics", "Sports", "Crypto", "Pop Culture",
   "Business", "Science", "Technology",
 ];
+const QUICK_FILTER_FETCH_LIMIT = 300;
+const QUICK_MARKET_FILTERS: Array<{ label: string; keywords: string[] }> = [
+  { label: "Elon Tweets", keywords: ["elon", "musk", "tweet", "x.com", "twitter"] },
+  { label: "Movie Box Office", keywords: ["box office", "movie", "film", "opening weekend"] },
+  { label: "US Federal Reserve Interest Rates", keywords: ["federal reserve", "fed", "interest rate", "rate cut", "rate hike", "fomc"] },
+  { label: "NBA Basketball games", keywords: ["nba", "basketball", "playoffs", "lakers", "celtics"] },
+];
 const LARGE_ORDER_THRESHOLD = 500; // default $500 for "large" orders
 const BOOKMARK_STORAGE_KEY = "polyoiyen-bookmarks-v1";
 
@@ -2810,6 +2817,7 @@ function ListPage({
   const [tag, setTag] = useState("All");
   const [search, setSearch] = useState("");
   const [bookmarkFilter, setBookmarkFilter] = useState(false);
+  const [quickMarket, setQuickMarket] = useState("All");
 
   // Sync newly-loaded events into bookmarkedEvents cache
   useEffect(() => {
@@ -2831,9 +2839,13 @@ function ListPage({
     async (currentOffset: number, append: boolean) => {
       append ? setLoadingMore(true) : setLoading(true);
       try {
+        const usingQuickFilter = quickMarket !== "All";
+        const requestLimit = usingQuickFilter ? QUICK_FILTER_FETCH_LIMIT : LIMIT;
+        const requestOffset = usingQuickFilter ? 0 : currentOffset;
+
         const params = new URLSearchParams({
-          limit: String(LIMIT),
-          offset: String(currentOffset),
+          limit: String(requestLimit),
+          offset: String(requestOffset),
         });
         if (tag !== "All") params.set("tag", tag);
 
@@ -2841,9 +2853,15 @@ function ListPage({
         if (!res.ok) throw new Error("Failed to fetch");
         const data: PolyEvent[] = await res.json();
 
-        if (data.length < LIMIT) setHasMore(false);
-        setEvents((prev) => (append ? [...prev, ...data] : data));
-        setOffset(currentOffset + data.length);
+        if (usingQuickFilter) {
+          setHasMore(false);
+          setEvents(data);
+          setOffset(data.length);
+        } else {
+          if (data.length < LIMIT) setHasMore(false);
+          setEvents((prev) => (append ? [...prev, ...data] : data));
+          setOffset(currentOffset + data.length);
+        }
       } catch (err) {
         console.error("Fetch events error:", err);
       } finally {
@@ -2851,7 +2869,7 @@ function ListPage({
         setLoadingMore(false);
       }
     },
-    [tag]
+    [tag, quickMarket]
   );
 
   useEffect(() => {
@@ -2859,7 +2877,7 @@ function ListPage({
     setOffset(0);
     setHasMore(true);
     fetchEvents(0, false);
-  }, [tag, fetchEvents]);
+  }, [tag, quickMarket, fetchEvents]);
 
   function handleLoadMore() {
     fetchEvents(offset, true);
@@ -2871,14 +2889,20 @@ function ListPage({
         .filter((e): e is PolyEvent => Boolean(e))
     : events;
 
-  const displayed = search
-    ? sourceEvents.filter(
-        (e) =>
-          e.title.toLowerCase().includes(search.toLowerCase()) ||
-          e.description?.toLowerCase().includes(search.toLowerCase()) ||
-          e.tags?.some((t) => t.label.toLowerCase().includes(search.toLowerCase()))
-      )
-    : sourceEvents;
+  const displayed = sourceEvents.filter((e) => {
+    const text = `${e.title} ${e.description || ""} ${(e.tags || []).map((t) => t.label).join(" ")}`.toLowerCase();
+
+    const searchMatch =
+      !search ||
+      text.includes(search.toLowerCase());
+
+    const quickFilter = QUICK_MARKET_FILTERS.find((f) => f.label === quickMarket);
+    const quickMatch =
+      quickMarket === "All" ||
+      (quickFilter ? quickFilter.keywords.some((kw) => text.includes(kw.toLowerCase())) : true);
+
+    return searchMatch && quickMatch;
+  });
 
   return (
     <div style={{ background: "var(--bg)", minHeight: "100vh", fontFamily: "'DM Sans', sans-serif", color: "white" }}>
@@ -2987,6 +3011,49 @@ function ListPage({
               }}>{t}</button>
             ))}
           </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 11, color: "var(--dim)", letterSpacing: "0.06em", textTransform: "uppercase" }}>Quick Markets</span>
+          <button
+            onClick={() => setQuickMarket("All")}
+            style={{
+              padding: "6px 12px",
+              borderRadius: 999,
+              fontSize: 11,
+              fontWeight: 700,
+              border: quickMarket === "All" ? "1px solid var(--orange2)" : "1px solid var(--bdr)",
+              background: quickMarket === "All" ? "rgba(249,115,22,0.12)" : "rgba(255,255,255,0.03)",
+              color: quickMarket === "All" ? "var(--orange2)" : "var(--muted)",
+              cursor: "pointer",
+              fontFamily: "'DM Sans', sans-serif",
+            }}
+          >
+            All
+          </button>
+          {QUICK_MARKET_FILTERS.map((f) => (
+            <button
+              key={f.label}
+              onClick={() => {
+                setQuickMarket(f.label);
+                setSearch("");
+              }}
+              style={{
+                padding: "6px 12px",
+                borderRadius: 999,
+                fontSize: 11,
+                fontWeight: 700,
+                border: quickMarket === f.label ? "1px solid var(--orange2)" : "1px solid var(--bdr)",
+                background: quickMarket === f.label ? "rgba(249,115,22,0.12)" : "rgba(255,255,255,0.03)",
+                color: quickMarket === f.label ? "var(--orange2)" : "var(--muted)",
+                cursor: "pointer",
+                fontFamily: "'DM Sans', sans-serif",
+                transition: "all 0.15s",
+              }}
+            >
+              {f.label}
+            </button>
+          ))}
         </div>
 
         <div style={{ fontSize: 11, color: "var(--dim)", fontFamily: "'DM Mono', monospace", marginBottom: 16 }}>
