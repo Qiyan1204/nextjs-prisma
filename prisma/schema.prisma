@@ -383,7 +383,7 @@ model PullMetric {
   @@index([kind, createdAt])
 }
 
-// Persistent 10-minute order book depth snapshots for Polyoiyen markets
+// Persistent order book depth snapshots for Polyoiyen markets
 model MarketDepthSnapshot {
   id            Int      @id @default(autoincrement())
   eventId       String

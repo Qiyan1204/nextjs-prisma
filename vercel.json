@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/polyoiyen/depth-snapshot",
-      "schedule": "*/10 * * * *"
+      "schedule": "0 0 * * *"
     },
     {
       "path": "/api/polyoiyen/end-date-notify",

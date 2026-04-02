@@ -271,11 +271,11 @@ function getDepthHealth(raw: RawMetricSet | null, timeWindow: TimeWindow) {
     return { label: "No Data", color: "#fca5a5", bg: "rgba(127,29,29,0.35)" };
   }
 
-  const expectedSamples = getWindowMs(timeWindow) / (10 * 60 * 1000);
+  const expectedSamples = getWindowMs(timeWindow) / DEPTH_SNAPSHOT_INTERVAL_MS;
   const latestMs = raw.depthLatestSampleAt ? new Date(raw.depthLatestSampleAt).getTime() : 0;
   const ageMinutes = latestMs > 0 ? (Date.now() - latestMs) / (60 * 1000) : Number.POSITIVE_INFINITY;
 
-  if (ageMinutes > 35) {
+  if (ageMinutes > (DEPTH_SNAPSHOT_INTERVAL_MS / (60 * 1000)) * 1.5) {
     return { label: "Stale", color: "#fcd34d", bg: "rgba(120,53,15,0.35)" };
   }
   if (raw.depthSampleCount < expectedSamples * 0.2) {
@@ -558,6 +558,8 @@ function getDepthBucketMinutes(window: TimeWindow): number {
       return 60;
   }
 }
+
+const DEPTH_SNAPSHOT_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 async function fetchDepthStatsForEvent(eventId: string, timeWindow: TimeWindow, includeSeries = false) {
   const hoursBack = Math.floor(getWindowMs(timeWindow) / (60 * 60 * 1000));
@@ -2283,7 +2285,7 @@ export default function CrossCategoryEventAnalysisPage() {
               Market Assessment & Strategy Simulation ($1,000 start)
             </div>
             <div style={{ fontSize: 11, color: "rgba(255,255,255,0.66)", marginBottom: 10 }}>
-              Order book depth now uses persisted 10-minute snapshots. Score uses depth average in the selected window, while panel shows peak and volatility range.
+              Order book depth now uses persisted daily snapshots so it works on Hobby. Score uses depth average in the selected window, while panel shows peak and volatility range.
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 10 }}>
