@@ -277,8 +277,13 @@ const WEIGHT_PRESETS: Array<{ key: string; label: string; weights: AssessmentWei
 ];
 
 function getDepthHealth(raw: RawMetricSet | null, timeWindow: TimeWindow) {
-  if (!raw || raw.depthSampleCount <= 0) {
-    return { label: "No Data", color: "#fca5a5", bg: "rgba(127,29,29,0.35)" };
+  const hasDepth = !!raw && ((raw.depthSampleCount > 0) || (raw.orderBookDepth > 0) || (raw.orderBookDepthPeak > 0));
+  if (!hasDepth) {
+    return { label: "Pending", color: "#cbd5e1", bg: "rgba(71,85,105,0.34)" };
+  }
+
+  if ((raw?.depthSampleCount ?? 0) <= 0) {
+    return { label: "Live", color: "#93c5fd", bg: "rgba(30,64,175,0.28)" };
   }
 
   const expectedSamples = getWindowMs(timeWindow) / DEPTH_SNAPSHOT_INTERVAL_MS;
@@ -346,12 +351,12 @@ function computeLiquidityPenalty(summary: DepthTrendSummary | null): number {
 }
 
 function getLiquidityWarningGrade(summary: DepthTrendSummary | null): {
-  label: "No Data" | "Stable" | "Watch" | "Risk" | "Critical";
+  label: "Pending" | "Live" | "Stable" | "Watch" | "Risk" | "Critical";
   color: string;
   bg: string;
 } {
   if (!summary) {
-    return { label: "No Data", color: "#cbd5e1", bg: "rgba(71,85,105,0.34)" };
+    return { label: "Pending", color: "#cbd5e1", bg: "rgba(71,85,105,0.34)" };
   }
 
   if (!summary.isDowntrend) {
@@ -367,6 +372,23 @@ function getLiquidityWarningGrade(summary: DepthTrendSummary | null): {
   }
 
   return { label: "Watch", color: "#fcd34d", bg: "rgba(120,53,15,0.35)" };
+}
+
+function getStrategyVerdict(
+  score: number | null,
+  best: StrategyOutcome | null,
+  worst: StrategyOutcome | null,
+  depthStatus: "Pending" | "Live" | "Stable" | "Watch" | "Risk" | "Critical"
+): { label: "Strong" | "Weak" | "Avoid"; color: string } {
+  if (depthStatus === "Critical" || (worst?.expectedReturnPct ?? 0) <= -22 || (score ?? 0) < 42) {
+    return { label: "Avoid", color: "#fca5a5" };
+  }
+
+  if ((score ?? 0) >= 70 && (best?.expectedReturnPct ?? 0) >= 10 && depthStatus !== "Risk") {
+    return { label: "Strong", color: "#86efac" };
+  }
+
+  return { label: "Weak", color: "#fcd34d" };
 }
 
 function parsePenaltySensitivityFromUrl(searchParams: URLSearchParams): number {
@@ -645,7 +667,7 @@ async function fetchDepthStatsForEvent(
 
   const payload = (await res.json()) as DepthStatsResponse;
   const stats = (payload.statsByEvent || [])[0];
-  if (!stats) {
+  if (!stats || stats.avgDepthUsd <= 0) {
     const fallback = await fetchLiveDepthFallback();
     if (fallback) return fallback;
     return {
@@ -954,6 +976,22 @@ function getWindowMs(window: TimeWindow): number {
 function formatMetric(value: number | null, decimals = 2): string {
   if (value == null || Number.isNaN(value)) return "N/A";
   return value.toFixed(decimals);
+}
+
+function formatDepthVolatility(raw: RawMetricSet | null, decimals = 2): string {
+  if (!raw || raw.depthSampleCount < 2) return "N/A";
+  return formatMetric(raw.orderBookDepthVolatility, decimals);
+}
+
+function renderCategoryTitle(label: string) {
+  if (label !== "US Federal Reserve Interest Rates") return label;
+
+  return (
+    <span style={{ display: "inline-flex", flexDirection: "column", lineHeight: 1.05 }}>
+      <span>US Federal Reserve</span>
+      <span>Interest Rates</span>
+    </span>
+  );
 }
 
 function emptyCategoryRecord<T>(value: T): Record<CategoryKey, T> {
@@ -1340,6 +1378,33 @@ export default function CrossCategoryEventAnalysisPage() {
     return out;
   }, [depthTrendByCategory]);
 
+  const strategyOverview = useMemo(() => {
+    return categoriesWithScores.map((cat) => {
+      const strategies = strategyByCategory[cat.key] || [];
+      const sorted = [...strategies].sort((a, b) => b.expectedReturnPct - a.expectedReturnPct);
+      const trendSummary = depthTrendSummaryByCategory[cat.key];
+      const hasDepth = !!cat.raw && ((cat.raw.depthSampleCount > 0) || (cat.raw.orderBookDepth > 0) || (cat.raw.orderBookDepthPeak > 0));
+      const depthStatus: "Pending" | "Live" | "Stable" | "Watch" | "Risk" | "Critical" = !hasDepth
+        ? "Pending"
+        : (cat.raw?.depthSampleCount ?? 0) <= 0
+          ? "Live"
+          : getLiquidityWarningGrade(trendSummary).label;
+      const best = sorted[0] || null;
+      const worst = sorted.length > 0 ? sorted[sorted.length - 1] : null;
+      const verdict = getStrategyVerdict(cat.raw?.marketAssessmentScore ?? null, best, worst, depthStatus);
+
+      return {
+        key: cat.key,
+        label: cat.label,
+        score: cat.raw?.marketAssessmentScore ?? null,
+        depthStatus,
+        best,
+        worst,
+        verdict,
+      };
+    });
+  }, [categoriesWithScores, strategyByCategory, depthTrendSummaryByCategory]);
+
   const radarData = useMemo<RadarMetric[]>(() => {
     if (categoriesWithScores.length === 0) {
       return [
@@ -1578,9 +1643,30 @@ export default function CrossCategoryEventAnalysisPage() {
     lines.push("Top Markets:");
     ranked.slice(0, 5).forEach((cat, idx) => {
       const grade = getLiquidityWarningGrade(depthTrendSummaryByCategory[cat.key]);
-      const depthStatus = (cat.raw?.depthSampleCount ?? 0) <= 0 ? "No Data" : grade.label;
+      const hasDepth = !!cat.raw && ((cat.raw.depthSampleCount > 0) || (cat.raw.orderBookDepth > 0) || (cat.raw.orderBookDepthPeak > 0));
+      const depthStatus = !hasDepth ? "Pending" : (cat.raw?.depthSampleCount ?? 0) <= 0 ? "Live" : grade.label;
       lines.push(`${idx + 1}. ${cat.label} - Score ${formatMetric(cat.raw?.marketAssessmentScore ?? null, 1)} - ${depthStatus}`);
     });
+    if (shareUrl) lines.push(`Link: ${shareUrl}`);
+    return lines.join("\n");
+  }
+
+  function buildStrategyReportMessage() {
+    const lines: string[] = [];
+    lines.push("Cross-Category Strategy Report");
+    lines.push(`Mode: ${compareMode} | Window: ${timeWindow} | Baseline: ${baselineMode}`);
+    lines.push(`Penalty Sensitivity: ${penaltySensitivity.toFixed(2)}x`);
+    lines.push("");
+
+    const ranked = [...strategyOverview].sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+    ranked.forEach((item, idx) => {
+      lines.push(`${idx + 1}. ${item.label}`);
+      lines.push(`   Score: ${formatMetric(item.score, 1)} | Depth: ${item.depthStatus} | Verdict: ${item.verdict.label}`);
+      lines.push(`   Best: ${item.best ? `${item.best.name} (${item.best.expectedReturnPct >= 0 ? "+" : ""}${item.best.expectedReturnPct.toFixed(2)}%, $${item.best.finalCapital.toFixed(2)})` : "N/A"}`);
+      lines.push(`   Worst: ${item.worst ? `${item.worst.name} (${item.worst.expectedReturnPct >= 0 ? "+" : ""}${item.worst.expectedReturnPct.toFixed(2)}%, $${item.worst.finalCapital.toFixed(2)})` : "N/A"}`);
+      lines.push("");
+    });
+
     if (shareUrl) lines.push(`Link: ${shareUrl}`);
     return lines.join("\n");
   }
@@ -1600,6 +1686,15 @@ export default function CrossCategoryEventAnalysisPage() {
       setShareStatus("Share summary copied.");
     } catch {
       setShareStatus("Unable to copy share summary.");
+    }
+  }
+
+  async function handleCopyStrategyReport() {
+    try {
+      await navigator.clipboard.writeText(buildStrategyReportMessage());
+      setShareStatus("Strategy report copied.");
+    } catch {
+      setShareStatus("Unable to copy strategy report.");
     }
   }
 
@@ -1915,6 +2010,20 @@ export default function CrossCategoryEventAnalysisPage() {
             Copy Share Summary
           </button>
           <button
+            onClick={handleCopyStrategyReport}
+            style={{
+              padding: "6px 10px",
+              borderRadius: 8,
+              border: "1px solid rgba(34,197,94,0.45)",
+              background: "rgba(34,197,94,0.12)",
+              color: "#bbf7d0",
+              cursor: "pointer",
+              fontSize: 12,
+            }}
+          >
+            Copy Strategy Report
+          </button>
+          <button
             onClick={handleCopyShareConfig}
             style={{
               padding: "6px 10px",
@@ -2105,7 +2214,7 @@ export default function CrossCategoryEventAnalysisPage() {
                     padding: "10px 12px",
                   }}
                 >
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>{cat.label}</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>{renderCategoryTitle(cat.label)}</div>
                   <div style={{ marginTop: 4, fontSize: 12, color: "rgba(255,255,255,0.7)" }}>Matched events: {cat.matchCount}</div>
 
                   {cat.options.length > 0 ? (
@@ -2291,7 +2400,7 @@ export default function CrossCategoryEventAnalysisPage() {
                   }}
                 >
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                    <div style={{ fontSize: 12, fontWeight: 700, color: "#fff" }}>{cat.label}</div>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "#fff" }}>{renderCategoryTitle(cat.label)}</div>
                     <span
                       style={{
                         fontSize: 10,
@@ -2316,7 +2425,7 @@ export default function CrossCategoryEventAnalysisPage() {
                     <div>Unique Traders: raw {formatMetric(cat.raw?.uniqueTraders ?? null)} | norm {formatMetric(normalizedMetrics.uniqueTraders[cat.key], 0)}</div>
                     <div>Order Book Depth Avg (USD): raw {formatMetric(cat.raw?.orderBookDepth ?? null)} | norm {formatMetric(normalizedMetrics.orderBookDepth[cat.key], 0)}</div>
                     <div>Order Book Depth Peak (USD): {formatMetric(cat.raw?.orderBookDepthPeak ?? null)}</div>
-                    <div>Order Book Depth Volatility (STD): {formatMetric(cat.raw?.orderBookDepthVolatility ?? null)}</div>
+                    <div>Order Book Depth Volatility (STD): {formatDepthVolatility(cat.raw)}</div>
                     <div>Order Book Depth Range (USD): {formatMetric(cat.raw?.orderBookDepthRangeLow ?? null)} - {formatMetric(cat.raw?.orderBookDepthRangeHigh ?? null)}</div>
                     <div>Depth Samples in Window: {formatMetric(cat.raw?.depthSampleCount ?? null, 0)}</div>
                     <div>Depth Latest Sample: {cat.raw?.depthLatestSampleAt ? new Date(cat.raw.depthLatestSampleAt).toLocaleString() : "N/A"}</div>
@@ -2349,6 +2458,43 @@ export default function CrossCategoryEventAnalysisPage() {
               Order book depth now uses persisted daily snapshots so it works on Hobby. Score uses depth average in the selected window, while panel shows peak and volatility range.
             </div>
 
+            {strategyOverview.length > 0 && (
+              <div style={{ marginBottom: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10 }}>
+                {strategyOverview.map((item) => (
+                  <div
+                    key={`${item.key}-summary`}
+                    style={{
+                      border: "1px solid rgba(255,255,255,0.12)",
+                      borderRadius: 10,
+                      background: "rgba(0,0,0,0.16)",
+                      padding: "10px 12px",
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: "#fff" }}>{renderCategoryTitle(item.label)}</div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ fontSize: 10, color: item.depthStatus === "Pending" ? "#cbd5e1" : "#86efac", fontWeight: 700 }}>
+                          {item.depthStatus}
+                        </span>
+                        <span style={{ fontSize: 10, color: item.verdict.color, fontWeight: 800 }}>
+                          {item.verdict.label}
+                        </span>
+                      </div>
+                    </div>
+                    <div style={{ marginTop: 6, fontSize: 11, color: "rgba(255,255,255,0.75)", lineHeight: 1.5 }}>
+                      <div>Score: {formatMetric(item.score, 1)}</div>
+                      <div>
+                        Best: {item.best ? `${item.best.name} (${item.best.expectedReturnPct >= 0 ? "+" : ""}${item.best.expectedReturnPct.toFixed(2)}%, $${item.best.finalCapital.toFixed(2)})` : "N/A"}
+                      </div>
+                      <div>
+                        Worst: {item.worst ? `${item.worst.name} (${item.worst.expectedReturnPct >= 0 ? "+" : ""}${item.worst.expectedReturnPct.toFixed(2)}%, $${item.worst.finalCapital.toFixed(2)})` : "N/A"}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 10 }}>
               {categoriesWithScores.map((cat) => {
                 const health = getDepthHealth(cat.raw, timeWindow);
@@ -2359,7 +2505,8 @@ export default function CrossCategoryEventAnalysisPage() {
                 const trend = depthTrendByCategory[cat.key];
                 const trendSummary = depthTrendSummaryByCategory[cat.key];
                 const liquidityGrade = getLiquidityWarningGrade(trendSummary);
-                const depthStatusLabel = (cat.raw?.depthSampleCount ?? 0) <= 0 ? "No Data" : liquidityGrade.label;
+                const hasDepth = !!cat.raw && ((cat.raw.depthSampleCount > 0) || (cat.raw.orderBookDepth > 0) || (cat.raw.orderBookDepthPeak > 0));
+                const depthStatusLabel = !hasDepth ? "Pending" : (cat.raw?.depthSampleCount ?? 0) <= 0 ? "Live" : liquidityGrade.label;
                 const chartData = trend?.points ? addSmaToTrendPoints(trend.points, 4) : [];
 
                 return (
@@ -2377,14 +2524,14 @@ export default function CrossCategoryEventAnalysisPage() {
                     }}
                   >
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-                      <div style={{ fontSize: 12, fontWeight: 700, color: "#fff" }}>{cat.label}</div>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: "#fff" }}>{renderCategoryTitle(cat.label)}</div>
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                         <span
                           style={{
                             fontSize: 10,
                             fontWeight: 700,
-                            color: depthStatusLabel === "No Data" ? "#cbd5e1" : liquidityGrade.color,
-                            background: depthStatusLabel === "No Data" ? "rgba(71,85,105,0.34)" : liquidityGrade.bg,
+                            color: depthStatusLabel === "Pending" ? "#cbd5e1" : liquidityGrade.color,
+                            background: depthStatusLabel === "Pending" ? "rgba(71,85,105,0.34)" : liquidityGrade.bg,
                             border: "1px solid rgba(255,255,255,0.16)",
                             borderRadius: 999,
                             padding: "2px 8px",
@@ -2419,7 +2566,7 @@ export default function CrossCategoryEventAnalysisPage() {
                       <div>Unique Traders: {formatMetric(cat.raw?.uniqueTraders ?? null, 0)}</div>
                       <div>Order Book Depth Avg: ${formatMetric(cat.raw?.orderBookDepth ?? null, 2)}</div>
                       <div>Order Book Depth Peak: ${formatMetric(cat.raw?.orderBookDepthPeak ?? null, 2)}</div>
-                      <div>Order Book Depth Volatility (STD): ${formatMetric(cat.raw?.orderBookDepthVolatility ?? null, 2)}</div>
+                      <div>Order Book Depth Volatility (STD): ${formatDepthVolatility(cat.raw, 2)}</div>
                       <div>Order Book Depth Range: ${formatMetric(cat.raw?.orderBookDepthRangeLow ?? null, 2)} - ${formatMetric(cat.raw?.orderBookDepthRangeHigh ?? null, 2)}</div>
                       <div>Depth Samples: {formatMetric(cat.raw?.depthSampleCount ?? null, 0)}</div>
                       <div>Depth Latest: {cat.raw?.depthLatestSampleAt ? new Date(cat.raw.depthLatestSampleAt).toLocaleString() : "N/A"}</div>
@@ -2434,7 +2581,7 @@ export default function CrossCategoryEventAnalysisPage() {
                       )}
                     </div>
 
-                    {depthStatusLabel === "No Data" && (
+                        {!hasDepth && (
                       <div
                         style={{
                           marginTop: 8,
@@ -2451,7 +2598,7 @@ export default function CrossCategoryEventAnalysisPage() {
                       </div>
                     )}
 
-                    {trendSummary && depthStatusLabel !== "Stable" && depthStatusLabel !== "No Data" && (
+                        {trendSummary && depthStatusLabel !== "Stable" && depthStatusLabel !== "Pending" && (
                       <div
                         style={{
                           marginTop: 8,
