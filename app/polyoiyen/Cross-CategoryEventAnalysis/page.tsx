@@ -117,6 +117,16 @@ type DepthStatsResponse = {
   }>;
 };
 
+type OrderBookLevel = {
+  price?: string | number;
+  size?: string | number;
+};
+
+type OrderBookResponse = {
+  bids?: OrderBookLevel[];
+  asks?: OrderBookLevel[];
+};
+
 type DepthTrendState = {
   eventId: string;
   eventTitle: string;
@@ -561,7 +571,54 @@ function getDepthBucketMinutes(window: TimeWindow): number {
 
 const DEPTH_SNAPSHOT_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
-async function fetchDepthStatsForEvent(eventId: string, timeWindow: TimeWindow, includeSeries = false) {
+async function fetchDepthStatsForEvent(
+  eventId: string,
+  timeWindow: TimeWindow,
+  includeSeries = false,
+  yesTokenId = "",
+  noTokenId = ""
+) {
+  async function fetchLiveDepthFallback() {
+    if (!yesTokenId || !noTokenId) return null;
+
+    const computeDepth = (book: OrderBookResponse | null): number => {
+      if (!book) return 0;
+      const topBids = Array.isArray(book.bids) ? book.bids.slice(0, 10) : [];
+      const topAsks = Array.isArray(book.asks) ? book.asks.slice(0, 10) : [];
+      const sumSide = (levels: OrderBookLevel[]) =>
+        levels.reduce((sum, lvl) => {
+          const price = Number(lvl?.price);
+          const size = Number(lvl?.size);
+          if (!Number.isFinite(price) || !Number.isFinite(size) || price <= 0 || size <= 0) return sum;
+          return sum + price * size;
+        }, 0);
+      return sumSide(topBids) + sumSide(topAsks);
+    };
+
+    const fetchBook = async (tokenId: string) => {
+      const res = await fetch(`/api/polymarket/orderbook?token_id=${encodeURIComponent(tokenId)}`);
+      if (!res.ok) return 0;
+      const data = (await res.json()) as OrderBookResponse;
+      return computeDepth(data);
+    };
+
+    const [yesDepth, noDepth] = await Promise.all([fetchBook(yesTokenId), fetchBook(noTokenId)]);
+    const total = Number((yesDepth + noDepth).toFixed(4));
+    if (!Number.isFinite(total) || total <= 0) return null;
+
+    const nowIso = new Date().toISOString();
+    return {
+      avgDepthUsd: total,
+      peakDepthUsd: total,
+      stdDepthUsd: 0,
+      rangeLowUsd: total,
+      rangeHighUsd: total,
+      sampleCount: 1,
+      latestSampledAt: nowIso,
+      seriesPoints: [] as Array<{ ts: number; label: string; depthUsd: number }>,
+    };
+  }
+
   const hoursBack = Math.floor(getWindowMs(timeWindow) / (60 * 60 * 1000));
   const params = new URLSearchParams({
     eventIds: eventId,
@@ -572,6 +629,8 @@ async function fetchDepthStatsForEvent(eventId: string, timeWindow: TimeWindow, 
 
   const res = await fetch(`/api/polyoiyen/depth-stats?${params.toString()}`);
   if (!res.ok) {
+    const fallback = await fetchLiveDepthFallback();
+    if (fallback) return fallback;
     return {
       avgDepthUsd: 0,
       peakDepthUsd: 0,
@@ -587,6 +646,8 @@ async function fetchDepthStatsForEvent(eventId: string, timeWindow: TimeWindow, 
   const payload = (await res.json()) as DepthStatsResponse;
   const stats = (payload.statsByEvent || [])[0];
   if (!stats) {
+    const fallback = await fetchLiveDepthFallback();
+    if (fallback) return fallback;
     return {
       avgDepthUsd: 0,
       peakDepthUsd: 0,
@@ -729,7 +790,7 @@ async function fetchMetricsForOption(option: CategoryEventOption, timeWindow: Ti
     const [volRes, predictorsRes, depthStats] = await Promise.all([
       fetch(`/api/polymarket/volatility-rating?${volParams.toString()}`),
       fetch(`/api/polymarket/predictors?${predictorsParams.toString()}`),
-      fetchDepthStatsForEvent(option.eventId, timeWindow),
+      fetchDepthStatsForEvent(option.eventId, timeWindow, false, option.yesTokenId, option.noTokenId),
     ]);
 
     if (!volRes.ok || !predictorsRes.ok) {
@@ -1100,7 +1161,7 @@ export default function CrossCategoryEventAnalysisPage() {
           if (!eventId) return [cat.key, null] as const;
           const selected = cat.options.find((o) => o.eventId === eventId);
           try {
-            const depth = await fetchDepthStatsForEvent(eventId, timeWindow, true);
+            const depth = await fetchDepthStatsForEvent(eventId, timeWindow, true, selected?.yesTokenId || "", selected?.noTokenId || "");
             return [
               cat.key,
               {
