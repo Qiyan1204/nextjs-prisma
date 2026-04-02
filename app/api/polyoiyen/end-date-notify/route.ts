@@ -137,10 +137,11 @@ export async function GET(req: NextRequest) {
 
   const cronSecret = process.env.CRON_SECRET;
   const auth = req.headers.get("authorization") || "";
+  const vercelCron = req.headers.get("x-vercel-cron") || "";
   const expectedAuth = cronSecret ? `Bearer ${cronSecret}` : "";
   const force = new URL(req.url).searchParams.get("force") === "true";
 
-  if (cronSecret && auth !== expectedAuth) {
+  if (cronSecret && auth !== expectedAuth && vercelCron !== "1" && !(force && process.env.NODE_ENV !== "production")) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 

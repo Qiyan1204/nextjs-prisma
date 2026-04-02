@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  Line,
+  LineChart,
   PolarAngleAxis,
   PolarGrid,
   PolarRadiusAxis,
@@ -9,6 +11,8 @@ import {
   RadarChart,
   ResponsiveContainer,
   Tooltip,
+  XAxis,
+  YAxis,
   Legend,
 } from "recharts";
 import PolyHeader from "../PolyHeader";
@@ -29,6 +33,35 @@ type RawMetricSet = {
   confidence: number;
   backtestWinRate: number;
   dataDensity: number;
+  tradeCount: number;
+  uniqueTraders: number;
+  orderBookDepth: number;
+  orderBookDepthPeak: number;
+  orderBookDepthVolatility: number;
+  orderBookDepthRangeLow: number;
+  orderBookDepthRangeHigh: number;
+  depthSampleCount: number;
+  depthLatestSampleAt: string | null;
+  totalVolume: number;
+  marketAssessmentBaseScore: number;
+  liquidityPenaltyScore: number;
+  marketAssessmentScore: number;
+};
+
+type AssessmentWeights = {
+  volatility: number;
+  reactionSpeed: number;
+  dataDensity: number;
+  backtestWinRate: number;
+  confidence: number;
+  tradeCount: number;
+  uniqueTraders: number;
+  orderBookDepth: number;
+  totalVolume: number;
+};
+
+type AssessmentSettings = {
+  penaltySensitivity: number;
 };
 
 type PolyMarketLite = {
@@ -58,6 +91,51 @@ type VolatilityRatingResponse = {
 type PredictorsResponse = {
   uniquePredictors?: number;
   totalTrades?: number;
+  totalTradeNotional?: number;
+};
+
+type DepthStatsResponse = {
+  statsByEvent?: Array<{
+    eventId: string;
+    sampleCount: number;
+    avgDepthUsd: number;
+    peakDepthUsd: number;
+    minDepthUsd: number;
+    stdDepthUsd: number;
+    rangeLowUsd: number;
+    rangeHighUsd: number;
+    latestDepthUsd: number;
+    latestSampledAt: string;
+  }>;
+  seriesByEvent?: Array<{
+    eventId: string;
+    points: Array<{
+      ts: number;
+      label: string;
+      depthUsd: number;
+    }>;
+  }>;
+};
+
+type DepthTrendState = {
+  eventId: string;
+  eventTitle: string;
+  points: Array<{ ts: number; label: string; depthUsd: number }>;
+};
+
+type DepthTrendSummary = {
+  startDepthUsd: number;
+  endDepthUsd: number;
+  slopePct: number;
+  maxDrawdownPct: number;
+  isDowntrend: boolean;
+};
+
+type StrategyOutcome = {
+  name: string;
+  thesis: string;
+  expectedReturnPct: number;
+  finalCapital: number;
 };
 
 type CategoryEventOption = {
@@ -86,6 +164,11 @@ type NormalizedMetrics = {
   confidence: Record<CategoryKey, number | null>;
   backtestWinRate: Record<CategoryKey, number | null>;
   dataDensity: Record<CategoryKey, number | null>;
+  tradeCount: Record<CategoryKey, number | null>;
+  uniqueTraders: Record<CategoryKey, number | null>;
+  orderBookDepth: Record<CategoryKey, number | null>;
+  totalVolume: Record<CategoryKey, number | null>;
+  marketAssessmentScore: Record<CategoryKey, number | null>;
 };
 
 const CATEGORY_CONFIG: Array<{ key: CategoryKey; label: string; keywords: string[] }> = [
@@ -105,6 +188,187 @@ const chartColors = {
   fedRates: "#38bdf8",
   nbaGames: "#eab308",
 };
+
+const DEFAULT_ASSESSMENT_WEIGHTS: AssessmentWeights = {
+  volatility: 1,
+  reactionSpeed: 1,
+  dataDensity: 1,
+  backtestWinRate: 1,
+  confidence: 1,
+  tradeCount: 1,
+  uniqueTraders: 1,
+  orderBookDepth: 1,
+  totalVolume: 1,
+};
+
+const WEIGHT_PARAM_KEYS: Record<keyof AssessmentWeights, string> = {
+  volatility: "wv",
+  reactionSpeed: "wr",
+  dataDensity: "wd",
+  backtestWinRate: "wb",
+  confidence: "wc",
+  tradeCount: "wt",
+  uniqueTraders: "wu",
+  orderBookDepth: "wo",
+  totalVolume: "wm",
+};
+
+const SETTINGS_PARAM_KEYS = {
+  penaltySensitivity: "lp",
+} as const;
+
+const WEIGHT_PRESETS: Array<{ key: string; label: string; weights: AssessmentWeights }> = [
+  { key: "balanced", label: "Balanced", weights: { ...DEFAULT_ASSESSMENT_WEIGHTS } },
+  {
+    key: "momentum",
+    label: "Momentum",
+    weights: {
+      volatility: 0.7,
+      reactionSpeed: 2.2,
+      dataDensity: 1.1,
+      backtestWinRate: 1.8,
+      confidence: 2.1,
+      tradeCount: 0.9,
+      uniqueTraders: 1,
+      orderBookDepth: 0.7,
+      totalVolume: 1.3,
+    },
+  },
+  {
+    key: "liquidity",
+    label: "Liquidity",
+    weights: {
+      volatility: 0.8,
+      reactionSpeed: 1,
+      dataDensity: 1.4,
+      backtestWinRate: 1,
+      confidence: 0.9,
+      tradeCount: 2,
+      uniqueTraders: 1.8,
+      orderBookDepth: 2.4,
+      totalVolume: 2,
+    },
+  },
+  {
+    key: "reversion",
+    label: "Mean Reversion",
+    weights: {
+      volatility: 2,
+      reactionSpeed: 1,
+      dataDensity: 1,
+      backtestWinRate: 1.5,
+      confidence: 0.8,
+      tradeCount: 1,
+      uniqueTraders: 1,
+      orderBookDepth: 1.4,
+      totalVolume: 0.9,
+    },
+  },
+];
+
+function getDepthHealth(raw: RawMetricSet | null, timeWindow: TimeWindow) {
+  if (!raw || raw.depthSampleCount <= 0) {
+    return { label: "No Data", color: "#fca5a5", bg: "rgba(127,29,29,0.35)" };
+  }
+
+  const expectedSamples = getWindowMs(timeWindow) / (10 * 60 * 1000);
+  const latestMs = raw.depthLatestSampleAt ? new Date(raw.depthLatestSampleAt).getTime() : 0;
+  const ageMinutes = latestMs > 0 ? (Date.now() - latestMs) / (60 * 1000) : Number.POSITIVE_INFINITY;
+
+  if (ageMinutes > 35) {
+    return { label: "Stale", color: "#fcd34d", bg: "rgba(120,53,15,0.35)" };
+  }
+  if (raw.depthSampleCount < expectedSamples * 0.2) {
+    return { label: "Sparse", color: "#fcd34d", bg: "rgba(120,53,15,0.35)" };
+  }
+  return { label: "Healthy", color: "#86efac", bg: "rgba(20,83,45,0.35)" };
+}
+
+function equalWeights(a: AssessmentWeights, b: AssessmentWeights): boolean {
+  return (Object.keys(WEIGHT_PARAM_KEYS) as Array<keyof AssessmentWeights>)
+    .every((k) => Math.abs(a[k] - b[k]) < 0.0001);
+}
+
+function addSmaToTrendPoints(points: Array<{ ts: number; label: string; depthUsd: number }>, windowSize: number) {
+  return points.map((p, idx) => {
+    const from = Math.max(0, idx - windowSize + 1);
+    const slice = points.slice(from, idx + 1);
+    const avg = slice.reduce((sum, x) => sum + x.depthUsd, 0) / Math.max(1, slice.length);
+    return {
+      ...p,
+      smaDepthUsd: Number(avg.toFixed(4)),
+    };
+  });
+}
+
+function summarizeDepthTrend(points: Array<{ ts: number; label: string; depthUsd: number }>): DepthTrendSummary | null {
+  if (!Array.isArray(points) || points.length < 2) return null;
+
+  const values = points.map((p) => Number(p.depthUsd)).filter((v) => Number.isFinite(v));
+  if (values.length < 2) return null;
+
+  const start = values[0];
+  const end = values[values.length - 1];
+  const slopePct = start > 0 ? ((end - start) / start) * 100 : 0;
+
+  let peak = values[0];
+  let maxDrawdownPct = 0;
+  for (const v of values) {
+    if (v > peak) peak = v;
+    if (peak <= 0) continue;
+    const dd = ((peak - v) / peak) * 100;
+    if (dd > maxDrawdownPct) maxDrawdownPct = dd;
+  }
+
+  return {
+    startDepthUsd: Number(start.toFixed(4)),
+    endDepthUsd: Number(end.toFixed(4)),
+    slopePct: Number(slopePct.toFixed(2)),
+    maxDrawdownPct: Number(maxDrawdownPct.toFixed(2)),
+    isDowntrend: slopePct <= -12,
+  };
+}
+
+function computeLiquidityPenalty(summary: DepthTrendSummary | null): number {
+  if (!summary || !summary.isDowntrend) return 0;
+  const penalty = Math.abs(summary.slopePct) * 0.35 + summary.maxDrawdownPct * 0.15;
+  return clamp(Number(penalty.toFixed(2)), 0, 18);
+}
+
+function getLiquidityWarningGrade(summary: DepthTrendSummary | null): {
+  label: "No Data" | "Stable" | "Watch" | "Risk" | "Critical";
+  color: string;
+  bg: string;
+} {
+  if (!summary) {
+    return { label: "No Data", color: "#cbd5e1", bg: "rgba(71,85,105,0.34)" };
+  }
+
+  if (!summary.isDowntrend) {
+    return { label: "Stable", color: "#86efac", bg: "rgba(20,83,45,0.35)" };
+  }
+
+  if (summary.slopePct <= -35 || summary.maxDrawdownPct >= 45) {
+    return { label: "Critical", color: "#fda4af", bg: "rgba(127,29,29,0.38)" };
+  }
+
+  if (summary.slopePct <= -20 || summary.maxDrawdownPct >= 30) {
+    return { label: "Risk", color: "#fca5a5", bg: "rgba(127,29,29,0.32)" };
+  }
+
+  return { label: "Watch", color: "#fcd34d", bg: "rgba(120,53,15,0.35)" };
+}
+
+function parsePenaltySensitivityFromUrl(searchParams: URLSearchParams): number {
+  const raw = searchParams.get(SETTINGS_PARAM_KEYS.penaltySensitivity);
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return 1;
+  return clamp(value, 0, 3);
+}
+
+function computeAdjustedPenalty(summary: DepthTrendSummary | null, penaltySensitivity: number): number {
+  return clamp(Number((computeLiquidityPenalty(summary) * penaltySensitivity).toFixed(2)), 0, 25);
+}
 
 function pickActiveMarket(markets: PolyMarketLite[] | undefined): PolyMarketLite | undefined {
   if (!Array.isArray(markets) || markets.length === 0) return undefined;
@@ -168,7 +432,10 @@ function computeTrendConsistency(points: Array<{ yesPrice?: number | null }> | u
   return (sameDirectionCount / (directions.length - 1)) * 100;
 }
 
-function normalizeMetricRows(rows: CategoryState[], key: keyof RawMetricSet): Record<CategoryKey, number | null> {
+function normalizeMetricRows(
+  rows: CategoryState[],
+  key: Exclude<keyof RawMetricSet, "depthLatestSampleAt">
+): Record<CategoryKey, number | null> {
   const usable = rows.filter((r) => r.raw != null).map((r) => ({ key: r.key, value: r.raw![key] }));
   const result: Record<CategoryKey, number | null> = {
     elonTweets: null,
@@ -204,6 +471,19 @@ function averageMetrics(list: RawMetricSet[]): RawMetricSet {
       confidence: 0,
       backtestWinRate: 0,
       dataDensity: 0,
+      tradeCount: 0,
+      uniqueTraders: 0,
+      orderBookDepth: 0,
+      orderBookDepthPeak: 0,
+      orderBookDepthVolatility: 0,
+      orderBookDepthRangeLow: 0,
+      orderBookDepthRangeHigh: 0,
+      depthSampleCount: 0,
+      depthLatestSampleAt: null,
+      totalVolume: 0,
+      marketAssessmentBaseScore: 0,
+      liquidityPenaltyScore: 0,
+      marketAssessmentScore: 0,
     };
   }
 
@@ -213,7 +493,181 @@ function averageMetrics(list: RawMetricSet[]): RawMetricSet {
     confidence: list.reduce((a, b) => a + b.confidence, 0) / n,
     backtestWinRate: list.reduce((a, b) => a + b.backtestWinRate, 0) / n,
     dataDensity: list.reduce((a, b) => a + b.dataDensity, 0) / n,
+    tradeCount: list.reduce((a, b) => a + b.tradeCount, 0) / n,
+    uniqueTraders: list.reduce((a, b) => a + b.uniqueTraders, 0) / n,
+    orderBookDepth: list.reduce((a, b) => a + b.orderBookDepth, 0) / n,
+    orderBookDepthPeak: list.reduce((a, b) => a + b.orderBookDepthPeak, 0) / n,
+    orderBookDepthVolatility: list.reduce((a, b) => a + b.orderBookDepthVolatility, 0) / n,
+    orderBookDepthRangeLow: list.reduce((a, b) => a + b.orderBookDepthRangeLow, 0) / n,
+    orderBookDepthRangeHigh: list.reduce((a, b) => a + b.orderBookDepthRangeHigh, 0) / n,
+    depthSampleCount: list.reduce((a, b) => a + b.depthSampleCount, 0) / n,
+    depthLatestSampleAt: list.reduce<string | null>((latest, curr) => {
+      if (!curr.depthLatestSampleAt) return latest;
+      if (!latest) return curr.depthLatestSampleAt;
+      return new Date(curr.depthLatestSampleAt).getTime() > new Date(latest).getTime()
+        ? curr.depthLatestSampleAt
+        : latest;
+    }, null),
+    totalVolume: list.reduce((a, b) => a + b.totalVolume, 0) / n,
+    marketAssessmentBaseScore: list.reduce((a, b) => a + b.marketAssessmentBaseScore, 0) / n,
+    liquidityPenaltyScore: list.reduce((a, b) => a + b.liquidityPenaltyScore, 0) / n,
+    marketAssessmentScore: list.reduce((a, b) => a + b.marketAssessmentScore, 0) / n,
   };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function toVolatilityScore(volatilityRaw: number): number {
+  return clamp(Math.log1p(Math.max(0, volatilityRaw)) * 18, 0, 100);
+}
+
+function toReactionScore(reactionRaw: number): number {
+  return clamp(reactionRaw * 22, 0, 100);
+}
+
+function toDensityScore(densityRaw: number): number {
+  return clamp(densityRaw, 0, 100);
+}
+
+function toTradeCountScore(tradeCount: number): number {
+  return clamp(Math.log1p(Math.max(0, tradeCount)) * 14, 0, 100);
+}
+
+function toUniqueTradersScore(uniqueTraders: number): number {
+  return clamp(Math.log1p(Math.max(0, uniqueTraders)) * 18, 0, 100);
+}
+
+function toDepthScore(orderBookDepth: number): number {
+  return clamp(Math.log1p(Math.max(0, orderBookDepth)) * 8, 0, 100);
+}
+
+function toVolumeScore(totalVolume: number): number {
+  return clamp(Math.log1p(Math.max(0, totalVolume)) * 9, 0, 100);
+}
+
+function getDepthBucketMinutes(window: TimeWindow): number {
+  switch (window) {
+    case "24H":
+      return 10;
+    case "30D":
+      return 180;
+    case "7D":
+    default:
+      return 60;
+  }
+}
+
+async function fetchDepthStatsForEvent(eventId: string, timeWindow: TimeWindow, includeSeries = false) {
+  const hoursBack = Math.floor(getWindowMs(timeWindow) / (60 * 60 * 1000));
+  const params = new URLSearchParams({
+    eventIds: eventId,
+    hoursBack: String(hoursBack),
+    includeSeries: includeSeries ? "true" : "false",
+    bucketMinutes: String(getDepthBucketMinutes(timeWindow)),
+  });
+
+  const res = await fetch(`/api/polyoiyen/depth-stats?${params.toString()}`);
+  if (!res.ok) {
+    return {
+      avgDepthUsd: 0,
+      peakDepthUsd: 0,
+      stdDepthUsd: 0,
+      rangeLowUsd: 0,
+      rangeHighUsd: 0,
+      sampleCount: 0,
+      latestSampledAt: null,
+      seriesPoints: [] as Array<{ ts: number; label: string; depthUsd: number }>,
+    };
+  }
+
+  const payload = (await res.json()) as DepthStatsResponse;
+  const stats = (payload.statsByEvent || [])[0];
+  if (!stats) {
+    return {
+      avgDepthUsd: 0,
+      peakDepthUsd: 0,
+      stdDepthUsd: 0,
+      rangeLowUsd: 0,
+      rangeHighUsd: 0,
+      sampleCount: 0,
+      latestSampledAt: null,
+      seriesPoints: [] as Array<{ ts: number; label: string; depthUsd: number }>,
+    };
+  }
+
+  const matchedSeries = (payload.seriesByEvent || []).find((s) => s.eventId === eventId);
+
+  return {
+    avgDepthUsd: Number(stats.avgDepthUsd || 0),
+    peakDepthUsd: Number(stats.peakDepthUsd || 0),
+    stdDepthUsd: Number(stats.stdDepthUsd || 0),
+    rangeLowUsd: Number(stats.rangeLowUsd || 0),
+    rangeHighUsd: Number(stats.rangeHighUsd || 0),
+    sampleCount: Number(stats.sampleCount || 0),
+    latestSampledAt: typeof stats.latestSampledAt === "string" ? stats.latestSampledAt : null,
+    seriesPoints: Array.isArray(matchedSeries?.points) ? matchedSeries!.points : [],
+  };
+}
+
+function computeStrategyOutcomes(raw: RawMetricSet): StrategyOutcome[] {
+  const initialCapital = 1000;
+  const volatility = toVolatilityScore(raw.volatility);
+  const reaction = toReactionScore(raw.reactionSpeed);
+  const density = toDensityScore(raw.dataDensity);
+  const confidence = clamp(raw.confidence, 0, 100);
+  const backtest = clamp(raw.backtestWinRate, 0, 100);
+  const tradeCount = toTradeCountScore(raw.tradeCount);
+  const uniqueTraders = toUniqueTradersScore(raw.uniqueTraders);
+  const depth = toDepthScore(raw.orderBookDepth);
+  const volume = toVolumeScore(raw.totalVolume);
+
+  const momentumEdge = 0.34 * reaction + 0.24 * confidence + 0.24 * backtest + 0.18 * density;
+  const meanReversionEdge = 0.36 * volatility + 0.24 * (100 - confidence) + 0.2 * density + 0.2 * depth;
+  const liquidityScalpEdge = 0.34 * depth + 0.22 * tradeCount + 0.18 * uniqueTraders + 0.14 * density + 0.12 * reaction;
+  const trendSwingEdge = 0.38 * backtest + 0.22 * confidence + 0.2 * reaction + 0.2 * volume;
+  const randomMartingaleEdge = 18 - 0.2 * volatility - 0.15 * confidence - 0.2 * reaction;
+
+  const toReturnPct = (edge: number, scale: number) => clamp((edge - 50) * scale, -60, 65);
+
+  const strategies: StrategyOutcome[] = [
+    {
+      name: "Momentum Breakout",
+      thesis: "Performs better in fast reaction, clearer directional confidence markets.",
+      expectedReturnPct: toReturnPct(momentumEdge, 0.85),
+      finalCapital: 0,
+    },
+    {
+      name: "Mean Reversion",
+      thesis: "Performs better when volatility is high and conviction is not one-sided.",
+      expectedReturnPct: toReturnPct(meanReversionEdge, 0.78),
+      finalCapital: 0,
+    },
+    {
+      name: "Liquidity Scalping",
+      thesis: "Needs deep order book and high trading activity.",
+      expectedReturnPct: toReturnPct(liquidityScalpEdge, 0.75),
+      finalCapital: 0,
+    },
+    {
+      name: "Trend Swing",
+      thesis: "Benefits from consistency and higher overall market participation.",
+      expectedReturnPct: toReturnPct(trendSwingEdge, 0.8),
+      finalCapital: 0,
+    },
+    {
+      name: "Blind Martingale",
+      thesis: "Typically fragile in volatile, event-driven markets.",
+      expectedReturnPct: toReturnPct(randomMartingaleEdge, 0.9),
+      finalCapital: 0,
+    },
+  ];
+
+  return strategies.map((s) => ({
+    ...s,
+    finalCapital: Number((initialCapital * (1 + s.expectedReturnPct / 100)).toFixed(2)),
+  }));
 }
 
 function normalizeSelection(ids: string[], mode: CompareMode): string[] {
@@ -270,9 +724,10 @@ async function fetchMetricsForOption(option: CategoryEventOption, timeWindow: Ti
       maxPages,
     });
 
-    const [volRes, predictorsRes] = await Promise.all([
+    const [volRes, predictorsRes, depthStats] = await Promise.all([
       fetch(`/api/polymarket/volatility-rating?${volParams.toString()}`),
       fetch(`/api/polymarket/predictors?${predictorsParams.toString()}`),
+      fetchDepthStatsForEvent(option.eventId, timeWindow),
     ]);
 
     if (!volRes.ok || !predictorsRes.ok) {
@@ -284,13 +739,37 @@ async function fetchMetricsForOption(option: CategoryEventOption, timeWindow: Ti
     const volData = (await volRes.json()) as VolatilityRatingResponse;
     const predictorsData = (await predictorsRes.json()) as PredictorsResponse;
 
+    const orderBookDepth = depthStats.avgDepthUsd;
+    const orderBookDepthPeak = depthStats.peakDepthUsd;
+    const orderBookDepthVolatility = depthStats.stdDepthUsd;
+    const orderBookDepthRangeLow = depthStats.rangeLowUsd;
+    const orderBookDepthRangeHigh = depthStats.rangeHighUsd;
+
     const totalVolatility = (volData.metrics?.yes?.totalVolatilityRating || 0) + (volData.metrics?.no?.totalVolatilityRating || 0);
     const avgReaction = ((volData.metrics?.yes?.averageVolatilityRatingPerHour || 0) + (volData.metrics?.no?.averageVolatilityRatingPerHour || 0)) / 2;
     const confidence = option.yesPrice != null ? Math.abs(option.yesPrice - 0.5) * 200 : 50;
     const backtest = computeTrendConsistency(volData.points);
     const tradeCount = Number(predictorsData.totalTrades || 0);
     const uniquePredictors = Number(predictorsData.uniquePredictors || 0);
+    const totalVolume = Number(predictorsData.totalTradeNotional || 0) > 0
+      ? Number(predictorsData.totalTradeNotional || 0)
+      : Number(option.volume || 0);
     const density = Math.log1p(tradeCount) * 10 + Math.log1p(uniquePredictors) * 18;
+
+    const scoreParts = [
+      toVolatilityScore(totalVolatility),
+      toReactionScore(avgReaction),
+      toDensityScore(density),
+      clamp(backtest, 0, 100),
+      clamp(confidence, 0, 100),
+      toTradeCountScore(tradeCount),
+      toUniqueTradersScore(uniquePredictors),
+      toDepthScore(orderBookDepth),
+      toVolumeScore(totalVolume),
+    ];
+    const marketAssessmentBaseScore = scoreParts.reduce((a, b) => a + b, 0) / scoreParts.length;
+    const liquidityPenaltyScore = 0;
+    const marketAssessmentScore = marketAssessmentBaseScore;
 
     return {
       volatility: totalVolatility,
@@ -298,6 +777,19 @@ async function fetchMetricsForOption(option: CategoryEventOption, timeWindow: Ti
       confidence,
       backtestWinRate: backtest,
       dataDensity: density,
+      tradeCount,
+      uniqueTraders: uniquePredictors,
+      orderBookDepth,
+      orderBookDepthPeak,
+      orderBookDepthVolatility,
+      orderBookDepthRangeLow,
+      orderBookDepthRangeHigh,
+      depthSampleCount: depthStats.sampleCount,
+      depthLatestSampleAt: depthStats.latestSampledAt,
+      totalVolume,
+      marketAssessmentBaseScore,
+      liquidityPenaltyScore,
+      marketAssessmentScore,
     };
   };
 
@@ -353,6 +845,37 @@ function parseWindowFromUrl(searchParams: URLSearchParams): TimeWindow {
   return "7D";
 }
 
+function parseWeightFromUrl(searchParams: URLSearchParams): AssessmentWeights {
+  const out = { ...DEFAULT_ASSESSMENT_WEIGHTS };
+  (Object.keys(WEIGHT_PARAM_KEYS) as Array<keyof AssessmentWeights>).forEach((key) => {
+    const raw = searchParams.get(WEIGHT_PARAM_KEYS[key]);
+    if (!raw) return;
+    const v = Number(raw);
+    if (!Number.isFinite(v)) return;
+    out[key] = clamp(v, 0, 3);
+  });
+  return out;
+}
+
+function computeMarketAssessmentScore(raw: RawMetricSet, weights: AssessmentWeights): number {
+  const components: Array<{ score: number; weight: number }> = [
+    { score: toVolatilityScore(raw.volatility), weight: weights.volatility },
+    { score: toReactionScore(raw.reactionSpeed), weight: weights.reactionSpeed },
+    { score: toDensityScore(raw.dataDensity), weight: weights.dataDensity },
+    { score: clamp(raw.backtestWinRate, 0, 100), weight: weights.backtestWinRate },
+    { score: clamp(raw.confidence, 0, 100), weight: weights.confidence },
+    { score: toTradeCountScore(raw.tradeCount), weight: weights.tradeCount },
+    { score: toUniqueTradersScore(raw.uniqueTraders), weight: weights.uniqueTraders },
+    { score: toDepthScore(raw.orderBookDepth), weight: weights.orderBookDepth },
+    { score: toVolumeScore(raw.totalVolume), weight: weights.totalVolume },
+  ];
+
+  const totalWeight = components.reduce((sum, c) => sum + Math.max(0, c.weight), 0);
+  if (totalWeight <= 0) return 0;
+  const weighted = components.reduce((sum, c) => sum + c.score * Math.max(0, c.weight), 0);
+  return weighted / totalWeight;
+}
+
 function getWindowMs(window: TimeWindow): number {
   switch (window) {
     case "24H":
@@ -386,6 +909,7 @@ function buildBaselineFromNormalized(normalized: NormalizedMetrics): Record<stri
     { key: "Confidence", row: normalized.confidence },
     { key: "Backtest Win Rate", row: normalized.backtestWinRate },
     { key: "Data Density", row: normalized.dataDensity },
+    { key: "Market Assessment", row: normalized.marketAssessmentScore },
   ];
 
   const out: Record<string, number | null> = {};
@@ -421,11 +945,14 @@ export default function CrossCategoryEventAnalysisPage() {
   const [compareMode, setCompareMode] = useState<CompareMode>("single");
   const [timeWindow, setTimeWindow] = useState<TimeWindow>("7D");
   const [baselineMode, setBaselineMode] = useState<BaselineMode>("marketAverage");
+  const [assessmentWeights, setAssessmentWeights] = useState<AssessmentWeights>(DEFAULT_ASSESSMENT_WEIGHTS);
+  const [penaltySensitivity, setPenaltySensitivity] = useState<number>(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [categories, setCategories] = useState<CategoryState[]>([]);
   const [searchByCategory, setSearchByCategory] = useState<Record<CategoryKey, string>>(emptyCategoryRecord(""));
   const [recentByCategory, setRecentByCategory] = useState<Record<CategoryKey, string[]>>(emptyCategoryRecord<string[]>([]));
+  const [depthTrendByCategory, setDepthTrendByCategory] = useState<Record<CategoryKey, DepthTrendState | null>>(emptyCategoryRecord<DepthTrendState | null>(null));
   const [lastSelectionBaseline, setLastSelectionBaseline] = useState<Record<string, number | null> | null>(null);
   const [shareStatus, setShareStatus] = useState<string>("");
   const [initialized, setInitialized] = useState(false);
@@ -440,8 +967,12 @@ export default function CrossCategoryEventAnalysisPage() {
         const searchParams = new URLSearchParams(window.location.search);
         const modeFromUrl = searchParams.get("mode") === "avg" ? "average" : "single";
         const windowFromUrl = parseWindowFromUrl(searchParams);
+        const weightsFromUrl = parseWeightFromUrl(searchParams);
+        const penaltySensitivityFromUrl = parsePenaltySensitivityFromUrl(searchParams);
         setCompareMode(modeFromUrl);
         setTimeWindow(windowFromUrl);
+        setAssessmentWeights(weightsFromUrl);
+        setPenaltySensitivity(penaltySensitivityFromUrl);
 
         const params = new URLSearchParams({
           limit: String(MAX_EVENT_SCAN),
@@ -541,10 +1072,60 @@ export default function CrossCategoryEventAnalysisPage() {
       }
     }
 
+    (Object.keys(WEIGHT_PARAM_KEYS) as Array<keyof AssessmentWeights>).forEach((key) => {
+      const v = assessmentWeights[key];
+      if (Math.abs(v - DEFAULT_ASSESSMENT_WEIGHTS[key]) < 0.0001) return;
+      params.set(WEIGHT_PARAM_KEYS[key], String(Number(v.toFixed(2))));
+    });
+
+    if (Math.abs(penaltySensitivity - 1) >= 0.0001) {
+      params.set(SETTINGS_PARAM_KEYS.penaltySensitivity, String(Number(penaltySensitivity.toFixed(2))));
+    }
+
     const query = params.toString();
     const nextUrl = query ? `${window.location.pathname}?${query}` : window.location.pathname;
     window.history.replaceState(null, "", nextUrl);
-  }, [categories, compareMode, timeWindow, initialized]);
+  }, [categories, compareMode, timeWindow, assessmentWeights, penaltySensitivity, initialized]);
+
+  useEffect(() => {
+    if (!initialized || categories.length === 0) return;
+    let cancelled = false;
+
+    async function loadDepthTrends() {
+      const entries = await Promise.all(
+        categories.map(async (cat) => {
+          const eventId = cat.selectedEventIds[0];
+          if (!eventId) return [cat.key, null] as const;
+          const selected = cat.options.find((o) => o.eventId === eventId);
+          try {
+            const depth = await fetchDepthStatsForEvent(eventId, timeWindow, true);
+            return [
+              cat.key,
+              {
+                eventId,
+                eventTitle: selected?.title || "Selected Event",
+                points: depth.seriesPoints || [],
+              },
+            ] as const;
+          } catch {
+            return [cat.key, null] as const;
+          }
+        })
+      );
+
+      if (cancelled) return;
+      const next = emptyCategoryRecord<DepthTrendState | null>(null);
+      for (const [key, value] of entries) {
+        next[key] = value;
+      }
+      setDepthTrendByCategory(next);
+    }
+
+    void loadDepthTrends();
+    return () => {
+      cancelled = true;
+    };
+  }, [categories, timeWindow, initialized]);
 
   async function handleSelectEvents(categoryKey: CategoryKey, eventIds: string[], options: CategoryEventOption[]) {
     setLastSelectionBaseline(buildBaselineFromNormalized(normalizedMetrics));
@@ -629,24 +1210,82 @@ export default function CrossCategoryEventAnalysisPage() {
     );
   }
 
+  const categoriesWithScores = useMemo(() => {
+    return categories.map((cat) => {
+      if (!cat.raw) return cat;
+
+      const trendSummary = summarizeDepthTrend(depthTrendByCategory[cat.key]?.points || []);
+      const marketAssessmentBaseScore = computeMarketAssessmentScore(cat.raw, assessmentWeights);
+      const liquidityPenaltyScore = computeAdjustedPenalty(trendSummary, penaltySensitivity);
+      const marketAssessmentScore = clamp(marketAssessmentBaseScore - liquidityPenaltyScore, 0, 100);
+
+      return {
+        ...cat,
+        raw: {
+          ...cat.raw,
+          marketAssessmentBaseScore,
+          liquidityPenaltyScore,
+          marketAssessmentScore,
+        },
+      };
+    });
+  }, [categories, assessmentWeights, depthTrendByCategory, penaltySensitivity]);
+
   const normalizedMetrics = useMemo<NormalizedMetrics>(() => {
     return {
-      volatility: normalizeMetricRows(categories, "volatility"),
-      reactionSpeed: normalizeMetricRows(categories, "reactionSpeed"),
-      confidence: normalizeMetricRows(categories, "confidence"),
-      backtestWinRate: normalizeMetricRows(categories, "backtestWinRate"),
-      dataDensity: normalizeMetricRows(categories, "dataDensity"),
+      volatility: normalizeMetricRows(categoriesWithScores, "volatility"),
+      reactionSpeed: normalizeMetricRows(categoriesWithScores, "reactionSpeed"),
+      confidence: normalizeMetricRows(categoriesWithScores, "confidence"),
+      backtestWinRate: normalizeMetricRows(categoriesWithScores, "backtestWinRate"),
+      dataDensity: normalizeMetricRows(categoriesWithScores, "dataDensity"),
+      tradeCount: normalizeMetricRows(categoriesWithScores, "tradeCount"),
+      uniqueTraders: normalizeMetricRows(categoriesWithScores, "uniqueTraders"),
+      orderBookDepth: normalizeMetricRows(categoriesWithScores, "orderBookDepth"),
+      totalVolume: normalizeMetricRows(categoriesWithScores, "totalVolume"),
+      marketAssessmentScore: normalizeMetricRows(categoriesWithScores, "marketAssessmentScore"),
     };
-  }, [categories]);
+  }, [categoriesWithScores]);
+
+  const strategyByCategory = useMemo(() => {
+    const out: Record<CategoryKey, StrategyOutcome[]> = {
+      elonTweets: [],
+      movieBoxOffice: [],
+      fedRates: [],
+      nbaGames: [],
+    };
+
+    for (const cat of categoriesWithScores) {
+      out[cat.key] = cat.raw ? computeStrategyOutcomes(cat.raw) : [];
+    }
+
+    return out;
+  }, [categoriesWithScores]);
+
+  const depthTrendSummaryByCategory = useMemo(() => {
+    const out: Record<CategoryKey, DepthTrendSummary | null> = {
+      elonTweets: null,
+      movieBoxOffice: null,
+      fedRates: null,
+      nbaGames: null,
+    };
+
+    (Object.keys(out) as CategoryKey[]).forEach((key) => {
+      const trend = depthTrendByCategory[key];
+      out[key] = trend ? summarizeDepthTrend(trend.points) : null;
+    });
+
+    return out;
+  }, [depthTrendByCategory]);
 
   const radarData = useMemo<RadarMetric[]>(() => {
-    if (categories.length === 0) {
+    if (categoriesWithScores.length === 0) {
       return [
         { metric: "Volatility", elonTweets: null, movieBoxOffice: null, fedRates: null, nbaGames: null },
         { metric: "Reaction Speed", elonTweets: null, movieBoxOffice: null, fedRates: null, nbaGames: null },
         { metric: "Confidence", elonTweets: null, movieBoxOffice: null, fedRates: null, nbaGames: null },
         { metric: "Backtest Win Rate", elonTweets: null, movieBoxOffice: null, fedRates: null, nbaGames: null },
         { metric: "Data Density", elonTweets: null, movieBoxOffice: null, fedRates: null, nbaGames: null },
+        { metric: "Market Assessment", elonTweets: null, movieBoxOffice: null, fedRates: null, nbaGames: null },
       ];
     }
 
@@ -658,6 +1297,7 @@ export default function CrossCategoryEventAnalysisPage() {
       { metric: "Confidence", ...normalizedMetrics.confidence },
       { metric: "Backtest Win Rate", ...normalizedMetrics.backtestWinRate },
       { metric: "Data Density", ...normalizedMetrics.dataDensity },
+      { metric: "Market Assessment", ...normalizedMetrics.marketAssessmentScore },
     ].map((row) => {
       const baselineValue = baselineMode === "none"
         ? null
@@ -666,12 +1306,12 @@ export default function CrossCategoryEventAnalysisPage() {
           : (lastSelectionBaseline?.[row.metric] ?? null);
       return { ...row, baseline: baselineValue };
     });
-  }, [categories, normalizedMetrics, baselineMode, lastSelectionBaseline]);
+  }, [categoriesWithScores, normalizedMetrics, baselineMode, lastSelectionBaseline]);
 
   const shareUrl = useMemo(() => {
     if (typeof window === "undefined") return "";
     return window.location.href;
-  }, [categories, compareMode, timeWindow, baselineMode]);
+  }, [categoriesWithScores, compareMode, timeWindow, baselineMode, assessmentWeights, penaltySensitivity, depthTrendSummaryByCategory]);
 
   function buildDiscordMessage() {
     const lines: string[] = [];
@@ -681,7 +1321,7 @@ export default function CrossCategoryEventAnalysisPage() {
     lines.push(`Baseline: ${baselineMode}`);
     lines.push("");
 
-    for (const cat of categories) {
+    for (const cat of categoriesWithScores) {
       const selectedTitles = cat.options
         .filter((o) => cat.selectedEventIds.includes(o.eventId))
         .map((o) => o.title);
@@ -707,9 +1347,32 @@ export default function CrossCategoryEventAnalysisPage() {
       "Norm Backtest Win Rate",
       "Raw Data Density",
       "Norm Data Density",
+      "Raw Trade Count",
+      "Norm Trade Count",
+      "Raw Unique Traders",
+      "Norm Unique Traders",
+      "Raw Order Book Depth (USD)",
+      "Norm Order Book Depth",
+      "Raw Order Book Depth Peak (USD)",
+      "Raw Order Book Depth Volatility (STD)",
+      "Raw Order Book Depth Range Low (USD)",
+      "Raw Order Book Depth Range High (USD)",
+      "Depth Sample Count",
+      "Depth Latest Sample ISO",
+      "Depth Trend Start (USD)",
+      "Depth Trend End (USD)",
+      "Depth Trend Slope %",
+      "Depth Trend Max Drawdown %",
+      "Depth Trend Warning",
+      "Raw Total Volume",
+      "Norm Total Volume",
+      "Raw Market Assessment Base",
+      "Raw Liquidity Penalty",
+      "Raw Market Assessment",
+      "Norm Market Assessment",
     ];
 
-    const rows = categories.map((cat) => {
+    const rows = categoriesWithScores.map((cat) => {
       const selectedTitles = cat.options
         .filter((o) => cat.selectedEventIds.includes(o.eventId))
         .map((o) => o.title)
@@ -728,6 +1391,29 @@ export default function CrossCategoryEventAnalysisPage() {
         normalizedMetrics.backtestWinRate[cat.key],
         cat.raw?.dataDensity ?? null,
         normalizedMetrics.dataDensity[cat.key],
+        cat.raw?.tradeCount ?? null,
+        normalizedMetrics.tradeCount[cat.key],
+        cat.raw?.uniqueTraders ?? null,
+        normalizedMetrics.uniqueTraders[cat.key],
+        cat.raw?.orderBookDepth ?? null,
+        normalizedMetrics.orderBookDepth[cat.key],
+        cat.raw?.orderBookDepthPeak ?? null,
+        cat.raw?.orderBookDepthVolatility ?? null,
+        cat.raw?.orderBookDepthRangeLow ?? null,
+        cat.raw?.orderBookDepthRangeHigh ?? null,
+        cat.raw?.depthSampleCount ?? null,
+        cat.raw?.depthLatestSampleAt ?? null,
+        depthTrendSummaryByCategory[cat.key]?.startDepthUsd ?? null,
+        depthTrendSummaryByCategory[cat.key]?.endDepthUsd ?? null,
+        depthTrendSummaryByCategory[cat.key]?.slopePct ?? null,
+        depthTrendSummaryByCategory[cat.key]?.maxDrawdownPct ?? null,
+        getLiquidityWarningGrade(depthTrendSummaryByCategory[cat.key]).label,
+        cat.raw?.totalVolume ?? null,
+        normalizedMetrics.totalVolume[cat.key],
+        cat.raw?.marketAssessmentBaseScore ?? null,
+        cat.raw?.liquidityPenaltyScore ?? null,
+        cat.raw?.marketAssessmentScore ?? null,
+        normalizedMetrics.marketAssessmentScore[cat.key],
       ];
     });
 
@@ -746,19 +1432,40 @@ export default function CrossCategoryEventAnalysisPage() {
       baseline: baselineMode,
       generatedAt: new Date().toISOString(),
       url: shareUrl,
-      categories: categories.map((cat) => ({
+      categories: categoriesWithScores.map((cat) => ({
         key: cat.key,
         label: cat.label,
         selectedEventIds: cat.selectedEventIds,
         selectedTitles: cat.options.filter((o) => cat.selectedEventIds.includes(o.eventId)).map((o) => o.title),
         raw: cat.raw,
+        marketAssessmentScoreBreakdown: {
+          baseScore: cat.raw?.marketAssessmentBaseScore ?? null,
+          liquidityPenalty: cat.raw?.liquidityPenaltyScore ?? null,
+          finalScore: cat.raw?.marketAssessmentScore ?? null,
+        },
+        depthWindowStats: {
+          average: cat.raw?.orderBookDepth ?? null,
+          peak: cat.raw?.orderBookDepthPeak ?? null,
+          volatilityStd: cat.raw?.orderBookDepthVolatility ?? null,
+          rangeLow: cat.raw?.orderBookDepthRangeLow ?? null,
+          rangeHigh: cat.raw?.orderBookDepthRangeHigh ?? null,
+          sampleCount: cat.raw?.depthSampleCount ?? null,
+          latestSampleAt: cat.raw?.depthLatestSampleAt ?? null,
+        },
+        depthTrendSummary: depthTrendSummaryByCategory[cat.key],
         normalized: {
           volatility: normalizedMetrics.volatility[cat.key],
           reactionSpeed: normalizedMetrics.reactionSpeed[cat.key],
           confidence: normalizedMetrics.confidence[cat.key],
           backtestWinRate: normalizedMetrics.backtestWinRate[cat.key],
           dataDensity: normalizedMetrics.dataDensity[cat.key],
+            tradeCount: normalizedMetrics.tradeCount[cat.key],
+            uniqueTraders: normalizedMetrics.uniqueTraders[cat.key],
+            orderBookDepth: normalizedMetrics.orderBookDepth[cat.key],
+            totalVolume: normalizedMetrics.totalVolume[cat.key],
+            marketAssessmentScore: normalizedMetrics.marketAssessmentScore[cat.key],
         },
+          strategies: strategyByCategory[cat.key],
       })),
     };
 
@@ -775,12 +1482,70 @@ export default function CrossCategoryEventAnalysisPage() {
     }
   }
 
+  function buildShareConfigMessage() {
+    const lines: string[] = [];
+    lines.push("Cross-Category Analysis Config");
+    lines.push(`Mode: ${compareMode}`);
+    lines.push(`Window: ${timeWindow}`);
+    lines.push(`Baseline: ${baselineMode}`);
+    lines.push(`Penalty Sensitivity: ${penaltySensitivity.toFixed(2)}x`);
+    lines.push("Weights:");
+    (Object.keys(WEIGHT_PARAM_KEYS) as Array<keyof AssessmentWeights>).forEach((key) => {
+      lines.push(`- ${key}: ${assessmentWeights[key].toFixed(2)}`);
+    });
+    lines.push("");
+    lines.push("Selections:");
+    for (const cat of categoriesWithScores) {
+      const selectedTitles = cat.options
+        .filter((o) => cat.selectedEventIds.includes(o.eventId))
+        .map((o) => o.title);
+      lines.push(`- ${cat.label}: ${selectedTitles.length > 0 ? selectedTitles.join(" | ") : "none"}`);
+    }
+    lines.push("");
+    if (shareUrl) lines.push(`Link: ${shareUrl}`);
+    return lines.join("\n");
+  }
+
+  function buildShareSummaryMessage() {
+    const ranked = [...categoriesWithScores].sort((a, b) => (b.raw?.marketAssessmentScore ?? 0) - (a.raw?.marketAssessmentScore ?? 0));
+    const lines: string[] = [];
+    lines.push("Cross-Category Analysis Summary");
+    lines.push(`Mode: ${compareMode} | Window: ${timeWindow} | Baseline: ${baselineMode}`);
+    lines.push(`Penalty Sensitivity: ${penaltySensitivity.toFixed(2)}x`);
+    lines.push("Top Markets:");
+    ranked.slice(0, 5).forEach((cat, idx) => {
+      const grade = getLiquidityWarningGrade(depthTrendSummaryByCategory[cat.key]);
+      const depthStatus = (cat.raw?.depthSampleCount ?? 0) <= 0 ? "No Data" : grade.label;
+      lines.push(`${idx + 1}. ${cat.label} - Score ${formatMetric(cat.raw?.marketAssessmentScore ?? null, 1)} - ${depthStatus}`);
+    });
+    if (shareUrl) lines.push(`Link: ${shareUrl}`);
+    return lines.join("\n");
+  }
+
+  async function handleCopyShareConfig() {
+    try {
+      await navigator.clipboard.writeText(buildShareConfigMessage());
+      setShareStatus("Share config copied.");
+    } catch {
+      setShareStatus("Unable to copy share config.");
+    }
+  }
+
+  async function handleCopyShareSummary() {
+    try {
+      await navigator.clipboard.writeText(buildShareSummaryMessage());
+      setShareStatus("Share summary copied.");
+    } catch {
+      setShareStatus("Unable to copy share summary.");
+    }
+  }
+
   async function handleShareToDiscord() {
-    const message = buildDiscordMessage();
+    const message = buildShareSummaryMessage();
     try {
       if (navigator.share) {
         await navigator.share({
-          title: "Cross-Category Spider Chart",
+          title: "Cross-Category Analysis Summary",
           text: message,
           url: shareUrl,
         });
@@ -826,6 +1591,99 @@ export default function CrossCategoryEventAnalysisPage() {
           <p style={{ marginTop: 10, color: "rgba(255,255,255,0.72)", fontSize: 14, lineHeight: 1.65 }}>
             URL now stores your selections. You can choose one event per category, or enable Compare N events average mode.
           </p>
+        </section>
+
+        <section
+          style={{
+            marginBottom: 12,
+            border: "1px solid rgba(255,255,255,0.12)",
+            borderRadius: 12,
+            background: "rgba(255,255,255,0.04)",
+            padding: "10px 12px",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 12, color: "rgba(255,255,255,0.75)", fontWeight: 700 }}>Market Assessment Weights</span>
+            <button
+              onClick={() => setAssessmentWeights(DEFAULT_ASSESSMENT_WEIGHTS)}
+              style={{
+                padding: "5px 9px",
+                borderRadius: 8,
+                border: "1px solid rgba(255,255,255,0.2)",
+                background: "rgba(255,255,255,0.05)",
+                color: "#fff",
+                cursor: "pointer",
+                fontSize: 11,
+              }}
+            >
+              Reset Weights
+            </button>
+          </div>
+
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+            {WEIGHT_PRESETS.map((preset) => {
+              const active = equalWeights(assessmentWeights, preset.weights);
+              return (
+                <button
+                  key={`preset-${preset.key}`}
+                  onClick={() => setAssessmentWeights({ ...preset.weights })}
+                  style={{
+                    padding: "5px 9px",
+                    borderRadius: 999,
+                    border: active ? "1px solid rgba(251,191,36,0.55)" : "1px solid rgba(255,255,255,0.2)",
+                    background: active ? "rgba(251,191,36,0.18)" : "rgba(255,255,255,0.05)",
+                    color: active ? "#fde68a" : "#fff",
+                    cursor: "pointer",
+                    fontSize: 11,
+                  }}
+                >
+                  {preset.label}
+                </button>
+              );
+            })}
+          </div>
+
+          <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 8 }}>
+            {(Object.keys(WEIGHT_PARAM_KEYS) as Array<keyof AssessmentWeights>).map((key) => (
+              <label key={`weight-${key}`} style={{ display: "grid", gap: 4 }}>
+                <span style={{ fontSize: 11, color: "rgba(255,255,255,0.75)" }}>{key}</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="range"
+                    min={0}
+                    max={3}
+                    step={0.1}
+                    value={assessmentWeights[key]}
+                    onChange={(e) => {
+                      const v = clamp(Number(e.target.value), 0, 3);
+                      setAssessmentWeights((prev) => ({ ...prev, [key]: v }));
+                    }}
+                    style={{ width: "100%" }}
+                  />
+                  <span style={{ width: 36, textAlign: "right", fontSize: 11, color: "#fde68a" }}>{assessmentWeights[key].toFixed(1)}</span>
+                </div>
+              </label>
+            ))}
+          </div>
+
+          <div style={{ marginTop: 12, display: "grid", gap: 6 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 11, color: "rgba(255,255,255,0.75)", fontWeight: 700 }}>Liquidity Penalty Sensitivity</span>
+              <span style={{ fontSize: 11, color: "#fde68a" }}>{penaltySensitivity.toFixed(2)}x</span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={3}
+              step={0.1}
+              value={penaltySensitivity}
+              onChange={(e) => setPenaltySensitivity(clamp(Number(e.target.value), 0, 3))}
+              style={{ width: "100%" }}
+            />
+            <div style={{ fontSize: 10, color: "rgba(255,255,255,0.55)" }}>
+              Higher values make downtrending depth reduce the final score more aggressively.
+            </div>
+          </div>
         </section>
 
         <section
@@ -978,6 +1836,34 @@ export default function CrossCategoryEventAnalysisPage() {
             }}
           >
             Copy Share Link
+          </button>
+          <button
+            onClick={handleCopyShareSummary}
+            style={{
+              padding: "6px 10px",
+              borderRadius: 8,
+              border: "1px solid rgba(59,130,246,0.45)",
+              background: "rgba(59,130,246,0.12)",
+              color: "#dbeafe",
+              cursor: "pointer",
+              fontSize: 12,
+            }}
+          >
+            Copy Share Summary
+          </button>
+          <button
+            onClick={handleCopyShareConfig}
+            style={{
+              padding: "6px 10px",
+              borderRadius: 8,
+              border: "1px solid rgba(251,191,36,0.45)",
+              background: "rgba(251,191,36,0.12)",
+              color: "#fde68a",
+              cursor: "pointer",
+              fontSize: 12,
+            }}
+          >
+            Copy Share Config
           </button>
           <button
             onClick={handleShareToDiscord}
@@ -1135,7 +2021,7 @@ export default function CrossCategoryEventAnalysisPage() {
               gap: 10,
             }}
           >
-            {categories.map((cat) => {
+            {categoriesWithScores.map((cat) => {
               const search = searchByCategory[cat.key] || "";
               const filteredOptions = cat.options.filter((o) => o.title.toLowerCase().includes(search.toLowerCase()));
               const selectedTitles = cat.options
@@ -1329,7 +2215,9 @@ export default function CrossCategoryEventAnalysisPage() {
           >
             <div style={{ fontSize: 13, fontWeight: 700, color: "#fff", marginBottom: 8 }}>Metric Explainability (Raw vs Normalized)</div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10 }}>
-              {categories.map((cat) => (
+              {categoriesWithScores.map((cat) => {
+                const health = getDepthHealth(cat.raw, timeWindow);
+                return (
                 <div
                   key={`${cat.key}-explain`}
                   style={{
@@ -1339,16 +2227,255 @@ export default function CrossCategoryEventAnalysisPage() {
                     background: "rgba(0,0,0,0.18)",
                   }}
                 >
-                  <div style={{ fontSize: 12, fontWeight: 700, color: "#fff", marginBottom: 6 }}>{cat.label}</div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "#fff" }}>{cat.label}</div>
+                    <span
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 700,
+                        color: health.color,
+                        background: health.bg,
+                        border: "1px solid rgba(255,255,255,0.16)",
+                        borderRadius: 999,
+                        padding: "2px 8px",
+                      }}
+                    >
+                      Depth {health.label}
+                    </span>
+                  </div>
                   <div style={{ fontSize: 11, color: "rgba(255,255,255,0.7)", lineHeight: 1.5 }}>
                     <div>Volatility: raw {formatMetric(cat.raw?.volatility ?? null)} | norm {formatMetric(normalizedMetrics.volatility[cat.key], 0)}</div>
                     <div>Reaction Speed: raw {formatMetric(cat.raw?.reactionSpeed ?? null)} | norm {formatMetric(normalizedMetrics.reactionSpeed[cat.key], 0)}</div>
                     <div>Confidence: raw {formatMetric(cat.raw?.confidence ?? null)} | norm {formatMetric(normalizedMetrics.confidence[cat.key], 0)}</div>
                     <div>Backtest Win Rate: raw {formatMetric(cat.raw?.backtestWinRate ?? null)} | norm {formatMetric(normalizedMetrics.backtestWinRate[cat.key], 0)}</div>
                     <div>Data Density: raw {formatMetric(cat.raw?.dataDensity ?? null)} | norm {formatMetric(normalizedMetrics.dataDensity[cat.key], 0)}</div>
+                    <div>Trades: raw {formatMetric(cat.raw?.tradeCount ?? null)} | norm {formatMetric(normalizedMetrics.tradeCount[cat.key], 0)}</div>
+                    <div>Unique Traders: raw {formatMetric(cat.raw?.uniqueTraders ?? null)} | norm {formatMetric(normalizedMetrics.uniqueTraders[cat.key], 0)}</div>
+                    <div>Order Book Depth Avg (USD): raw {formatMetric(cat.raw?.orderBookDepth ?? null)} | norm {formatMetric(normalizedMetrics.orderBookDepth[cat.key], 0)}</div>
+                    <div>Order Book Depth Peak (USD): {formatMetric(cat.raw?.orderBookDepthPeak ?? null)}</div>
+                    <div>Order Book Depth Volatility (STD): {formatMetric(cat.raw?.orderBookDepthVolatility ?? null)}</div>
+                    <div>Order Book Depth Range (USD): {formatMetric(cat.raw?.orderBookDepthRangeLow ?? null)} - {formatMetric(cat.raw?.orderBookDepthRangeHigh ?? null)}</div>
+                    <div>Depth Samples in Window: {formatMetric(cat.raw?.depthSampleCount ?? null, 0)}</div>
+                    <div>Depth Latest Sample: {cat.raw?.depthLatestSampleAt ? new Date(cat.raw.depthLatestSampleAt).toLocaleString() : "N/A"}</div>
+                    <div>Total Volume (USD): raw {formatMetric(cat.raw?.totalVolume ?? null)} | norm {formatMetric(normalizedMetrics.totalVolume[cat.key], 0)}</div>
+                    <div>Market Assessment Base: {formatMetric(cat.raw?.marketAssessmentBaseScore ?? null, 2)}</div>
+                    <div>Liquidity Penalty: -{formatMetric(cat.raw?.liquidityPenaltyScore ?? null, 2)}</div>
+                    <div>Market Assessment Score: raw {formatMetric(cat.raw?.marketAssessmentScore ?? null)} | norm {formatMetric(normalizedMetrics.marketAssessmentScore[cat.key], 0)}</div>
                   </div>
                 </div>
-              ))}
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        {categories.length > 0 && (
+          <section
+            style={{
+              marginTop: 14,
+              border: "1px solid rgba(255,255,255,0.12)",
+              borderRadius: 12,
+              background: "rgba(255,255,255,0.03)",
+              padding: "12px 14px",
+            }}
+          >
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#fff", marginBottom: 8 }}>
+              Market Assessment & Strategy Simulation ($1,000 start)
+            </div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.66)", marginBottom: 10 }}>
+              Order book depth now uses persisted 10-minute snapshots. Score uses depth average in the selected window, while panel shows peak and volatility range.
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 10 }}>
+              {categoriesWithScores.map((cat) => {
+                const health = getDepthHealth(cat.raw, timeWindow);
+                const strategies = strategyByCategory[cat.key] || [];
+                const sorted = [...strategies].sort((a, b) => b.expectedReturnPct - a.expectedReturnPct);
+                const best = sorted.slice(0, 2);
+                const worst = sorted.slice(-2).reverse();
+                const trend = depthTrendByCategory[cat.key];
+                const trendSummary = depthTrendSummaryByCategory[cat.key];
+                const liquidityGrade = getLiquidityWarningGrade(trendSummary);
+                const depthStatusLabel = (cat.raw?.depthSampleCount ?? 0) <= 0 ? "No Data" : liquidityGrade.label;
+                const chartData = trend?.points ? addSmaToTrendPoints(trend.points, 4) : [];
+
+                return (
+                  <div
+                    key={`${cat.key}-assessment`}
+                    style={{
+                      border: liquidityGrade.label === "Critical" ? "1px solid rgba(248,113,113,0.65)" : "1px solid rgba(255,255,255,0.12)",
+                      borderRadius: 10,
+                      padding: "10px",
+                      background:
+                        liquidityGrade.label === "Critical"
+                          ? "linear-gradient(180deg, rgba(127,29,29,0.48) 0%, rgba(0,0,0,0.26) 100%)"
+                          : "rgba(0,0,0,0.18)",
+                      boxShadow: liquidityGrade.label === "Critical" ? "0 0 0 1px rgba(248,113,113,0.18), 0 18px 40px rgba(127,29,29,0.18)" : "none",
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: "#fff" }}>{cat.label}</div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span
+                          style={{
+                            fontSize: 10,
+                            fontWeight: 700,
+                            color: depthStatusLabel === "No Data" ? "#cbd5e1" : liquidityGrade.color,
+                            background: depthStatusLabel === "No Data" ? "rgba(71,85,105,0.34)" : liquidityGrade.bg,
+                            border: "1px solid rgba(255,255,255,0.16)",
+                            borderRadius: 999,
+                            padding: "2px 8px",
+                          }}
+                        >
+                          {depthStatusLabel}
+                        </span>
+                        {depthStatusLabel === "Critical" && (
+                          <span
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 800,
+                              color: "#fecaca",
+                              background: "rgba(153,27,27,0.45)",
+                              border: "1px solid rgba(248,113,113,0.4)",
+                              borderRadius: 999,
+                              padding: "2px 8px",
+                              letterSpacing: "0.02em",
+                            }}
+                          >
+                            ALERT
+                          </span>
+                        )}
+                        <span style={{ fontSize: 12, color: "#fde68a", fontWeight: 700 }}>
+                          Score: {formatMetric(cat.raw?.marketAssessmentScore ?? null, 1)}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div style={{ marginTop: 6, fontSize: 11, color: "rgba(255,255,255,0.72)", lineHeight: 1.5 }}>
+                      <div>Trades: {formatMetric(cat.raw?.tradeCount ?? null, 0)}</div>
+                      <div>Unique Traders: {formatMetric(cat.raw?.uniqueTraders ?? null, 0)}</div>
+                      <div>Order Book Depth Avg: ${formatMetric(cat.raw?.orderBookDepth ?? null, 2)}</div>
+                      <div>Order Book Depth Peak: ${formatMetric(cat.raw?.orderBookDepthPeak ?? null, 2)}</div>
+                      <div>Order Book Depth Volatility (STD): ${formatMetric(cat.raw?.orderBookDepthVolatility ?? null, 2)}</div>
+                      <div>Order Book Depth Range: ${formatMetric(cat.raw?.orderBookDepthRangeLow ?? null, 2)} - ${formatMetric(cat.raw?.orderBookDepthRangeHigh ?? null, 2)}</div>
+                      <div>Depth Samples: {formatMetric(cat.raw?.depthSampleCount ?? null, 0)}</div>
+                      <div>Depth Latest: {cat.raw?.depthLatestSampleAt ? new Date(cat.raw.depthLatestSampleAt).toLocaleString() : "N/A"}</div>
+                      <div>Base Score: {formatMetric(cat.raw?.marketAssessmentBaseScore ?? null, 2)}</div>
+                      <div>Liquidity Penalty: -{formatMetric(cat.raw?.liquidityPenaltyScore ?? null, 2)}</div>
+                      <div>Total Volume: ${formatMetric(cat.raw?.totalVolume ?? null, 2)}</div>
+                      {trendSummary && (
+                        <>
+                          <div>Depth Trend Slope: {trendSummary.slopePct >= 0 ? "+" : ""}{trendSummary.slopePct.toFixed(2)}%</div>
+                          <div>Depth Max Drawdown: {trendSummary.maxDrawdownPct.toFixed(2)}%</div>
+                        </>
+                      )}
+                    </div>
+
+                    {depthStatusLabel === "No Data" && (
+                      <div
+                        style={{
+                          marginTop: 8,
+                          padding: "6px 8px",
+                          borderRadius: 8,
+                          border: "1px solid rgba(148,163,184,0.4)",
+                          background: "rgba(71,85,105,0.25)",
+                          color: "#cbd5e1",
+                          fontSize: 11,
+                          fontWeight: 700,
+                        }}
+                      >
+                        No depth snapshots were recorded for this market in the selected window.
+                      </div>
+                    )}
+
+                    {trendSummary && depthStatusLabel !== "Stable" && depthStatusLabel !== "No Data" && (
+                      <div
+                        style={{
+                          marginTop: 8,
+                          padding: "6px 8px",
+                          borderRadius: 8,
+                          border: `1px solid ${liquidityGrade.color}66`,
+                          background: liquidityGrade.bg,
+                          color: liquidityGrade.color,
+                          fontSize: 11,
+                          fontWeight: 700,
+                        }}
+                      >
+                        Liquidity {depthStatusLabel}: depth trend is falling in this window.
+                      </div>
+                    )}
+
+                    {depthStatusLabel === "Critical" && (
+                      <div
+                        style={{
+                          marginTop: 8,
+                          padding: "6px 8px",
+                          borderRadius: 8,
+                          border: "1px solid rgba(248,113,113,0.45)",
+                          background: "rgba(153,27,27,0.32)",
+                          color: "#fecaca",
+                          fontSize: 11,
+                          fontWeight: 700,
+                        }}
+                      >
+                        Critical liquidity risk: avoid aggressive sizing unless depth recovers.
+                      </div>
+                    )}
+
+                    {chartData.length > 1 && (
+                      <div style={{ marginTop: 10 }}>
+                        <div style={{ fontSize: 11, color: "rgba(255,255,255,0.68)", marginBottom: 4 }}>
+                          Depth Trend ({timeWindow}) - {trend?.eventTitle}
+                        </div>
+                        <div style={{ width: "100%", height: 120 }}>
+                          <ResponsiveContainer>
+                            <LineChart data={chartData}>
+                              <XAxis dataKey="label" tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 10 }} tickLine={false} axisLine={false} minTickGap={18} />
+                              <YAxis hide domain={[0, "auto"]} />
+                              <Tooltip
+                                formatter={(value) => {
+                                  const n = typeof value === "number" ? value : Number(value);
+                                  if (!Number.isFinite(n)) return ["N/A", "Depth"];
+                                  return [`$${n.toFixed(2)}`, "Depth"];
+                                }}
+                                labelFormatter={(label) => `Bucket: ${label}`}
+                                contentStyle={{
+                                  border: "1px solid rgba(255,255,255,0.2)",
+                                  borderRadius: 8,
+                                  background: "rgba(20,10,3,0.92)",
+                                  color: "#fff",
+                                }}
+                              />
+                              <Line type="monotone" dataKey="depthUsd" stroke="#fbbf24" strokeWidth={2} dot={false} name="Depth" />
+                              <Line type="monotone" dataKey="smaDepthUsd" stroke="#93c5fd" strokeWidth={1.6} dot={false} strokeDasharray="5 4" name="SMA" />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+                    )}
+
+                    {strategies.length > 0 ? (
+                      <>
+                        <div style={{ marginTop: 8, fontSize: 11, color: "#86efac", fontWeight: 700 }}>Likely to perform better</div>
+                        {best.map((s) => (
+                          <div key={`${cat.key}-${s.name}-best`} style={{ marginTop: 4, fontSize: 11, color: "rgba(255,255,255,0.82)" }}>
+                            {s.name}: {s.expectedReturnPct >= 0 ? "+" : ""}{s.expectedReturnPct.toFixed(2)}% (Final ${s.finalCapital.toFixed(2)})
+                          </div>
+                        ))}
+
+                        <div style={{ marginTop: 8, fontSize: 11, color: "#fca5a5", fontWeight: 700 }}>Likely to perform poorly</div>
+                        {worst.map((s) => (
+                          <div key={`${cat.key}-${s.name}-worst`} style={{ marginTop: 4, fontSize: 11, color: "rgba(255,255,255,0.82)" }}>
+                            {s.name}: {s.expectedReturnPct >= 0 ? "+" : ""}{s.expectedReturnPct.toFixed(2)}% (Final ${s.finalCapital.toFixed(2)})
+                          </div>
+                        ))}
+                      </>
+                    ) : (
+                      <div style={{ marginTop: 8, fontSize: 11, color: "rgba(255,255,255,0.62)" }}>No strategy simulation yet.</div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </section>
         )}
