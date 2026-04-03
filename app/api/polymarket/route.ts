@@ -10,6 +10,8 @@ export async function GET(req: NextRequest) {
   const limit = searchParams.get("limit") || "10";
   const offset = searchParams.get("offset") || "0";
   const tag = searchParams.get("tag") || "";
+  const active = searchParams.get("active");
+  const closed = searchParams.get("closed");
 
   // If an event id is provided, fetch that specific event
   let upstream: URL;
@@ -20,8 +22,8 @@ export async function GET(req: NextRequest) {
     upstream = new URL("https://gamma-api.polymarket.com/events");
     upstream.searchParams.set("limit", limit);
     upstream.searchParams.set("offset", offset);
-    upstream.searchParams.set("active", "true");
-    upstream.searchParams.set("closed", "false");
+    upstream.searchParams.set("active", active ?? "true");
+    upstream.searchParams.set("closed", closed ?? "false");
     if (tag) {
       upstream.searchParams.set("tag", tag);
     }

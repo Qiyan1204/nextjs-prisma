@@ -16,8 +16,12 @@ import {
   Legend,
 } from "recharts";
 import PolyHeader from "../PolyHeader";
+import { CATEGORY_CONFIG, toEventText, type CategoryKey } from "../shared/categoryConfig";
+import {
+  computeAdjustedPenalty,
+  computeMarketAssessmentScore,
+} from "../shared/marketAssessmentEngine";
 
-type CategoryKey = "elonTweets" | "movieBoxOffice" | "fedRates" | "nbaGames";
 type CompareMode = "single" | "average";
 type TimeWindow = "24H" | "7D" | "30D";
 type BaselineMode = "none" | "marketAverage" | "lastSelection";
@@ -180,13 +184,6 @@ type NormalizedMetrics = {
   totalVolume: Record<CategoryKey, number | null>;
   marketAssessmentScore: Record<CategoryKey, number | null>;
 };
-
-const CATEGORY_CONFIG: Array<{ key: CategoryKey; label: string; keywords: string[] }> = [
-  { key: "elonTweets", label: "Elon Tweets", keywords: ["elon", "musk", "tweet", "twitter", "x.com"] },
-  { key: "movieBoxOffice", label: "Movie Box Office", keywords: ["box office", "movie", "film", "opening weekend"] },
-  { key: "fedRates", label: "US Federal Reserve Interest Rates", keywords: ["federal reserve", "fed", "fomc", "rate hike", "rate cut", "interest rate"] },
-  { key: "nbaGames", label: "NBA Basketball games", keywords: ["nba", "basketball", "playoffs", "lakers", "celtics", "warriors"] },
-];
 
 const MAX_EVENT_SCAN = 350;
 const MAX_OPTIONS_PER_CATEGORY = 12;
@@ -379,9 +376,9 @@ function getStrategyVerdict(
   best: StrategyOutcome | null,
   worst: StrategyOutcome | null,
   depthStatus: "Pending" | "Live" | "Stable" | "Watch" | "Risk" | "Critical"
-): { label: "Strong" | "Weak" | "Avoid"; color: string } {
+): { label: "Strong" | "Weak" | "Inverse Candidate"; color: string } {
   if (depthStatus === "Critical" || (worst?.expectedReturnPct ?? 0) <= -22 || (score ?? 0) < 42) {
-    return { label: "Avoid", color: "#fca5a5" };
+    return { label: "Inverse Candidate", color: "#fca5a5" };
   }
 
   if ((score ?? 0) >= 70 && (best?.expectedReturnPct ?? 0) >= 10 && depthStatus !== "Risk") {
@@ -391,15 +388,36 @@ function getStrategyVerdict(
   return { label: "Weak", color: "#fcd34d" };
 }
 
+function getStrategyVerdictReason(
+  score: number | null,
+  best: StrategyOutcome | null,
+  worst: StrategyOutcome | null,
+  depthStatus: "Pending" | "Live" | "Stable" | "Watch" | "Risk" | "Critical"
+): string {
+  if (depthStatus === "Critical") {
+    return "Critical liquidity trend: treat this as a risk and possible inverse candidate until depth recovers.";
+  }
+
+  if ((worst?.expectedReturnPct ?? 0) <= -22) {
+    return `Worst simulated strategy is ${formatMetric(worst?.expectedReturnPct ?? null, 2)}% expected return or worse.`;
+  }
+
+  if ((score ?? 0) < 42) {
+    return `Oiyen Score ${formatMetric(score ?? null, 1)} is below the inverse-candidate threshold of 42.`;
+  }
+
+  if ((score ?? 0) >= 70 && (best?.expectedReturnPct ?? 0) >= 10 && depthStatus !== "Risk") {
+    return "Strong score, best strategy clears +10% expected return, and liquidity is not flagged as risk.";
+  }
+
+  return "Mixed profile: the setup is usable for research, but the edge is not strong enough to call it strong.";
+}
+
 function parsePenaltySensitivityFromUrl(searchParams: URLSearchParams): number {
   const raw = searchParams.get(SETTINGS_PARAM_KEYS.penaltySensitivity);
   const value = Number(raw);
   if (!Number.isFinite(value)) return 1;
   return clamp(value, 0, 3);
-}
-
-function computeAdjustedPenalty(summary: DepthTrendSummary | null, penaltySensitivity: number): number {
-  return clamp(Number((computeLiquidityPenalty(summary) * penaltySensitivity).toFixed(2)), 0, 25);
 }
 
 function pickActiveMarket(markets: PolyMarketLite[] | undefined): PolyMarketLite | undefined {
@@ -429,13 +447,6 @@ function parseYesPrice(market: PolyMarketLite | undefined): number | null {
   } catch {
     return null;
   }
-}
-
-function toEventText(event: PolyEventLite): string {
-  const title = event.title || "";
-  const desc = event.description || "";
-  const tags = (event.tags || []).map((t) => t.label || "").join(" ");
-  return `${title} ${desc} ${tags}`.toLowerCase();
 }
 
 function computeTrendConsistency(points: Array<{ yesPrice?: number | null }> | undefined): number {
@@ -942,25 +953,6 @@ function parseWeightFromUrl(searchParams: URLSearchParams): AssessmentWeights {
   return out;
 }
 
-function computeMarketAssessmentScore(raw: RawMetricSet, weights: AssessmentWeights): number {
-  const components: Array<{ score: number; weight: number }> = [
-    { score: toVolatilityScore(raw.volatility), weight: weights.volatility },
-    { score: toReactionScore(raw.reactionSpeed), weight: weights.reactionSpeed },
-    { score: toDensityScore(raw.dataDensity), weight: weights.dataDensity },
-    { score: clamp(raw.backtestWinRate, 0, 100), weight: weights.backtestWinRate },
-    { score: clamp(raw.confidence, 0, 100), weight: weights.confidence },
-    { score: toTradeCountScore(raw.tradeCount), weight: weights.tradeCount },
-    { score: toUniqueTradersScore(raw.uniqueTraders), weight: weights.uniqueTraders },
-    { score: toDepthScore(raw.orderBookDepth), weight: weights.orderBookDepth },
-    { score: toVolumeScore(raw.totalVolume), weight: weights.totalVolume },
-  ];
-
-  const totalWeight = components.reduce((sum, c) => sum + Math.max(0, c.weight), 0);
-  if (totalWeight <= 0) return 0;
-  const weighted = components.reduce((sum, c) => sum + c.score * Math.max(0, c.weight), 0);
-  return weighted / totalWeight;
-}
-
 function getWindowMs(window: TimeWindow): number {
   switch (window) {
     case "24H":
@@ -1392,6 +1384,7 @@ export default function CrossCategoryEventAnalysisPage() {
       const best = sorted[0] || null;
       const worst = sorted.length > 0 ? sorted[sorted.length - 1] : null;
       const verdict = getStrategyVerdict(cat.raw?.marketAssessmentScore ?? null, best, worst, depthStatus);
+      const verdictReason = getStrategyVerdictReason(cat.raw?.marketAssessmentScore ?? null, best, worst, depthStatus);
 
       return {
         key: cat.key,
@@ -1401,6 +1394,7 @@ export default function CrossCategoryEventAnalysisPage() {
         best,
         worst,
         verdict,
+        verdictReason,
       };
     });
   }, [categoriesWithScores, strategyByCategory, depthTrendSummaryByCategory]);
@@ -2457,6 +2451,9 @@ export default function CrossCategoryEventAnalysisPage() {
             <div style={{ fontSize: 11, color: "rgba(255,255,255,0.66)", marginBottom: 10 }}>
               Order book depth now uses persisted daily snapshots so it works on Hobby. Score uses depth average in the selected window, while panel shows peak and volatility range.
             </div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.64)", marginBottom: 12, lineHeight: 1.5 }}>
+              Inverse Candidate means the long-side profile is weak because the Oiyen Score is below threshold, the downside strategy is deeply negative, or liquidity is fragile. If the same setup keeps producing large losses, it can be a valid opposite-direction research candidate after separate validation.
+            </div>
 
             {strategyOverview.length > 0 && (
               <div style={{ marginBottom: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10 }}>
@@ -2472,11 +2469,11 @@ export default function CrossCategoryEventAnalysisPage() {
                   >
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
                       <div style={{ fontSize: 12, fontWeight: 700, color: "#fff" }}>{renderCategoryTitle(item.label)}</div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <span style={{ fontSize: 10, color: item.depthStatus === "Pending" ? "#cbd5e1" : "#86efac", fontWeight: 700 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "nowrap", whiteSpace: "nowrap", flexShrink: 0 }}>
+                        <span style={{ fontSize: 10, color: item.depthStatus === "Pending" ? "#cbd5e1" : "#86efac", fontWeight: 700, whiteSpace: "nowrap" }}>
                           {item.depthStatus}
                         </span>
-                        <span style={{ fontSize: 10, color: item.verdict.color, fontWeight: 800 }}>
+                        <span style={{ fontSize: 10, color: item.verdict.color, fontWeight: 800, whiteSpace: "nowrap" }}>
                           {item.verdict.label}
                         </span>
                       </div>
@@ -2488,6 +2485,9 @@ export default function CrossCategoryEventAnalysisPage() {
                       </div>
                       <div>
                         Worst: {item.worst ? `${item.worst.name} (${item.worst.expectedReturnPct >= 0 ? "+" : ""}${item.worst.expectedReturnPct.toFixed(2)}%, $${item.worst.finalCapital.toFixed(2)})` : "N/A"}
+                      </div>
+                      <div style={{ color: item.verdict.label === "Inverse Candidate" ? "#fecaca" : "rgba(255,255,255,0.64)" }}>
+                        Why: {item.verdictReason}
                       </div>
                     </div>
                   </div>
@@ -2628,7 +2628,7 @@ export default function CrossCategoryEventAnalysisPage() {
                           fontWeight: 700,
                         }}
                       >
-                        Critical liquidity risk: avoid aggressive sizing unless depth recovers.
+                        Critical liquidity risk: keep this on an inverse-watch list and avoid aggressive sizing until depth recovers.
                       </div>
                     )}
 
