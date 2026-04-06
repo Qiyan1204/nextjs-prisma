@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import PolyHeader from "../PolyHeader";
-import { eventMatchesCategory, toEventText } from "../shared/categoryConfig";
+import { eventMatchesCategory, toEventText, type CategoryKey, CATEGORY_CONFIG } from "../shared/categoryConfig";
 import {
   DEFAULT_ASSESSMENT_WEIGHTS,
   SETTINGS_PARAM_KEYS,
@@ -73,11 +73,11 @@ function truncateToOneDecimal(value: number): number {
   return Math.floor(value * 10) / 10;
 }
 
-function buildScoringConfigKey(config: ScoringConfig): string {
+function buildScoringConfigKey(config: ScoringConfig, category: CategoryKey): string {
   const weightKey = (Object.keys(WEIGHT_PARAM_KEYS) as Array<keyof AssessmentWeights>)
     .map((k) => `${k}:${config.assessmentWeights[k].toFixed(2)}`)
     .join("|");
-  return `w=${config.timeWindow};lp=${config.penaltySensitivity.toFixed(2)};${weightKey}`;
+  return `cat=${category};w=${config.timeWindow};lp=${config.penaltySensitivity.toFixed(2)};${weightKey}`;
 }
 
 function sortRows(rows: OiyenScoreRow[]): OiyenScoreRow[] {
@@ -240,12 +240,118 @@ function isStrictMovieBoxOfficeEvent(event: PolyEvent): boolean {
   return !hasNonMovieSignal;
 }
 
+// Category-specific filter functions
+function getEventFilterForCategory(category: CategoryKey): (event: PolyEvent) => boolean {
+  return (event: PolyEvent) => {
+    // All categories must match the category keywords
+    if (!eventMatchesCategory(event, category)) return false;
+    
+    // Ensure complete yes/no tokens
+    if (!hasCompleteYesNoTokens(event)) return false;
+
+    const text = toEventText(event);
+
+    switch (category) {
+      case "movieBoxOffice":
+        // Strict movie filtering
+        const hasStrongBoxOfficeSignal = [
+          "box office",
+          "opening weekend",
+          "domestic gross",
+          "worldwide gross",
+          "theatrical release",
+          "weekend gross",
+        ].some((signal) => text.includes(signal));
+
+        if (!hasStrongBoxOfficeSignal) return false;
+
+        const hasNonMovieSignal = [
+          "trump",
+          "election",
+          "fed",
+          "federal reserve",
+          "interest rate",
+          "nba",
+          "bitcoin",
+          "crypto",
+          "tariff",
+          "senate",
+          "congress",
+        ].some((signal) => text.includes(signal));
+
+        return !hasNonMovieSignal;
+
+      case "fedRates":
+        // Filter out false positives (e.g., "fedex", "federal agency" not about rates)
+        const hasRateSignal = [
+          "rate hike",
+          "rate cut",
+          "interest rate",
+          "fomc",
+          "federal reserve",
+          "fed funds",
+          "discount rate",
+        ].some((signal) => text.includes(signal));
+
+        const hasNonFedSignal = [
+          "fedex",
+          "federal agency",
+          "federal crime",
+          "federal court",
+        ].some((signal) => text.includes(signal));
+
+        return hasRateSignal && !hasNonFedSignal;
+
+      case "elonTweets":
+        // Filter to actual Elon/Twitter events
+        const hasElonSignal = [
+          "elon",
+          "musk",
+          "tweet",
+          "twitter",
+          "x.com",
+          "spacex",
+          "tesla",
+        ].some((signal) => text.includes(signal));
+
+        return hasElonSignal;
+
+      case "nbaGames":
+        // Filter to actual NBA events
+        const hasNbaSignal = [
+          "nba",
+          "basketball",
+          "playoffs",
+          "lakers",
+          "celtics",
+          "warriors",
+          "nba championship",
+          "nba finals",
+        ].some((signal) => text.includes(signal));
+
+        const hasNonNbaSignal = [
+          "nfl",
+          "nhl",
+          "mlb",
+          "soccer",
+          "football",
+        ].some((signal) => text.includes(signal));
+
+        return hasNbaSignal && !hasNonNbaSignal;
+
+      default:
+        return false;
+    }
+  };
+}
+
 export default function OiyenScorePage() {
   const router = useRouter();
   const [rows, setRows] = useState<OiyenScoreRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string>("");
+  const [selectedCategory, setSelectedCategory] = useState<CategoryKey>("movieBoxOffice");
   const [scoringConfig, setScoringConfig] = useState<ScoringConfig>({
     timeWindow: "7D",
     assessmentWeights: { ...DEFAULT_ASSESSMENT_WEIGHTS },
@@ -259,6 +365,15 @@ export default function OiyenScorePage() {
     setContextMenu(null);
     router.push(`/polyoiyen/${encodeURIComponent(eventId)}`);
   }
+
+  useEffect(() => {
+    // Parse category from URL
+    const searchParams = new URLSearchParams(window.location.search);
+    const categoryParam = searchParams.get("category");
+    if (categoryParam && CATEGORY_CONFIG.some(c => c.key === categoryParam)) {
+      setSelectedCategory(categoryParam as CategoryKey);
+    }
+  }, []);
 
   useEffect(() => {
     function closeMenu() {
@@ -282,7 +397,7 @@ export default function OiyenScorePage() {
       try {
         const parsedConfig = parseScoringConfigFromUrl();
         setScoringConfig(parsedConfig);
-        const configKey = buildScoringConfigKey(parsedConfig);
+        const configKey = buildScoringConfigKey(parsedConfig, selectedCategory);
 
         try {
           const raw = localStorage.getItem(OIYEN_SCORE_CACHE_KEY);
@@ -318,9 +433,9 @@ export default function OiyenScorePage() {
         const events = Array.from(dedupMap.values());
         const since = Date.now() - 365 * 86_400_000;
 
+        const eventFilter = getEventFilterForCategory(selectedCategory);
         const filtered = events
-          .filter((event) => isMovieBoxOfficeFromCrossCategory(event))
-          .filter((event) => isStrictMovieBoxOfficeEvent(event))
+          .filter(eventFilter)
           .filter((event) => {
             const endDate = parseDate(event.endDate) || parseDate(event.startDate);
             return endDate ? endDate.getTime() >= since : false;
@@ -421,7 +536,7 @@ export default function OiyenScorePage() {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [selectedCategory]);
 
   const stats = useMemo(() => {
     if (rows.length === 0) {
@@ -449,6 +564,35 @@ export default function OiyenScorePage() {
       <PolyHeader active="OiyenScore" />
       <main style={{ minHeight: "100vh", background: "linear-gradient(180deg, #150c04 0%, #0f0702 100%)", color: "#fff", padding: "24px 20px 56px" }}>
         <div style={{ maxWidth: 1280, margin: "0 auto" }}>
+          {/* Category Selection */}
+          <section style={{ marginBottom: 20, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            {CATEGORY_CONFIG.map((cat) => (
+              <button
+                key={cat.key}
+                onClick={() => {
+                  setSelectedCategory(cat.key);
+                  const params = new URLSearchParams(window.location.search);
+                  params.set("category", cat.key);
+                  window.history.replaceState({}, "", `?${params.toString()}`);
+                }}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: 10,
+                  border: selectedCategory === cat.key ? "2px solid #f97316" : "1px solid rgba(255,255,255,0.2)",
+                  background: selectedCategory === cat.key ? "rgba(249,115,22,0.15)" : "rgba(255,255,255,0.04)",
+                  color: selectedCategory === cat.key ? "#f97316" : "rgba(255,255,255,0.6)",
+                  fontSize: 13,
+                  fontWeight: selectedCategory === cat.key ? 700 : 500,
+                  cursor: "pointer",
+                  transition: "all 0.15s",
+                  fontFamily: "'DM Sans', sans-serif",
+                }}
+              >
+                {cat.label}
+              </button>
+            ))}
+          </section>
+
           <section
             style={{
               border: "1px solid rgba(255,255,255,0.12)",
@@ -462,13 +606,13 @@ export default function OiyenScorePage() {
             <div style={{ display: "flex", justifyContent: "space-between", gap: 18, flexWrap: "wrap", alignItems: "flex-end" }}>
               <div style={{ maxWidth: 760 }}>
                 <div style={{ fontSize: 11, letterSpacing: "0.16em", textTransform: "uppercase", color: "rgba(255,255,255,0.6)", marginBottom: 10 }}>
-                  Unified score engine for box office markets
+                  Unified score engine for {CATEGORY_CONFIG.find(c => c.key === selectedCategory)?.label.toLowerCase() || "markets"}
                 </div>
                 <h1 style={{ fontSize: 40, lineHeight: 1.02, margin: 0, fontWeight: 800, letterSpacing: "-0.04em" }}>
                   Oiyen Score
                 </h1>
                 <p style={{ marginTop: 12, fontSize: 15, lineHeight: 1.7, color: "rgba(255,255,255,0.74)" }}>
-                  This page collects major box office movie markets from the last 12 months and scores them with the same engine used in Cross-Category Event Analysis.
+                  This page collects major {CATEGORY_CONFIG.find(c => c.key === selectedCategory)?.label.toLowerCase()} markets from the last 12 months and scores them with the same engine used in Cross-Category Event Analysis.
                   Final Oiyen Score is computed as Base Score minus Liquidity Penalty.
                 </p>
               </div>
@@ -536,12 +680,12 @@ export default function OiyenScorePage() {
             </div>
 
             {loading ? (
-              <div style={{ padding: 28, color: "rgba(255,255,255,0.62)", fontSize: 14 }}>Loading historical box office markets...</div>
+              <div style={{ padding: 28, color: "rgba(255,255,255,0.62)", fontSize: 14 }}>Loading {CATEGORY_CONFIG.find(c => c.key === selectedCategory)?.label.toLowerCase()} markets...</div>
             ) : error ? (
               <div style={{ padding: 28, color: "#fca5a5", fontSize: 14 }}>{error}</div>
             ) : rows.length === 0 ? (
               <div style={{ padding: 28, color: "rgba(255,255,255,0.62)", fontSize: 14 }}>
-                No box office markets were found in the last 12 months with the current filter set.
+                No {CATEGORY_CONFIG.find(c => c.key === selectedCategory)?.label.toLowerCase()} markets were found in the last 12 months with the current filter set.
               </div>
             ) : (
               <div style={{ overflowX: "auto" }}>
