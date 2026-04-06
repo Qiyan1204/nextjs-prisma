@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { recordAvailability, recordPull } from "@/lib/pullMetrics";
 
+export const dynamic = "force-dynamic";
+
 // Proxy to Polymarket gamma API to avoid CORS issues
 export async function GET(req: NextRequest) {
   recordPull("poly_probe");
@@ -32,7 +34,7 @@ export async function GET(req: NextRequest) {
   try {
     const res = await fetch(upstream.toString(), {
       headers: { Accept: "application/json" },
-      next: { revalidate: 60 }, // cache for 60s
+      cache: "no-store",
     });
 
     if (!res.ok) {

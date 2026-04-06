@@ -68,6 +68,11 @@ type OiyenScoreCachePayload = {
 
 const OIYEN_SCORE_CACHE_TTL_MS = 10 * 60 * 1000;
 const OIYEN_SCORE_CACHE_KEY = "oiyen-score-cache-v2";
+const OIYEN_FETCH_PAGE_SIZE = 100;
+const OIYEN_FETCH_MAX_PAGES = 25;
+const OIYEN_MAX_SCORED_EVENTS = 300;
+const OIYEN_INITIAL_VISIBLE_ROWS = 100;
+const OIYEN_LOAD_MORE_STEP = 100;
 
 function truncateToOneDecimal(value: number): number {
   return Math.floor(value * 10) / 10;
@@ -137,8 +142,8 @@ function parseScoringConfigFromUrl(): ScoringConfig {
 }
 
 async function fetchAllEventsByStatus(active: boolean, closed: boolean): Promise<PolyEvent[]> {
-  const pageSize = 200;
-  const maxPages = 100;
+  const pageSize = OIYEN_FETCH_PAGE_SIZE;
+  const maxPages = OIYEN_FETCH_MAX_PAGES;
   const out: PolyEvent[] = [];
 
   for (let page = 0; page < maxPages; page += 1) {
@@ -155,6 +160,56 @@ async function fetchAllEventsByStatus(active: boolean, closed: boolean): Promise
   }
 
   return out;
+}
+
+async function fetchFilteredRecentEvents(category: CategoryKey): Promise<PolyEvent[]> {
+  const pageSize = OIYEN_FETCH_PAGE_SIZE;
+  const maxPages = OIYEN_FETCH_MAX_PAGES;
+  const since = Date.now() - 365 * 86_400_000;
+  const seen = new Set<string>();
+  const collected: PolyEvent[] = [];
+  const eventFilter = getEventFilterForCategory(category);
+
+  const statuses: Array<{ active: boolean; closed: boolean }> = [
+    { active: false, closed: true },
+    { active: true, closed: false },
+  ];
+
+  outer: for (const status of statuses) {
+    for (let page = 0; page < maxPages; page += 1) {
+      const offset = page * pageSize;
+      const res = await fetch(
+        `/api/polymarket?limit=${pageSize}&offset=${offset}&active=${String(status.active)}&closed=${String(status.closed)}`
+      );
+      if (!res.ok) break;
+
+      const data = await res.json();
+      const pageEvents: PolyEvent[] = Array.isArray(data) ? data : Array.isArray(data?.events) ? data.events : [];
+      if (pageEvents.length === 0) break;
+
+      for (const event of pageEvents) {
+        if (!event?.id || seen.has(event.id)) continue;
+        seen.add(event.id);
+
+        const endDate = parseDate(event.endDate) || parseDate(event.startDate);
+        if (!endDate || endDate.getTime() < since) continue;
+        if (!eventFilter(event)) continue;
+
+        collected.push(event);
+        if (collected.length >= OIYEN_MAX_SCORED_EVENTS) break outer;
+      }
+
+      if (pageEvents.length < pageSize) break;
+    }
+  }
+
+  return collected
+    .sort((a, b) => {
+      const aTime = (parseDate(a.endDate) || parseDate(a.startDate) || new Date(0)).getTime();
+      const bTime = (parseDate(b.endDate) || parseDate(b.startDate) || new Date(0)).getTime();
+      return bTime - aTime;
+    })
+    .slice(0, OIYEN_MAX_SCORED_EVENTS);
 }
 
 async function mapWithConcurrency<T, R>(
@@ -359,6 +414,7 @@ export default function OiyenScorePage() {
   });
   const [partialFailureCount, setPartialFailureCount] = useState(0);
   const [loadProgress, setLoadProgress] = useState("");
+  const [visibleLimit, setVisibleLimit] = useState(OIYEN_INITIAL_VISIBLE_ROWS);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; row: OiyenScoreRow } | null>(null);
 
   function navigateToEvent(eventId: string) {
@@ -386,6 +442,10 @@ export default function OiyenScorePage() {
       document.removeEventListener("scroll", closeMenu, true);
     };
   }, []);
+
+  useEffect(() => {
+    setVisibleLimit(OIYEN_INITIAL_VISIBLE_ROWS);
+  }, [selectedCategory]);
 
   useEffect(() => {
     let alive = true;
@@ -417,29 +477,10 @@ export default function OiyenScorePage() {
           // ignore malformed cache
         }
 
-        const [closedEvents, activeEvents] = await Promise.all([
-          fetchAllEventsByStatus(false, true),
-          fetchAllEventsByStatus(true, false),
-        ]);
-        if (closedEvents.length === 0 && activeEvents.length === 0) {
+        const filtered = await fetchFilteredRecentEvents(selectedCategory);
+        if (filtered.length === 0) {
           throw new Error("Failed to load historical markets");
         }
-
-        const dedupMap = new Map<string, PolyEvent>();
-        [...closedEvents, ...activeEvents].forEach((event) => {
-          if (!event?.id) return;
-          if (!dedupMap.has(event.id)) dedupMap.set(event.id, event);
-        });
-        const events = Array.from(dedupMap.values());
-        const since = Date.now() - 365 * 86_400_000;
-
-        const eventFilter = getEventFilterForCategory(selectedCategory);
-        const filtered = events
-          .filter(eventFilter)
-          .filter((event) => {
-            const endDate = parseDate(event.endDate) || parseDate(event.startDate);
-            return endDate ? endDate.getTime() >= since : false;
-          });
 
         const batchSize = 40;
         const nextRows: OiyenScoreRow[] = [];
@@ -706,7 +747,7 @@ export default function OiyenScorePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {rows.map((row, index) => (
+                    {rows.slice(0, visibleLimit).map((row, index) => (
                       <tr
                         key={row.eventId}
                         onClick={() => navigateToEvent(row.eventId)}
@@ -766,6 +807,25 @@ export default function OiyenScorePage() {
                     ))}
                   </tbody>
                 </table>
+                {rows.length > visibleLimit && (
+                  <div style={{ padding: "14px 16px", borderTop: "1px solid rgba(255,255,255,0.08)", display: "flex", justifyContent: "center" }}>
+                    <button
+                      onClick={() => setVisibleLimit((prev) => Math.min(prev + OIYEN_LOAD_MORE_STEP, rows.length))}
+                      style={{
+                        padding: "8px 14px",
+                        borderRadius: 999,
+                        border: "1px solid rgba(249,115,22,0.35)",
+                        background: "rgba(249,115,22,0.12)",
+                        color: "#f97316",
+                        fontSize: 12,
+                        fontWeight: 700,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Load More ({Math.max(0, rows.length - visibleLimit)} remaining)
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </section>
