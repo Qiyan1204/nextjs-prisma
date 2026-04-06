@@ -88,6 +88,13 @@ const UI_PARAM_KEYS = {
   loadMoreStep: "loadStep",
 } as const;
 
+const OIYEN_FETCH_MAX_PAGES_BY_CATEGORY: Record<CategoryKey, number> = {
+  movieBoxOffice: 25,
+  elonTweets: 12,
+  fedRates: 12,
+  nbaGames: 12,
+};
+
 function parsePositiveIntInRange(raw: string | null, fallback: number, min: number, max: number): number {
   if (!raw) return fallback;
   const n = Number(raw);
@@ -203,15 +210,15 @@ async function fetchAllEventsByStatus(active: boolean, closed: boolean): Promise
 
 async function fetchFilteredRecentEvents(category: CategoryKey): Promise<PolyEvent[]> {
   const pageSize = OIYEN_FETCH_PAGE_SIZE;
-  const maxPages = OIYEN_FETCH_MAX_PAGES;
+  const maxPages = OIYEN_FETCH_MAX_PAGES_BY_CATEGORY[category] ?? OIYEN_FETCH_MAX_PAGES;
   const since = Date.now() - 365 * 86_400_000;
   const seen = new Set<string>();
   const collected: PolyEvent[] = [];
   const eventFilter = getEventFilterForCategory(category);
 
   const statuses: Array<{ active: boolean; closed: boolean }> = [
-    { active: false, closed: true },
     { active: true, closed: false },
+    { active: false, closed: true },
   ];
 
   outer: for (const status of statuses) {
@@ -225,6 +232,13 @@ async function fetchFilteredRecentEvents(category: CategoryKey): Promise<PolyEve
       const data = await res.json();
       const pageEvents: PolyEvent[] = Array.isArray(data) ? data : Array.isArray(data?.events) ? data.events : [];
       if (pageEvents.length === 0) break;
+
+      // Upstream usually returns newer markets first. If a page has no event in range, stop this status early.
+      const hasInRangeEvent = pageEvents.some((event) => {
+        const endDate = parseDate(event.endDate) || parseDate(event.startDate);
+        return !!endDate && endDate.getTime() >= since;
+      });
+      if (!hasInRangeEvent) break;
 
       for (const event of pageEvents) {
         if (!event?.id || seen.has(event.id)) continue;
