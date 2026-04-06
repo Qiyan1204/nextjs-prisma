@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import PolyHeader from "../PolyHeader";
 import { eventMatchesCategory, toEventText, type CategoryKey, CATEGORY_CONFIG } from "../shared/categoryConfig";
@@ -66,6 +66,8 @@ type OiyenScoreCachePayload = {
   lastUpdated: string;
 };
 
+type OiyenScoreCacheStore = Record<string, OiyenScoreCachePayload>;
+
 const OIYEN_SCORE_CACHE_TTL_MS = 10 * 60 * 1000;
 const OIYEN_SCORE_CACHE_KEY = "oiyen-score-cache-v2";
 const OIYEN_FETCH_PAGE_SIZE = 100;
@@ -73,6 +75,43 @@ const OIYEN_FETCH_MAX_PAGES = 25;
 const OIYEN_MAX_SCORED_EVENTS = 300;
 const OIYEN_INITIAL_VISIBLE_ROWS = 100;
 const OIYEN_LOAD_MORE_STEP = 100;
+const OIYEN_MIN_VISIBLE_ROWS = 10;
+const OIYEN_MAX_VISIBLE_ROWS = 1000;
+
+type UiConfig = {
+  initialVisibleRows: number;
+  loadMoreStep: number;
+};
+
+const UI_PARAM_KEYS = {
+  initialVisibleRows: "initialRows",
+  loadMoreStep: "loadStep",
+} as const;
+
+function parsePositiveIntInRange(raw: string | null, fallback: number, min: number, max: number): number {
+  if (!raw) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(n)));
+}
+
+function parseUiConfigFromUrl(): UiConfig {
+  const searchParams = new URLSearchParams(window.location.search);
+  return {
+    initialVisibleRows: parsePositiveIntInRange(
+      searchParams.get(UI_PARAM_KEYS.initialVisibleRows),
+      OIYEN_INITIAL_VISIBLE_ROWS,
+      OIYEN_MIN_VISIBLE_ROWS,
+      OIYEN_MAX_VISIBLE_ROWS
+    ),
+    loadMoreStep: parsePositiveIntInRange(
+      searchParams.get(UI_PARAM_KEYS.loadMoreStep),
+      OIYEN_LOAD_MORE_STEP,
+      OIYEN_MIN_VISIBLE_ROWS,
+      OIYEN_MAX_VISIBLE_ROWS
+    ),
+  };
+}
 
 function truncateToOneDecimal(value: number): number {
   return Math.floor(value * 10) / 10;
@@ -414,8 +453,14 @@ export default function OiyenScorePage() {
   });
   const [partialFailureCount, setPartialFailureCount] = useState(0);
   const [loadProgress, setLoadProgress] = useState("");
+  const [uiConfig, setUiConfig] = useState<UiConfig>({
+    initialVisibleRows: OIYEN_INITIAL_VISIBLE_ROWS,
+    loadMoreStep: OIYEN_LOAD_MORE_STEP,
+  });
   const [visibleLimit, setVisibleLimit] = useState(OIYEN_INITIAL_VISIBLE_ROWS);
+  const [showBackToTop, setShowBackToTop] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; row: OiyenScoreRow } | null>(null);
+  const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
 
   function navigateToEvent(eventId: string) {
     setContextMenu(null);
@@ -429,6 +474,10 @@ export default function OiyenScorePage() {
     if (categoryParam && CATEGORY_CONFIG.some(c => c.key === categoryParam)) {
       setSelectedCategory(categoryParam as CategoryKey);
     }
+
+    const parsedUiConfig = parseUiConfigFromUrl();
+    setUiConfig(parsedUiConfig);
+    setVisibleLimit(parsedUiConfig.initialVisibleRows);
   }, []);
 
   useEffect(() => {
@@ -444,8 +493,40 @@ export default function OiyenScorePage() {
   }, []);
 
   useEffect(() => {
-    setVisibleLimit(OIYEN_INITIAL_VISIBLE_ROWS);
-  }, [selectedCategory]);
+    function handleScroll() {
+      setShowBackToTop(window.scrollY > 420);
+    }
+
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    handleScroll();
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
+
+  useEffect(() => {
+    setVisibleLimit(uiConfig.initialVisibleRows);
+  }, [selectedCategory, uiConfig.initialVisibleRows]);
+
+  useEffect(() => {
+    if (!loadMoreSentinelRef.current) return;
+    if (loading) return;
+    if (rows.length <= visibleLimit) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const first = entries[0];
+        if (!first?.isIntersecting) return;
+        setVisibleLimit((prev) => Math.min(prev + uiConfig.loadMoreStep, rows.length));
+      },
+      {
+        root: null,
+        rootMargin: "200px",
+        threshold: 0,
+      }
+    );
+
+    observer.observe(loadMoreSentinelRef.current);
+    return () => observer.disconnect();
+  }, [loading, rows.length, visibleLimit, uiConfig.loadMoreStep]);
 
   useEffect(() => {
     let alive = true;
@@ -462,15 +543,24 @@ export default function OiyenScorePage() {
         try {
           const raw = localStorage.getItem(OIYEN_SCORE_CACHE_KEY);
           if (raw) {
-            const cache = JSON.parse(raw) as OiyenScoreCachePayload;
-            const isFresh = Date.now() - Number(cache.timestamp || 0) <= OIYEN_SCORE_CACHE_TTL_MS;
-            if (isFresh && cache.configKey === configKey && Array.isArray(cache.rows) && cache.rows.length > 0) {
+            const parsed = JSON.parse(raw) as OiyenScoreCacheStore | OiyenScoreCachePayload;
+            const legacyPayload = parsed as OiyenScoreCachePayload;
+            const store: OiyenScoreCacheStore =
+              parsed && typeof parsed === "object" && "configKey" in legacyPayload
+                ? { [legacyPayload.configKey]: legacyPayload }
+                : (parsed as OiyenScoreCacheStore);
+
+            const cache = store?.[configKey];
+            const isFresh = cache ? Date.now() - Number(cache.timestamp || 0) <= OIYEN_SCORE_CACHE_TTL_MS : false;
+            if (isFresh && Array.isArray(cache.rows) && cache.rows.length > 0) {
               if (alive) {
                 setRows(sortRows(cache.rows));
                 setPartialFailureCount(Number(cache.partialFailureCount || 0));
                 setLastUpdated(cache.lastUpdated || new Date(cache.timestamp).toLocaleString());
                 setLoading(false);
+                setLoadProgress("");
               }
+              return;
             }
           }
         } catch {
@@ -557,7 +647,18 @@ export default function OiyenScorePage() {
             partialFailureCount: failedCount,
             lastUpdated: new Date().toLocaleString(),
           };
-          localStorage.setItem(OIYEN_SCORE_CACHE_KEY, JSON.stringify(payload));
+          const rawStore = localStorage.getItem(OIYEN_SCORE_CACHE_KEY);
+          const store = rawStore ? (JSON.parse(rawStore) as OiyenScoreCacheStore) : {};
+
+          // Drop expired entries so localStorage does not keep growing.
+          Object.keys(store).forEach((key) => {
+            const item = store[key];
+            const expired = Date.now() - Number(item?.timestamp || 0) > OIYEN_SCORE_CACHE_TTL_MS;
+            if (expired) delete store[key];
+          });
+
+          store[configKey] = payload;
+          localStorage.setItem(OIYEN_SCORE_CACHE_KEY, JSON.stringify(store));
         } catch {
           // ignore cache write errors
         }
@@ -684,6 +785,7 @@ export default function OiyenScorePage() {
           <section style={{ marginBottom: 16, border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, background: "rgba(255,255,255,0.02)", padding: "10px 12px", fontSize: 11, color: "rgba(255,255,255,0.66)", lineHeight: 1.6 }}>
             <div>Synced params from URL -&gt; Window: {scoringConfig.timeWindow} | Penalty Sensitivity: {scoringConfig.penaltySensitivity.toFixed(2)}</div>
             <div>Weights -&gt; V:{scoringConfig.assessmentWeights.volatility.toFixed(2)} R:{scoringConfig.assessmentWeights.reactionSpeed.toFixed(2)} D:{scoringConfig.assessmentWeights.dataDensity.toFixed(2)} B:{scoringConfig.assessmentWeights.backtestWinRate.toFixed(2)} C:{scoringConfig.assessmentWeights.confidence.toFixed(2)} T:{scoringConfig.assessmentWeights.tradeCount.toFixed(2)} U:{scoringConfig.assessmentWeights.uniqueTraders.toFixed(2)} O:{scoringConfig.assessmentWeights.orderBookDepth.toFixed(2)} M:{scoringConfig.assessmentWeights.totalVolume.toFixed(2)}</div>
+            <div>UI params -&gt; initialRows: {uiConfig.initialVisibleRows} | loadStep: {uiConfig.loadMoreStep}</div>
             {loadProgress && <div style={{ color: "#fde68a" }}>{loadProgress}</div>}
             {partialFailureCount > 0 && <div style={{ color: "#fca5a5" }}>Partial data: {partialFailureCount} market(s) failed metric fetch and were skipped.</div>}
           </section>
@@ -808,22 +910,19 @@ export default function OiyenScorePage() {
                   </tbody>
                 </table>
                 {rows.length > visibleLimit && (
-                  <div style={{ padding: "14px 16px", borderTop: "1px solid rgba(255,255,255,0.08)", display: "flex", justifyContent: "center" }}>
-                    <button
-                      onClick={() => setVisibleLimit((prev) => Math.min(prev + OIYEN_LOAD_MORE_STEP, rows.length))}
-                      style={{
-                        padding: "8px 14px",
-                        borderRadius: 999,
-                        border: "1px solid rgba(249,115,22,0.35)",
-                        background: "rgba(249,115,22,0.12)",
-                        color: "#f97316",
-                        fontSize: 12,
-                        fontWeight: 700,
-                        cursor: "pointer",
-                      }}
-                    >
-                      Load More ({Math.max(0, rows.length - visibleLimit)} remaining)
-                    </button>
+                  <div
+                    ref={loadMoreSentinelRef}
+                    style={{
+                      padding: "14px 16px",
+                      borderTop: "1px solid rgba(255,255,255,0.08)",
+                      display: "flex",
+                      justifyContent: "center",
+                      color: "rgba(255,255,255,0.64)",
+                      fontSize: 12,
+                      fontWeight: 600,
+                    }}
+                  >
+                    Scrolling loads more... ({Math.max(0, rows.length - visibleLimit)} remaining)
                   </div>
                 )}
               </div>
@@ -866,6 +965,31 @@ export default function OiyenScorePage() {
                 View the event
               </button>
             </div>
+          )}
+
+          {showBackToTop && (
+            <button
+              onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+              aria-label="Back to top"
+              style={{
+                position: "fixed",
+                right: 20,
+                bottom: 20,
+                width: 44,
+                height: 44,
+                borderRadius: 999,
+                border: "1px solid rgba(249,115,22,0.5)",
+                background: "rgba(30,17,8,0.92)",
+                color: "#f97316",
+                fontSize: 18,
+                fontWeight: 800,
+                cursor: "pointer",
+                boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
+                zIndex: 350,
+              }}
+            >
+              ↑
+            </button>
           )}
         </div>
       </main>
