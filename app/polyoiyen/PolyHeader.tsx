@@ -22,6 +22,8 @@ const NAV_LINKS = [
 ];
 
 const MORE_LINKS = [
+  { label: "🩺 Data Health", href: "/polyoiyen/DataHealth", active: "DataHealth" },
+  { label: "🎯 Top Candidates", href: "/polyoiyen/TopCandidates", active: "TopCandidates" },
   { label: "🏆 Leaderboard", href: "/polyoiyen/PolyLeaderboard", active: "Leaderboard" },
   { label: "🎁 Reward", href: "/polyoiyen/PolyReward", active: "Reward" },
   { label: "🧩 PolyAnalysis", href: "/polyoiyen/PolyAnalysis", active: "PolyAnalysis" },
@@ -219,7 +221,7 @@ export default function PolyHeader({ active, children }: { active: string; child
             ))}
             <div className="poly-header-more-wrap" ref={moreRef}>
               <button
-                className={`poly-header-link poly-header-more-btn${active === "Leaderboard" || active === "Reward" ? " active" : ""}`}
+                className={`poly-header-link poly-header-more-btn${MORE_LINKS.some((x) => x.active === active) ? " active" : ""}`}
                 onClick={() => {
                   setShowMoreMenu((v) => !v);
                   setShowEliteMenu(false);

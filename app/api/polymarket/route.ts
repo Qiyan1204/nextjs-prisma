@@ -12,6 +12,7 @@ export async function GET(req: NextRequest) {
   const limit = searchParams.get("limit") || "10";
   const offset = searchParams.get("offset") || "0";
   const tag = searchParams.get("tag") || "";
+  const tagSlug = searchParams.get("tagSlug") || "";
   const active = searchParams.get("active");
   const closed = searchParams.get("closed");
 
@@ -28,6 +29,9 @@ export async function GET(req: NextRequest) {
     upstream.searchParams.set("closed", closed ?? "false");
     if (tag) {
       upstream.searchParams.set("tag", tag);
+    }
+    if (tagSlug) {
+      upstream.searchParams.set("tag_slug", tagSlug);
     }
   }
 

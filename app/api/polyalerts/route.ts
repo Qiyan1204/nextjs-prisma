@@ -2,6 +2,20 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { getAuthUser } from "@/lib/auth";
 
+const ALERT_SEVERITIES = ["LOW", "MEDIUM", "HIGH", "CRITICAL"] as const;
+type AlertSeverity = (typeof ALERT_SEVERITIES)[number];
+
+function normalizeSeverity(value: unknown): AlertSeverity {
+  const text = String(value || "MEDIUM").toUpperCase();
+  return (ALERT_SEVERITIES as readonly string[]).includes(text) ? (text as AlertSeverity) : "MEDIUM";
+}
+
+function normalizeCooldownMinutes(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 30;
+  return Math.max(1, Math.min(24 * 60, Math.floor(n)));
+}
+
 // GET: fetch user's alerts (optionally filtered by eventId)
 export async function GET(req: NextRequest) {
   try {
@@ -37,7 +51,7 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { eventId, tokenId, marketQuestion, alertType, side, targetPrice, threshold } = body;
+    const { eventId, tokenId, marketQuestion, alertType, side, targetPrice, threshold, severity, cooldownMinutes } = body;
 
     if (!eventId || !tokenId || !marketQuestion || !alertType || !side) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
@@ -67,6 +81,8 @@ export async function POST(req: NextRequest) {
         marketQuestion: String(marketQuestion),
         alertType: String(alertType),
         side: String(side),
+        severity: normalizeSeverity(severity),
+        cooldownMinutes: normalizeCooldownMinutes(cooldownMinutes),
         targetPrice: alertType === "PRICE" ? Number(targetPrice) : null,
         threshold: alertType === "LARGE_ORDER" ? Number(threshold) : null,
       },
@@ -125,46 +141,84 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ error: "Alert not found" }, { status: 404 });
     }
 
-    // Idempotent: if already triggered, skip discord but return success
-    if (!alert.triggered) {
-      const now = new Date();
-      await prisma.polyAlert.update({
-        where: { id: Number(id) },
-        data: { triggered: true, triggeredAt: now },
-      });
+    if (!alert.active) {
+      return NextResponse.json({ success: true, skipped: "inactive" });
+    }
 
-      // Fire Discord webhook server-side
-      const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
-      if (webhookUrl) {
-        const isPriceAlert = alert.alertType === "PRICE";
-        const sideEmoji = alert.side === "YES" ? "✅" : "❌";
-        let description = "";
-        if (isPriceAlert) {
-          const targetPct = alert.targetPrice != null ? `${Math.round(Number(alert.targetPrice) * 100)}¢` : "—";
-          description = `**${alert.side}** price reached **${targetPct}** target`;
-        } else {
-          const thresholdStr = alert.threshold != null ? `$${Number(alert.threshold).toLocaleString()}` : "—";
-          description = `Large **${alert.side}** order ≥ **${thresholdStr}** detected in order book`;
-        }
-        const marketUrl = `https://oiyen.quadrawebs.com/polyoiyen?eventId=${alert.eventId}`;
-        const discordPayload = {
-          embeds: [
-            {
-              title: `${sideEmoji} Alert Triggered!`,
-              description: `**Market:** ${alert.marketQuestion}\n${description}\n[View Market](${marketUrl})`,
-              color: alert.side === "YES" ? 0x34d399 : 0xf87171,
-              footer: { text: "PolyOiyen Alerts" },
-              timestamp: now.toISOString(),
-            },
-          ],
-        };
-        // Fire-and-forget — don't block response
-        fetch(webhookUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(discordPayload),
-        }).catch(() => {});
+    const now = new Date();
+    const cooldownMs = Math.max(1, Number(alert.cooldownMinutes || 30)) * 60 * 1000;
+    const lastNotifiedMs = alert.lastNotifiedAt ? new Date(alert.lastNotifiedAt).getTime() : 0;
+    const canNotify = !lastNotifiedMs || now.getTime() - lastNotifiedMs >= cooldownMs;
+
+    if (!canNotify) {
+      await prisma.alertNotificationEvent.create({
+        data: {
+          alertId: alert.id,
+          eventType: "SKIPPED_COOLDOWN",
+          channel: "DISCORD",
+        },
+      });
+      const nextEligibleAt = new Date(lastNotifiedMs + cooldownMs).toISOString();
+      return NextResponse.json({ success: true, cooldownSkipped: true, nextEligibleAt });
+    }
+
+    await prisma.polyAlert.update({
+      where: { id: Number(id) },
+      data: {
+        triggered: true,
+        triggeredAt: alert.triggeredAt ?? now,
+        lastNotifiedAt: now,
+      },
+    });
+
+    await prisma.alertNotificationEvent.create({
+      data: {
+        alertId: alert.id,
+        eventType: "SENT",
+        channel: "DISCORD",
+      },
+    });
+
+    // Fire Discord webhook server-side
+    const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+    if (webhookUrl) {
+      const isPriceAlert = alert.alertType === "PRICE";
+      const sideEmoji = alert.side === "YES" ? "✅" : "❌";
+      let description = "";
+      if (isPriceAlert) {
+        const targetPct = alert.targetPrice != null ? `${Math.round(Number(alert.targetPrice) * 100)}¢` : "—";
+        description = `**${alert.side}** price reached **${targetPct}** target`;
+      } else {
+        const thresholdStr = alert.threshold != null ? `$${Number(alert.threshold).toLocaleString()}` : "—";
+        description = `Large **${alert.side}** order ≥ **${thresholdStr}** detected in order book`;
       }
+
+      const severity = normalizeSeverity(alert.severity);
+      const severityColorMap: Record<AlertSeverity, number> = {
+        LOW: 0x6ee7b7,
+        MEDIUM: 0x38bdf8,
+        HIGH: 0xf59e0b,
+        CRITICAL: 0xef4444,
+      };
+
+      const marketUrl = `https://oiyen.quadrawebs.com/polyoiyen?eventId=${alert.eventId}`;
+      const discordPayload = {
+        embeds: [
+          {
+            title: `${sideEmoji} [${severity}] Alert Triggered!`,
+            description: `**Market:** ${alert.marketQuestion}\n${description}\nCooldown: **${alert.cooldownMinutes} min**\n[View Market](${marketUrl})`,
+            color: severityColorMap[severity],
+            footer: { text: "PolyOiyen Alerts" },
+            timestamp: now.toISOString(),
+          },
+        ],
+      };
+      // Fire-and-forget — don't block response
+      fetch(webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(discordPayload),
+      }).catch(() => {});
     }
 
     return NextResponse.json({ success: true });

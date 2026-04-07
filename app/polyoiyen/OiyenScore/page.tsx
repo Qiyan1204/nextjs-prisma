@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import PolyHeader from "../PolyHeader";
-import { eventMatchesCategory, toEventText, type CategoryKey, CATEGORY_CONFIG } from "../shared/categoryConfig";
+import { eventMatchesCategory, toEventText, type CategoryKey, CATEGORY_CONFIG, TAG_SLUGS_BY_CATEGORY } from "../shared/categoryConfig";
 import {
   DEFAULT_ASSESSMENT_WEIGHTS,
   SETTINGS_PARAM_KEYS,
@@ -24,6 +24,8 @@ interface PolyMarket {
 
 interface PolyEvent {
   id: string;
+  slug?: string;
+  category?: string;
   title: string;
   description?: string;
   startDate?: string;
@@ -211,6 +213,7 @@ async function fetchAllEventsByStatus(active: boolean, closed: boolean): Promise
 async function fetchFilteredRecentEvents(category: CategoryKey): Promise<PolyEvent[]> {
   const pageSize = OIYEN_FETCH_PAGE_SIZE;
   const maxPages = OIYEN_FETCH_MAX_PAGES_BY_CATEGORY[category] ?? OIYEN_FETCH_MAX_PAGES;
+  const tagSlugs = TAG_SLUGS_BY_CATEGORY[category] || [];
   const since = Date.now() - 365 * 86_400_000;
   const seen = new Set<string>();
   const collected: PolyEvent[] = [];
@@ -222,37 +225,44 @@ async function fetchFilteredRecentEvents(category: CategoryKey): Promise<PolyEve
   ];
 
   outer: for (const status of statuses) {
-    for (let page = 0; page < maxPages; page += 1) {
-      const offset = page * pageSize;
-      const res = await fetch(
-        `/api/polymarket?limit=${pageSize}&offset=${offset}&active=${String(status.active)}&closed=${String(status.closed)}`
-      );
-      if (!res.ok) break;
+    for (const tagSlug of tagSlugs) {
+      for (let page = 0; page < maxPages; page += 1) {
+        const offset = page * pageSize;
+        const params = new URLSearchParams({
+          limit: String(pageSize),
+          offset: String(offset),
+          active: String(status.active),
+          closed: String(status.closed),
+          tagSlug,
+        });
+        const res = await fetch(`/api/polymarket?${params.toString()}`);
+        if (!res.ok) break;
 
-      const data = await res.json();
-      const pageEvents: PolyEvent[] = Array.isArray(data) ? data : Array.isArray(data?.events) ? data.events : [];
-      if (pageEvents.length === 0) break;
+        const data = await res.json();
+        const pageEvents: PolyEvent[] = Array.isArray(data) ? data : Array.isArray(data?.events) ? data.events : [];
+        if (pageEvents.length === 0) break;
 
-      // Upstream usually returns newer markets first. If a page has no event in range, stop this status early.
-      const hasInRangeEvent = pageEvents.some((event) => {
-        const endDate = parseDate(event.endDate) || parseDate(event.startDate);
-        return !!endDate && endDate.getTime() >= since;
-      });
-      if (!hasInRangeEvent) break;
+        // Upstream usually returns newer markets first. If a page has no event in range, stop this status+tag early.
+        const hasInRangeEvent = pageEvents.some((event) => {
+          const endDate = parseDate(event.endDate) || parseDate(event.startDate);
+          return !!endDate && endDate.getTime() >= since;
+        });
+        if (!hasInRangeEvent) break;
 
-      for (const event of pageEvents) {
-        if (!event?.id || seen.has(event.id)) continue;
-        seen.add(event.id);
+        for (const event of pageEvents) {
+          if (!event?.id || seen.has(event.id)) continue;
+          seen.add(event.id);
 
-        const endDate = parseDate(event.endDate) || parseDate(event.startDate);
-        if (!endDate || endDate.getTime() < since) continue;
-        if (!eventFilter(event)) continue;
+          const endDate = parseDate(event.endDate) || parseDate(event.startDate);
+          if (!endDate || endDate.getTime() < since) continue;
+          if (!eventFilter(event)) continue;
 
-        collected.push(event);
-        if (collected.length >= OIYEN_MAX_SCORED_EVENTS) break outer;
+          collected.push(event);
+          if (collected.length >= OIYEN_MAX_SCORED_EVENTS) break outer;
+        }
+
+        if (pageEvents.length < pageSize) break;
       }
-
-      if (pageEvents.length < pageSize) break;
     }
   }
 
@@ -351,16 +361,16 @@ function isStrictMovieBoxOfficeEvent(event: PolyEvent): boolean {
 // Category-specific filter functions
 function getEventFilterForCategory(category: CategoryKey): (event: PolyEvent) => boolean {
   return (event: PolyEvent) => {
-    // All categories must match the category keywords
-    if (!eventMatchesCategory(event, category)) return false;
-    
     // Ensure complete yes/no tokens
     if (!hasCompleteYesNoTokens(event)) return false;
 
     const text = toEventText(event);
+    const hasAnySignal = (signals: string[]) => signals.some((signal) => text.includes(signal));
 
     switch (category) {
       case "movieBoxOffice":
+        const hasMoviePageSignal = hasAnySignal(["pop-culture/movie", "predictions/movie", "movies", "pop-culture"]);
+
         // Strict movie filtering
         const hasStrongBoxOfficeSignal = [
           "box office",
@@ -371,7 +381,7 @@ function getEventFilterForCategory(category: CategoryKey): (event: PolyEvent) =>
           "weekend gross",
         ].some((signal) => text.includes(signal));
 
-        if (!hasStrongBoxOfficeSignal) return false;
+        if (!hasStrongBoxOfficeSignal && !hasMoviePageSignal) return false;
 
         const hasNonMovieSignal = [
           "trump",
@@ -390,6 +400,13 @@ function getEventFilterForCategory(category: CategoryKey): (event: PolyEvent) =>
         return !hasNonMovieSignal;
 
       case "fedRates":
+        const hasEconomicPolicyPageSignal = hasAnySignal([
+          "predictions/economic-policy",
+          "economic-policy",
+          "economic policy",
+          "fed-rates",
+        ]);
+
         // Filter out false positives (e.g., "fedex", "federal agency" not about rates)
         const hasRateSignal = [
           "rate hike",
@@ -408,9 +425,11 @@ function getEventFilterForCategory(category: CategoryKey): (event: PolyEvent) =>
           "federal court",
         ].some((signal) => text.includes(signal));
 
-        return hasRateSignal && !hasNonFedSignal;
+        return (hasEconomicPolicyPageSignal || hasRateSignal) && !hasNonFedSignal;
 
       case "elonTweets":
+        const hasElonPageSignal = hasAnySignal(["predictions/elon-tweets", "elon-tweets", "elon-musk"]);
+
         // Filter to actual Elon/Twitter events
         const hasElonSignal = [
           "elon",
@@ -422,9 +441,11 @@ function getEventFilterForCategory(category: CategoryKey): (event: PolyEvent) =>
           "tesla",
         ].some((signal) => text.includes(signal));
 
-        return hasElonSignal;
+        return hasElonPageSignal || hasElonSignal;
 
       case "nbaGames":
+        const hasNbaPageSignal = hasAnySignal(["predictions/nba", "nba"]);
+
         // Filter to actual NBA events
         const hasNbaSignal = [
           "nba",
@@ -445,7 +466,7 @@ function getEventFilterForCategory(category: CategoryKey): (event: PolyEvent) =>
           "football",
         ].some((signal) => text.includes(signal));
 
-        return hasNbaSignal && !hasNonNbaSignal;
+        return (hasNbaPageSignal || hasNbaSignal) && !hasNonNbaSignal;
 
       default:
         return false;

@@ -4,22 +4,50 @@ export type CategoryConfigItem = {
   key: CategoryKey;
   label: string;
   keywords: string[];
+  pageSignals?: string[];
+  tagSlugs?: string[];
 };
 
 export const CATEGORY_CONFIG: CategoryConfigItem[] = [
-  { key: "elonTweets", label: "Elon Tweets", keywords: ["elon", "musk", "tweet", "twitter", "x.com"] },
-  { key: "movieBoxOffice", label: "Movie Box Office", keywords: ["box office", "movie", "opening weekend", "domestic gross", "worldwide gross", "theatrical"] },
-  { key: "fedRates", label: "US Federal Reserve Interest Rates", keywords: ["federal reserve", "fed", "fomc", "rate hike", "rate cut", "interest rate"] },
-  { key: "nbaGames", label: "NBA Basketball games", keywords: ["nba", "basketball", "playoffs", "lakers", "celtics", "warriors"] },
+  {
+    key: "elonTweets",
+    label: "Elon Tweets",
+    tagSlugs: ["elon-musk"],
+    keywords: ["elon", "musk", "tweet", "twitter", "x.com"],
+    pageSignals: ["predictions/elon-tweets", "elon-tweets"],
+  },
+  {
+    key: "movieBoxOffice",
+    label: "Movie Box Office",
+    tagSlugs: ["movies"],
+    keywords: ["box office", "movie", "opening weekend", "domestic gross", "worldwide gross", "theatrical"],
+    pageSignals: ["pop-culture/movie", "predictions/movie", "movie"],
+  },
+  {
+    key: "fedRates",
+    label: "US Federal Reserve Interest Rates",
+    tagSlugs: ["economic-policy", "fed-rates"],
+    keywords: ["federal reserve", "fed", "fomc", "rate hike", "rate cut", "interest rate", "economic policy"],
+    pageSignals: ["predictions/economic-policy", "economic-policy", "federal-interest-rates"],
+  },
+  {
+    key: "nbaGames",
+    label: "NBA Basketball games",
+    tagSlugs: ["nba"],
+    keywords: ["nba", "basketball", "playoffs", "lakers", "celtics", "warriors"],
+    pageSignals: ["predictions/nba", "nba"],
+  },
 ];
 
 type EventTag = { label?: string; slug?: string };
 
-export function toEventText(event: { title?: string; description?: string; tags?: EventTag[] }): string {
+export function toEventText(event: { title?: string; description?: string; tags?: EventTag[]; slug?: string; category?: string }): string {
   const title = event.title || "";
   const desc = event.description || "";
-  const tags = (event.tags || []).map((t) => t.label || "").join(" ");
-  return `${title} ${desc} ${tags}`.toLowerCase();
+  const tags = (event.tags || []).map((t) => `${t.label || ""} ${t.slug || ""}`.trim()).join(" ");
+  const slug = event.slug || "";
+  const category = event.category || "";
+  return `${title} ${desc} ${tags} ${slug} ${category}`.toLowerCase();
 }
 
 export function getCategoryConfig(categoryKey: CategoryKey): CategoryConfigItem | undefined {
@@ -42,9 +70,49 @@ function keywordMatchesText(text: string, keyword: string): boolean {
   return pattern.test(text);
 }
 
-export function eventMatchesCategory(event: { title?: string; description?: string; tags?: EventTag[] }, categoryKey: CategoryKey): boolean {
+export function eventMatchesCategory(
+  event: { title?: string; description?: string; tags?: EventTag[]; slug?: string; category?: string },
+  categoryKey: CategoryKey
+): boolean {
   const config = getCategoryConfig(categoryKey);
   if (!config) return false;
   const text = toEventText(event);
+
+  const matchesPageSignal = (config.pageSignals || []).some((signal) => text.includes(signal.toLowerCase()));
+  if (matchesPageSignal) return true;
+
   return config.keywords.some((keyword) => keywordMatchesText(text, keyword));
 }
+
+/**
+ * Quick market filter format used by home page and market boards.
+ * Combines tag slugs, page signals, and keywords for multi-strategy filtering.
+ */
+export type QuickMarketFilter = {
+  label: string;
+  tagSlugs: string[];
+  signals: string[];
+  keywords: string[];
+};
+
+/**
+ * Shared quick market filters derived from CATEGORY_CONFIG.
+ * Used by home page and OiyenScore for consistent category filtering.
+ */
+export const QUICK_MARKET_FILTERS: QuickMarketFilter[] = CATEGORY_CONFIG.map((cfg) => ({
+  label: cfg.label,
+  tagSlugs: cfg.tagSlugs || [],
+  signals: cfg.pageSignals || [],
+  keywords: cfg.keywords,
+}));
+
+/**
+ * Tag slugs by category key for direct API filtering.
+ * Used by OiyenScore and other category-based fetchers.
+ */
+export const TAG_SLUGS_BY_CATEGORY: Record<CategoryKey, string[]> = {
+  elonTweets: CATEGORY_CONFIG.find((c) => c.key === "elonTweets")?.tagSlugs || [],
+  movieBoxOffice: CATEGORY_CONFIG.find((c) => c.key === "movieBoxOffice")?.tagSlugs || [],
+  fedRates: CATEGORY_CONFIG.find((c) => c.key === "fedRates")?.tagSlugs || [],
+  nbaGames: CATEGORY_CONFIG.find((c) => c.key === "nbaGames")?.tagSlugs || [],
+};

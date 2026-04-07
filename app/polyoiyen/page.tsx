@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import PolyHeader from "./PolyHeader";
+import { QUICK_MARKET_FILTERS } from "./shared/categoryConfig";
 
 // ═══════════════════════════════════════════════════════
 //  TYPES
@@ -49,6 +50,9 @@ interface UserAlert {
   marketQuestion: string;
   alertType: string;
   side: string;
+  severity?: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  cooldownMinutes?: number;
+  lastNotifiedAt?: string | null;
   targetPrice: string | null;
   threshold: string | null;
   triggered: boolean;
@@ -213,12 +217,6 @@ const TAG_OPTIONS = [
   "Business", "Science", "Technology",
 ];
 const QUICK_FILTER_FETCH_LIMIT = 300;
-const QUICK_MARKET_FILTERS: Array<{ label: string; keywords: string[] }> = [
-  { label: "Elon Tweets", keywords: ["elon", "musk", "tweet", "x.com", "twitter"] },
-  { label: "Movie Box Office", keywords: ["box office", "movie", "film", "opening weekend"] },
-  { label: "US Federal Reserve Interest Rates", keywords: ["federal reserve", "fed", "interest rate", "rate cut", "rate hike", "fomc"] },
-  { label: "NBA Basketball games", keywords: ["nba", "basketball", "playoffs", "lakers", "celtics"] },
-];
 const LARGE_ORDER_THRESHOLD = 500; // default $500 for "large" orders
 const BOOKMARK_STORAGE_KEY = "polyoiyen-bookmarks-v1";
 
@@ -658,6 +656,8 @@ function AlertsPanel({
   const [showForm, setShowForm] = useState(false);
   const [alertType, setAlertType] = useState<"PRICE" | "LARGE_ORDER">("PRICE");
   const [alertSide, setAlertSide] = useState("YES");
+  const [severity, setSeverity] = useState<"LOW" | "MEDIUM" | "HIGH" | "CRITICAL">("MEDIUM");
+  const [cooldownMinutes, setCooldownMinutes] = useState("30");
   const [targetPrice, setTargetPrice] = useState("");
   const [threshold, setThreshold] = useState("500");
   const [saving, setSaving] = useState(false);
@@ -693,6 +693,8 @@ function AlertsPanel({
           marketQuestion: event.title,
           alertType,
           side: alertSide,
+          severity,
+          cooldownMinutes: Number(cooldownMinutes),
           targetPrice: alertType === "PRICE" ? Number(targetPrice) / 100 : null,
           threshold: alertType === "LARGE_ORDER" ? Number(threshold) : null,
         }),
@@ -726,7 +728,7 @@ function AlertsPanel({
 
   // Check if any price alerts are triggered based on current prices
   const triggeredAlerts = alerts.filter(a => {
-    if (a.alertType !== "PRICE" || !a.active || a.triggered) return false;
+    if (a.alertType !== "PRICE" || !a.active) return false;
     const curr = a.side === "YES" ? currentPrices.yes : currentPrices.no;
     const target = Number(a.targetPrice);
     return curr >= target;
@@ -779,8 +781,11 @@ function AlertsPanel({
                       : `Large order ≥ $${Number(a.threshold).toFixed(0)} on ${a.side}`}
                   </div>
                   <div style={{ fontSize: 10, color: "var(--dim)" }}>
-                    {isTriggered ? "🔔 Triggered!" : "Active"}
+                    {isTriggered ? "🔔 Trigger condition met" : "Watching"}
+                    {" · "}Lv.{String(a.severity || "MEDIUM")}
+                    {" · "}CD {Number(a.cooldownMinutes || 30)}m
                     {" · "}{new Date(a.createdAt).toLocaleDateString()}
+                    {a.lastNotifiedAt ? ` · last ${new Date(a.lastNotifiedAt).toLocaleTimeString()}` : ""}
                   </div>
                 </div>
                 <button onClick={() => handleDelete(a.id)} style={{
@@ -847,6 +852,55 @@ function AlertsPanel({
             ))}
           </div>
 
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "var(--dim)", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 5 }}>
+                Alert Level
+              </div>
+              <select
+                value={severity}
+                onChange={(e) => setSeverity(e.target.value as "LOW" | "MEDIUM" | "HIGH" | "CRITICAL")}
+                style={{
+                  width: "100%",
+                  padding: "9px 10px",
+                  borderRadius: 8,
+                  background: "rgba(255,255,255,0.05)",
+                  border: "1px solid var(--bdr)",
+                  color: "white",
+                  fontSize: 12,
+                }}
+              >
+                <option value="LOW">LOW</option>
+                <option value="MEDIUM">MEDIUM</option>
+                <option value="HIGH">HIGH</option>
+                <option value="CRITICAL">CRITICAL</option>
+              </select>
+            </div>
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "var(--dim)", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 5 }}>
+                Cooldown (min)
+              </div>
+              <input
+                type="number"
+                min="1"
+                max="1440"
+                value={cooldownMinutes}
+                onChange={(e) => setCooldownMinutes(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: "9px 12px",
+                  borderRadius: 8,
+                  fontSize: 14,
+                  fontFamily: "'DM Mono', monospace",
+                  background: "rgba(255,255,255,0.05)",
+                  border: "1px solid var(--bdr)",
+                  color: "white",
+                  outline: "none",
+                }}
+              />
+            </div>
+          </div>
+
           {alertType === "PRICE" ? (
             <div>
               <div style={{ fontSize: 10, fontWeight: 700, color: "var(--dim)", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 5 }}>
@@ -897,7 +951,12 @@ function AlertsPanel({
             </button>
             <button
               onClick={handleCreate}
-              disabled={saving || (alertType === "PRICE" && (!targetPrice || Number(targetPrice) <= 0 || Number(targetPrice) >= 100))}
+              disabled={
+                saving ||
+                Number(cooldownMinutes) < 1 ||
+                Number(cooldownMinutes) > 1440 ||
+                (alertType === "PRICE" && (!targetPrice || Number(targetPrice) <= 0 || Number(targetPrice) >= 100))
+              }
               style={{
                 padding: "9px 0", borderRadius: 8, fontSize: 12, fontWeight: 700,
                 cursor: saving ? "not-allowed" : "pointer", fontFamily: "'DM Sans', sans-serif",
@@ -2839,19 +2898,50 @@ function ListPage({
     async (currentOffset: number, append: boolean) => {
       append ? setLoadingMore(true) : setLoading(true);
       try {
+        const quickFilter = QUICK_MARKET_FILTERS.find((f) => f.label === quickMarket);
         const usingQuickFilter = quickMarket !== "All";
         const requestLimit = usingQuickFilter ? QUICK_FILTER_FETCH_LIMIT : LIMIT;
         const requestOffset = usingQuickFilter ? 0 : currentOffset;
 
-        const params = new URLSearchParams({
-          limit: String(requestLimit),
-          offset: String(requestOffset),
-        });
-        if (tag !== "All") params.set("tag", tag);
+        let data: PolyEvent[] = [];
 
-        const res = await fetch(`/api/polymarket?${params.toString()}`);
-        if (!res.ok) throw new Error("Failed to fetch");
-        const data: PolyEvent[] = await res.json();
+        if (usingQuickFilter && quickFilter && quickFilter.tagSlugs.length > 0) {
+          const perSlugLimit = Math.max(60, Math.floor(requestLimit / quickFilter.tagSlugs.length));
+          const fetched = await Promise.all(
+            quickFilter.tagSlugs.map(async (slug) => {
+              const quickParams = new URLSearchParams({
+                limit: String(perSlugLimit),
+                offset: "0",
+                tagSlug: slug,
+              });
+              const quickRes = await fetch(`/api/polymarket?${quickParams.toString()}`);
+              if (!quickRes.ok) return [] as PolyEvent[];
+              const quickData = await quickRes.json();
+              return Array.isArray(quickData)
+                ? (quickData as PolyEvent[])
+                : Array.isArray(quickData?.events)
+                  ? (quickData.events as PolyEvent[])
+                  : [];
+            })
+          );
+
+          const deduped = new Map<string, PolyEvent>();
+          fetched.flat().forEach((event) => {
+            if (event?.id && !deduped.has(event.id)) deduped.set(event.id, event);
+          });
+          data = Array.from(deduped.values());
+        } else {
+          const params = new URLSearchParams({
+            limit: String(requestLimit),
+            offset: String(requestOffset),
+          });
+          if (tag !== "All") params.set("tag", tag);
+
+          const res = await fetch(`/api/polymarket?${params.toString()}`);
+          if (!res.ok) throw new Error("Failed to fetch");
+          const raw = await res.json();
+          data = Array.isArray(raw) ? raw : Array.isArray(raw?.events) ? raw.events : [];
+        }
 
         if (usingQuickFilter) {
           setHasMore(false);
@@ -2890,7 +2980,9 @@ function ListPage({
     : events;
 
   const displayed = sourceEvents.filter((e) => {
-    const text = `${e.title} ${e.description || ""} ${(e.tags || []).map((t) => t.label).join(" ")}`.toLowerCase();
+    const text = `${e.title} ${e.description || ""} ${e.slug || ""} ${(e.tags || [])
+      .map((t) => `${t.label || ""} ${t.slug || ""}`)
+      .join(" ")}`.toLowerCase();
 
     const searchMatch =
       !search ||
@@ -2899,7 +2991,11 @@ function ListPage({
     const quickFilter = QUICK_MARKET_FILTERS.find((f) => f.label === quickMarket);
     const quickMatch =
       quickMarket === "All" ||
-      (quickFilter ? quickFilter.keywords.some((kw) => text.includes(kw.toLowerCase())) : true);
+      (quickFilter
+        ? quickFilter.tagSlugs.some((slug) => text.includes(slug.toLowerCase())) ||
+          quickFilter.signals.some((signal) => text.includes(signal.toLowerCase())) ||
+          quickFilter.keywords.some((kw) => text.includes(kw.toLowerCase()))
+        : true);
 
     return searchMatch && quickMatch;
   });

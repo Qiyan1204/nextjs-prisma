@@ -11,6 +11,9 @@ interface AlertRow {
   marketQuestion: string;
   alertType: "PRICE" | "LARGE_ORDER";
   side: "YES" | "NO";
+  severity?: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  cooldownMinutes?: number;
+  lastNotifiedAt?: string | null;
   targetPrice: number | null;
   threshold: number | null;
   triggered: boolean;
@@ -159,7 +162,11 @@ function AlertCard({ alert, currentPrice, isTriggered, onDismiss }: AlertCardPro
 
         {/* Detail / time */}
         <div style={{ fontSize: 12, color: "rgba(255,255,255,0.44)" }}>
-          {detailText} &nbsp;·&nbsp; Created {timeAgo(alert.createdAt)}
+          {detailText}
+          {" · "}Lv.{String(alert.severity || "MEDIUM")}
+          {" · "}CD {Number(alert.cooldownMinutes || 30)}m
+          {" · "}Created {timeAgo(alert.createdAt)}
+          {alert.lastNotifiedAt ? ` · Last notify ${timeAgo(alert.lastNotifiedAt)}` : ""}
         </div>
       </div>
 
@@ -282,8 +289,8 @@ export default function PolyNotificationPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<"triggered" | "active">("triggered");
-  // Track which alert IDs have already had a Discord notification sent
-  const notifiedIds = useRef<Set<number>>(new Set());
+  // Local anti-spam guard: don't call trigger endpoint for the same alert more than once per minute.
+  const notifiedAtRef = useRef<Map<number, number>>(new Map());
 
   // Fetch all user alerts
   const fetchAlerts = useCallback(async () => {
@@ -352,7 +359,7 @@ export default function PolyNotificationPage() {
   // Fetch order books (real CLOB) AND local polybets DB for LARGE_ORDER alerts
   const fetchOrderBooks = useCallback(async (alertList: AlertRow[]) => {
     const orderAlerts = alertList.filter(
-      (a) => a.alertType === "LARGE_ORDER" && a.active !== false && !a.triggered
+      (a) => a.alertType === "LARGE_ORDER" && a.active !== false
     );
     if (orderAlerts.length === 0) return;
 
@@ -417,15 +424,12 @@ export default function PolyNotificationPage() {
     }
   }, [alerts, fetchPrices, fetchOrderBooks]);
 
-  // Send Discord webhook for newly triggered alerts (server-side via PUT /api/polyalerts)
-  // We rely on `a.triggered` (DB field) as the deduplication flag — once the server marks
-  // it triggered, the DB field is true on next fetch so we never double-send.
+  // Send Discord webhook for triggered alerts (server-side via PUT /api/polyalerts).
+  // The server enforces per-alert cooldown based on cooldownMinutes + lastNotifiedAt.
   useEffect(() => {
     if (loading) return;
     alerts.forEach((a) => {
       if (a.active === false) return;
-      // Skip alerts already marked triggered in the DB — the server already notified Discord
-      if (a.triggered) return;
 
       const clientTriggered =
         (a.alertType === "LARGE_ORDER" && largeOrderHit[a.id] === true) ||
@@ -436,8 +440,16 @@ export default function PolyNotificationPage() {
             ? prices[a.eventId].yesPrice >= Number(a.targetPrice)
             : prices[a.eventId].noPrice >= Number(a.targetPrice)));
 
-      if (clientTriggered && !notifiedIds.current.has(a.id)) {
-        notifiedIds.current.add(a.id);
+      if (!clientTriggered) {
+        notifiedAtRef.current.delete(a.id);
+        return;
+      }
+
+      const lastAttempt = notifiedAtRef.current.get(a.id) || 0;
+      if (Date.now() - lastAttempt < 60_000) return;
+      notifiedAtRef.current.set(a.id, Date.now());
+
+      if (clientTriggered) {
         // Call PUT — server marks triggered=true in DB AND fires Discord webhook atomically
         fetch("/api/polyalerts", {
           method: "PUT",
@@ -449,7 +461,12 @@ export default function PolyNotificationPage() {
             setAlerts((prev) =>
               prev.map((x) =>
                 x.id === a.id
-                  ? { ...x, triggered: true, triggeredAt: new Date().toISOString() }
+                  ? {
+                      ...x,
+                      triggered: true,
+                      triggeredAt: x.triggeredAt || new Date().toISOString(),
+                      lastNotifiedAt: new Date().toISOString(),
+                    }
                   : x
               )
             );
@@ -463,7 +480,6 @@ export default function PolyNotificationPage() {
 
   // Determine triggered status client-side
   function isClientTriggered(a: AlertRow): boolean {
-    if (a.triggered) return true;
     if (a.alertType === "LARGE_ORDER") {
       return largeOrderHit[a.id] === true;
     }

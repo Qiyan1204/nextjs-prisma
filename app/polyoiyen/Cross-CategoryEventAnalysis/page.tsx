@@ -16,7 +16,7 @@ import {
   Legend,
 } from "recharts";
 import PolyHeader from "../PolyHeader";
-import { CATEGORY_CONFIG, toEventText, type CategoryKey } from "../shared/categoryConfig";
+import { CATEGORY_CONFIG, toEventText, type CategoryKey, TAG_SLUGS_BY_CATEGORY } from "../shared/categoryConfig";
 import {
   computeAdjustedPenalty,
   computeMarketAssessmentScore,
@@ -772,9 +772,8 @@ function normalizeSelection(ids: string[], mode: CompareMode): string[] {
   return dedup.slice(0, MAX_AVERAGE_SELECTION);
 }
 
-function buildCategoryOptions(category: { key: CategoryKey; keywords: string[] }, events: PolyEventLite[]) {
+function buildCategoryOptions(category: { key: CategoryKey; label: string }, events: PolyEventLite[]) {
   const matched = events
-    .filter((e) => category.keywords.some((kw) => toEventText(e).includes(kw)))
     .sort((a, b) => (b.volume || 0) - (a.volume || 0));
 
   const options: CategoryEventOption[] = matched
@@ -1067,15 +1066,40 @@ export default function CrossCategoryEventAnalysisPage() {
         setAssessmentWeights(weightsFromUrl);
         setPenaltySensitivity(penaltySensitivityFromUrl);
 
-        const params = new URLSearchParams({
-          limit: String(MAX_EVENT_SCAN),
-          offset: "0",
-        });
+        const categoryFetches = await Promise.all(
+          CATEGORY_CONFIG.map(async (cat) => {
+            const tagSlugList = TAG_SLUGS_BY_CATEGORY[cat.key] || [];
+            const collected: PolyEventLite[] = [];
 
-        const eventsRes = await fetch(`/api/polymarket?${params.toString()}`, { cache: "no-store" });
-        if (!eventsRes.ok) throw new Error("Failed to fetch active markets.");
-        const payload = await eventsRes.json();
-        const events: PolyEventLite[] = Array.isArray(payload) ? payload : Array.isArray(payload?.events) ? payload.events : [];
+            // Fetch from each tag slug and collect results
+            for (const tagSlug of tagSlugList) {
+              const params = new URLSearchParams({
+                limit: String(MAX_EVENT_SCAN / tagSlugList.length),
+                offset: "0",
+                tagSlug,
+              });
+              try {
+                const res = await fetch(`/api/polymarket?${params.toString()}`, { cache: "no-store" });
+                if (res.ok) {
+                  const payload = await res.json();
+                  const events: PolyEventLite[] = Array.isArray(payload) ? payload : Array.isArray(payload?.events) ? payload.events : [];
+                  collected.push(...events);
+                }
+              } catch (e) {
+                // ignore individual tag slug fetch errors
+              }
+            }
+
+            // Deduplicate by id and sort by volume
+            const dedup = new Map<string, PolyEventLite>();
+            for (const e of collected) {
+              if (e.id && !dedup.has(e.id)) dedup.set(e.id, e);
+            }
+            const sorted = Array.from(dedup.values()).sort((a, b) => (b.volume || 0) - (a.volume || 0));
+
+            return { category: cat, events: sorted };
+          })
+        );
 
         let recentStored: Record<CategoryKey, string[]> = emptyCategoryRecord<string[]>([]);
         try {
@@ -1094,11 +1118,11 @@ export default function CrossCategoryEventAnalysisPage() {
         }
         setRecentByCategory(recentStored);
 
-        const initial = CATEGORY_CONFIG.map((cat): CategoryState => {
-          const built = buildCategoryOptions(cat, events);
-          const fromUrl = parseIdsFromUrl(searchParams, cat.key);
+        const initial = categoryFetches.map((catFetch): CategoryState => {
+          const built = buildCategoryOptions(catFetch.category, catFetch.events);
+          const fromUrl = parseIdsFromUrl(searchParams, catFetch.category.key);
           const validFromUrl = fromUrl.filter((id) => built.options.some((o) => o.eventId === id));
-          const validRecent = (recentStored[cat.key] || []).filter((id) => built.options.some((o) => o.eventId === id));
+          const validRecent = (recentStored[catFetch.category.key] || []).filter((id) => built.options.some((o) => o.eventId === id));
           const selectedEventIds = validFromUrl.length > 0
             ? normalizeSelection(validFromUrl, modeFromUrl)
             : validRecent.length > 0
@@ -1106,8 +1130,8 @@ export default function CrossCategoryEventAnalysisPage() {
               : (built.options[0] ? [built.options[0].eventId] : []);
 
           return {
-            key: cat.key,
-            label: cat.label,
+            key: catFetch.category.key,
+            label: catFetch.category.label,
             matchCount: built.matchCount,
             options: built.options,
             selectedEventIds,

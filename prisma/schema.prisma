@@ -362,12 +362,15 @@ model PolyAlert {
   marketQuestion String
   alertType      String   // "PRICE" or "LARGE_ORDER"
   side           String   // "YES" or "NO"
+  severity       String   @default("MEDIUM") // "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
+  cooldownMinutes Int     @default(30)
   targetPrice    Decimal? @db.Decimal(10, 6)  // for PRICE alerts: trigger when price crosses this
   threshold      Decimal? @db.Decimal(18, 6)  // for LARGE_ORDER: min $ size to trigger
   triggered      Boolean  @default(false)
   active         Boolean  @default(true)
   createdAt      DateTime @default(now())
   triggeredAt    DateTime?
+  lastNotifiedAt DateTime?
 
   @@index([userId])
   @@index([eventId])
@@ -399,4 +402,30 @@ model MarketDepthSnapshot {
   @@index([sampledAt])
   @@index([eventId, sampledAt])
   @@index([categoryKey, sampledAt])
+}
+
+// Endpoint-level health probe records for Data Health panel analytics
+model EndpointProbe {
+  id         Int      @id @default(autoincrement())
+  endpoint   String
+  ok         Boolean
+  statusCode Int?
+  latencyMs  Int
+  createdAt  DateTime @default(now())
+
+  @@index([endpoint, createdAt])
+  @@index([createdAt])
+}
+
+// Alert notification audit trail: sent vs cooldown-skipped
+model AlertNotificationEvent {
+  id        Int      @id @default(autoincrement())
+  alertId   Int
+  eventType String   // "SENT" | "SKIPPED_COOLDOWN"
+  channel   String   @default("DISCORD")
+  createdAt DateTime @default(now())
+
+  @@index([alertId, createdAt])
+  @@index([eventType, createdAt])
+  @@index([createdAt])
 }
