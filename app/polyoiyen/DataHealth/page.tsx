@@ -130,7 +130,7 @@ export default function DataHealthPage() {
               Data Health Dashboard
             </h1>
             <p style={{ marginTop: 10, color: "rgba(255,255,255,0.72)", fontSize: 14, lineHeight: 1.65 }}>
-              Real-time system telemetry for database, upstream endpoints, category coverage, and alert pipeline behavior.
+              Prioritize model strategy performance first, then monitor system telemetry for stability and freshness.
             </p>
           </div>
           <button

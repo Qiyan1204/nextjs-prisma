@@ -37,6 +37,106 @@ function parseTokenIds(raw?: string): { yes: string; no: string } {
   }
 }
 
+function parseJsonArray<T>(raw: unknown): T[] {
+  if (Array.isArray(raw)) return raw as T[];
+  if (typeof raw !== "string") return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as T[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function inferWinnerSideFromOutcomes(outcomesRaw: unknown, pricesRaw: unknown): "YES" | "NO" | null {
+  const outcomes = parseJsonArray<string>(outcomesRaw).map((x) => String(x).toUpperCase());
+  const prices = parseJsonArray<number | string>(pricesRaw).map((x) => Number(x));
+  if (outcomes.length < 2 || prices.length < 2) return null;
+
+  let bestIdx = -1;
+  let bestPrice = -1;
+  for (let i = 0; i < prices.length; i += 1) {
+    const p = prices[i];
+    if (!Number.isFinite(p)) continue;
+    if (p > bestPrice) {
+      bestPrice = p;
+      bestIdx = i;
+    }
+  }
+
+  if (bestIdx < 0 || bestPrice < 0.97) return null;
+  const label = outcomes[bestIdx] || "";
+  if (label.includes("YES")) return "YES";
+  if (label.includes("NO")) return "NO";
+  return null;
+}
+
+function computeMaxDrawdownFromReturns(returnsPct: number[]): number {
+  let equity = 100;
+  let peak = 100;
+  let maxDrawdown = 0;
+
+  for (const ret of returnsPct) {
+    equity *= 1 + ret / 100;
+    if (!Number.isFinite(equity) || equity <= 0) {
+      return 100;
+    }
+
+    if (equity > peak) peak = equity;
+    const drawdown = peak > 0 ? ((peak - equity) / peak) * 100 : 0;
+    if (drawdown > maxDrawdown) maxDrawdown = drawdown;
+  }
+
+  return Number(maxDrawdown.toFixed(2));
+}
+
+function buildEquityCurvePoints(rows: Array<{ eventId: string; createdAt: string; totalReturn: number }>) {
+  let equity = 100;
+  let peak = 100;
+
+  return rows.map((row, index) => {
+    equity *= 1 + row.totalReturn / 100;
+    if (!Number.isFinite(equity) || equity <= 0) equity = 0;
+    if (equity > peak) peak = equity;
+    const drawdown = peak > 0 ? ((peak - equity) / peak) * 100 : 0;
+
+    return {
+      index: index + 1,
+      eventId: row.eventId,
+      createdAt: row.createdAt,
+      label: new Date(row.createdAt).toLocaleDateString([], { month: "numeric", day: "numeric" }),
+      equity: Number(equity.toFixed(2)),
+      drawdown: Number(drawdown.toFixed(2)),
+      returnPct: Number(row.totalReturn.toFixed(2)),
+    };
+  });
+}
+
+async function fetchResolvedWinnerSide(eventId: string): Promise<"YES" | "NO" | null> {
+  try {
+    const res = await fetch(`https://gamma-api.polymarket.com/events/${encodeURIComponent(eventId)}`, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+
+    const payload = await res.json();
+    const markets = Array.isArray(payload?.markets) ? payload.markets : [];
+
+    const topLevelWinner = inferWinnerSideFromOutcomes(payload?.outcomes, payload?.outcomePrices);
+    if (topLevelWinner) return topLevelWinner;
+
+    for (const market of markets) {
+      const winner = inferWinnerSideFromOutcomes(market?.outcomes, market?.outcomePrices);
+      if (winner) return winner;
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function probe(baseUrl: string, endpointKey: string, path: string) {
   const started = Date.now();
   let ok = false;
@@ -197,6 +297,25 @@ export async function GET(req: Request) {
     }),
   ]);
 
+  const polyBetRows = await prisma.polyBet.findMany({
+    where: {
+      side: { in: ["YES", "NO"] },
+      type: { in: ["BUY", "SELL", "CLAIM"] },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 4000,
+    select: {
+      eventId: true,
+      marketQuestion: true,
+      side: true,
+      type: true,
+      amount: true,
+      shares: true,
+      category: true,
+      createdAt: true,
+    },
+  });
+
   const counts: Record<PullKind, number> = {
     poly_probe: 0,
     invest_pull: 0,
@@ -245,6 +364,229 @@ export async function GET(req: Request) {
   for (const row of alertEvents24h) {
     alertEventMap[row.eventType] = row._count._all;
   }
+
+  const groupedPoly = new Map<string, {
+    eventId: string;
+    marketQuestion: string;
+    yesBuyAmount: number;
+    yesBuyShares: number;
+    yesSellAmount: number;
+    yesSellShares: number;
+    noBuyAmount: number;
+    noBuyShares: number;
+    noSellAmount: number;
+    noSellShares: number;
+    claimAmount: number;
+    categoryScores: Record<string, number>;
+    lastAt: Date;
+  }>();
+
+  for (const b of polyBetRows) {
+    const side = b.side === "YES" || b.side === "NO" ? b.side : null;
+    if (!side) continue;
+    const key = b.eventId;
+    const current = groupedPoly.get(key) || {
+      eventId: b.eventId,
+      marketQuestion: b.marketQuestion,
+      yesBuyAmount: 0,
+      yesBuyShares: 0,
+      yesSellAmount: 0,
+      yesSellShares: 0,
+      noBuyAmount: 0,
+      noBuyShares: 0,
+      noSellAmount: 0,
+      noSellShares: 0,
+      claimAmount: 0,
+      categoryScores: {},
+      lastAt: b.createdAt,
+    };
+
+    const amt = Number(b.amount || 0);
+    const sh = Number(b.shares || 0);
+    const t = b.type || "BUY";
+
+    if (t === "BUY") {
+      if (side === "YES") {
+        current.yesBuyAmount += amt;
+        current.yesBuyShares += sh;
+      } else {
+        current.noBuyAmount += amt;
+        current.noBuyShares += sh;
+      }
+      const cat = (b.category || "PolyOiyen").trim() || "PolyOiyen";
+      current.categoryScores[cat] = (current.categoryScores[cat] || 0) + Math.max(0, amt);
+    } else if (t === "SELL") {
+      if (side === "YES") {
+        current.yesSellAmount += amt;
+        current.yesSellShares += sh;
+      } else {
+        current.noSellAmount += amt;
+        current.noSellShares += sh;
+      }
+    } else if (t === "CLAIM") {
+      current.claimAmount += amt;
+    }
+
+    if (b.createdAt > current.lastAt) current.lastAt = b.createdAt;
+    if (b.marketQuestion) current.marketQuestion = b.marketQuestion;
+    groupedPoly.set(key, current);
+  }
+
+  const groupedList = Array.from(groupedPoly.values()).sort((a, b) => b.lastAt.getTime() - a.lastAt.getTime());
+  const evaluableEvents = groupedList.filter((x) => (x.yesBuyAmount + x.noBuyAmount) > 0);
+  const excludedNoBuyEvents = groupedList.length - evaluableEvents.length;
+  const targetEventIds = Array.from(new Set(evaluableEvents.map((x) => x.eventId))).slice(0, 120);
+  const eventWinnerEntries = await Promise.all(targetEventIds.map(async (eventId) => [eventId, await fetchResolvedWinnerSide(eventId)] as const));
+  const eventWinners = new Map<string, "YES" | "NO" | null>(eventWinnerEntries);
+
+  const resolvedRuns = evaluableEvents
+    .map((r) => {
+      const winner = eventWinners.get(r.eventId);
+      if (!winner) return null;
+      const netYesShares = Math.max(0, r.yesBuyShares - r.yesSellShares);
+      const netNoShares = Math.max(0, r.noBuyShares - r.noSellShares);
+      const payoutRemaining = winner === "YES" ? netYesShares : netNoShares;
+      const realizedValue = r.yesSellAmount + r.noSellAmount + r.claimAmount + payoutRemaining;
+      const invested = r.yesBuyAmount + r.noBuyAmount;
+      const ret = invested > 0 ? ((realizedValue - invested) / invested) * 100 : 0;
+      const isWin = ret >= 0;
+
+      const bestCategory = Object.entries(r.categoryScores)
+        .sort((a, b) => b[1] - a[1])[0]?.[0];
+      const strategyName = bestCategory ? `${bestCategory} Strategy` : "PolyOiyen Strategy";
+
+      return {
+        eventId: r.eventId,
+        marketQuestion: r.marketQuestion,
+        strategyName,
+        totalReturn: Number(ret.toFixed(2)),
+        totalTrades: 1,
+        winningTrades: isWin ? 1 : 0,
+        losingTrades: isWin ? 0 : 1,
+        winRate: isWin ? 100 : 0,
+        createdAt: r.lastAt.toISOString(),
+      };
+    })
+    .filter((x): x is NonNullable<typeof x> => x !== null);
+
+  const unresolvedEvents = Math.max(0, evaluableEvents.length - resolvedRuns.length);
+
+  const wins = resolvedRuns.reduce((sum, r) => sum + r.winningTrades, 0);
+  const losses = resolvedRuns.reduce((sum, r) => sum + r.losingTrades, 0);
+  const tradeCount = wins + losses;
+  const backtestWinRate = tradeCount > 0 ? pct(wins, tradeCount) : null;
+  const resolvedRunsSorted = [...resolvedRuns].sort(
+    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+  );
+  const avgReturn = resolvedRuns.length > 0
+    ? resolvedRuns.reduce((sum, r) => sum + r.totalReturn, 0) / resolvedRuns.length
+    : null;
+
+  const strategyPerformance = new Map<string, { returns: number[] }>();
+  for (const row of resolvedRunsSorted) {
+    const current = strategyPerformance.get(row.strategyName) || { returns: [] };
+    current.returns.push(row.totalReturn);
+    strategyPerformance.set(row.strategyName, current);
+  }
+
+  const strategyDrawdowns = Array.from(strategyPerformance.entries()).map(([strategyName, performance]) => ({
+    strategyName,
+    maxDrawdown: computeMaxDrawdownFromReturns(performance.returns),
+  }));
+
+  const avgMaxDrawdown = strategyDrawdowns.length > 0
+    ? strategyDrawdowns.reduce((sum, row) => sum + row.maxDrawdown, 0) / strategyDrawdowns.length
+    : null;
+
+  const equityCurve = {
+    aggregate: buildEquityCurvePoints(resolvedRunsSorted),
+    byStrategy: Array.from(strategyPerformance.keys()).map((strategyName) => {
+      const rows = resolvedRunsSorted.filter((row) => row.strategyName === strategyName);
+      const points = buildEquityCurvePoints(rows);
+      const maxDrawdown = computeMaxDrawdownFromReturns(rows.map((row) => row.totalReturn));
+      return {
+        strategyName,
+        maxDrawdown,
+        points,
+      };
+    }),
+  };
+
+  const modelQualityStatus: "healthy" | "degraded" | "unhealthy" | "sufficient" =
+    resolvedRuns.length < 20
+      ? "sufficient"
+      : (backtestWinRate ?? 0) < 45 && (avgReturn ?? -999) < 0
+        ? "unhealthy"
+        : (backtestWinRate ?? 0) >= 55 && (avgReturn ?? -999) >= 0 && resolvedRuns.length >= 50
+          ? "healthy"
+          : "degraded";
+
+  const strategyMap = new Map<string, { runs: number; wins: number; losses: number; returnSum: number }>();
+  for (const row of resolvedRuns) {
+    const current = strategyMap.get(row.strategyName) || { runs: 0, wins: 0, losses: 0, returnSum: 0 };
+    current.runs += 1;
+    current.wins += row.winningTrades;
+    current.losses += row.losingTrades;
+    current.returnSum += row.totalReturn;
+    strategyMap.set(row.strategyName, current);
+  }
+
+  const strategyLeaderboard = Array.from(strategyMap.entries())
+    .map(([strategyName, s]) => {
+      const closedTrades = Math.max(0, s.wins + s.losses);
+      const maxDrawdown = strategyDrawdowns.find((row) => row.strategyName === strategyName)?.maxDrawdown ?? null;
+      return {
+        strategyName,
+        runs: s.runs,
+        winRate: closedTrades > 0 ? pct(s.wins, closedTrades) : null,
+        avgReturn: s.runs > 0 ? s.returnSum / s.runs : null,
+        maxDrawdown,
+      };
+    })
+    .sort((a, b) => {
+      const wA = a.winRate ?? -1;
+      const wB = b.winRate ?? -1;
+      if (wA !== wB) return wB - wA;
+      return (b.avgReturn ?? -9999) - (a.avgReturn ?? -9999);
+    });
+
+  const bestStrategy = strategyLeaderboard[0] || null;
+
+  const totalLossAbs = resolvedRuns.reduce((sum, row) => sum + Math.abs(Math.min(0, row.totalReturn)), 0);
+  const lossAttributionByStrategy = strategyLeaderboard
+    .map((s) => {
+      const rows = resolvedRuns.filter((r) => r.strategyName === s.strategyName);
+      const lossAbs = rows.reduce((sum, r) => sum + Math.abs(Math.min(0, r.totalReturn)), 0);
+      return {
+        strategyName: s.strategyName,
+        runs: s.runs,
+        winRate: s.winRate == null ? null : Number(s.winRate.toFixed(2)),
+        avgReturn: s.avgReturn == null ? null : Number(s.avgReturn.toFixed(2)),
+        maxDrawdown: s.maxDrawdown == null ? null : Number(s.maxDrawdown.toFixed(2)),
+        lossContributionPct: totalLossAbs > 0 ? Number(pct(lossAbs, totalLossAbs).toFixed(2)) : 0,
+      };
+    })
+    .sort((a, b) => b.lossContributionPct - a.lossContributionPct);
+
+  const worstEvents = resolvedRuns
+    .map((r) => ({
+      eventId: r.eventId,
+      marketQuestion: r.marketQuestion,
+      strategyName: r.strategyName,
+      totalReturn: r.totalReturn,
+      createdAt: r.createdAt,
+    }))
+    .sort((a, b) => a.totalReturn - b.totalReturn)
+    .slice(0, 8);
+
+  const recentRuns = resolvedRuns.slice(0, 8).map((r) => ({
+    symbol: r.eventId,
+    strategyName: r.strategyName,
+    totalReturn: r.totalReturn,
+    totalTrades: r.totalTrades,
+    winRate: r.winRate,
+    createdAt: r.createdAt,
+  }));
 
   const freshness = {
     lastPullMetricAt: latestPullMetric?.createdAt?.toISOString() || null,
@@ -368,6 +710,33 @@ export async function GET(req: Request) {
       notificationsSent: alertEventMap.SENT || 0,
       cooldownSkipped: alertEventMap.SKIPPED_COOLDOWN || 0,
       cooldownHitRatePercent: pct(alertEventMap.SKIPPED_COOLDOWN || 0, (alertEventMap.SENT || 0) + (alertEventMap.SKIPPED_COOLDOWN || 0)),
+    },
+    backtestQuality: {
+      totalRuns: resolvedRuns.length,
+      aggregateWinRate: backtestWinRate,
+      avgReturn: avgReturn == null ? null : Number(avgReturn.toFixed(2)),
+      avgMaxDrawdown,
+      status: modelQualityStatus,
+      diagnostics: {
+        resolvedSamples: resolvedRuns.length,
+        unresolvedEvents,
+        excludedNoBuyEvents,
+        scannedEvents: groupedList.length,
+      },
+      lossAttribution: {
+        byStrategy: lossAttributionByStrategy,
+        worstEvents,
+      },
+      equityCurve,
+      bestStrategy: bestStrategy
+        ? {
+            strategyName: bestStrategy.strategyName,
+            runs: bestStrategy.runs,
+            winRate: bestStrategy.winRate == null ? null : Number(bestStrategy.winRate.toFixed(2)),
+            avgReturn: bestStrategy.avgReturn == null ? null : Number(bestStrategy.avgReturn.toFixed(2)),
+          }
+        : null,
+      recentRuns,
     },
     categoryHealth,
     trend24h: trend,
