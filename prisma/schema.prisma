@@ -429,3 +429,90 @@ model AlertNotificationEvent {
   @@index([eventType, createdAt])
   @@index([createdAt])
 }
+
+// ─────────────────────────────────────────────
+// PolyOiyen Backtest Versioning System
+// ─────────────────────────────────────────────
+
+// Master backtest model: stores versioned backtest configurations
+model ModelBacktest {
+  id                Int                   @id @default(autoincrement())
+  name              String                // e.g., "PolyOiyen v1.0 - Category-based"
+  version           String                // e.g., "1.0", "1.1-beta"
+  description       String?
+  notes             String?               // Detailed notes on changes, limitations, improvements
+  modelType         String                @default("PolyOiyen") // Model name/type
+  parameters        String                // JSON: model parameters, thresholds, weights, etc.
+  dataStartDate     DateTime?             // When historical data starts
+  dataEndDate       DateTime?             // When historical data ends
+  status            String                @default("active") // "active" | "archived" | "compare" | "experimental"
+  isInversePair     Boolean               @default(false) // true if this is inverse of another model
+  parentModelId     Int?                  // FK to parent when isInversePair=true
+  parentModel       ModelBacktest?        @relation("InversePair", fields: [parentModelId], references: [id])
+  inverseModels     ModelBacktest[]       @relation("InversePair")
+  runs              BacktestVersionRun[]
+  strategies        StrategyVariant[]
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  @@index([status])
+  @@index([modelType, createdAt])
+  @@index([parentModelId])
+}
+
+// Individual backtest run result with equity curve and metrics
+model BacktestVersionRun {
+  id                      Int      @id @default(autoincrement())
+  modelBacktestId         Int
+  modelBacktest           ModelBacktest @relation(fields: [modelBacktestId], references: [id], onDelete: Cascade)
+  totalRuns               Int
+  aggregateWinRate        Float?
+  avgReturn               Float?
+  avgMaxDrawdown          Float?
+  equityCurveJson         String   // JSON: { aggregate: [...], byStrategy: [...] }
+  lossAttributionJson     String   // JSON: loss attribution by strategy
+  worstEventsJson         String   // JSON: array of worst events
+  diagnosticsJson         String   // JSON: diagnostic data (resolved, unresolved, excluded)
+  backtestStatus          String   // "healthy" | "degraded" | "unhealthy" | "sufficient"
+  createdAt               DateTime @default(now())
+
+  @@index([modelBacktestId, createdAt])
+}
+
+// Strategy variant: tracks original and inverse strategies
+model StrategyVariant {
+  id                  Int      @id @default(autoincrement())
+  modelBacktestId     Int
+  modelBacktest       ModelBacktest @relation(fields: [modelBacktestId], references: [id], onDelete: Cascade)
+  strategyName        String   // e.g., "Category Momentum"
+  isInverse           Boolean  @default(false)
+  parentStrategyId    Int?     // FK to original strategy if isInverse=true
+  parentStrategy      StrategyVariant? @relation("StrategyInverse", fields: [parentStrategyId], references: [id])
+  inverseStrategies   StrategyVariant[] @relation("StrategyInverse")
+  runsCount           Int      @default(0)
+  winRate             Float?
+  avgReturn           Float?
+  maxDrawdown         Float?
+  lossContributionPct Float?
+  createdAt           DateTime @default(now())
+
+  @@index([modelBacktestId])
+  @@index([parentStrategyId])
+}
+
+// Historical trade snapshots for inverse strategy generation
+model BacktestTradeSnapshot {
+  id              Int      @id @default(autoincrement())
+  modelBacktestId Int
+  eventId         String
+  strategyName    String
+  side            String   // "YES" or "NO"
+  amount          Float
+  shares          Float
+  price           Float
+  category        String
+  createdAt       DateTime @default(now())
+
+  @@index([modelBacktestId, eventId])
+  @@index([strategyName])
+}

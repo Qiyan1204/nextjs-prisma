@@ -112,6 +112,265 @@ function buildEquityCurvePoints(rows: Array<{ eventId: string; createdAt: string
   });
 }
 
+function classifyEventType(question: string): string {
+  const q = question.toLowerCase();
+  if (q.includes("election") || q.includes("president") || q.includes("vote")) return "Politics";
+  if (q.includes("fed") || q.includes("rate") || q.includes("inflation") || q.includes("cpi")) return "Macro";
+  if (q.includes("nba") || q.includes("nfl") || q.includes("mlb") || q.includes("game")) return "Sports";
+  if (q.includes("box office") || q.includes("movie") || q.includes("film")) return "Entertainment";
+  if (q.includes("crypto") || q.includes("bitcoin") || q.includes("eth")) return "Crypto";
+  return "General";
+}
+
+function bucketLiquidity(invested: number): "Low" | "Medium" | "High" {
+  if (invested < 100) return "Low";
+  if (invested < 500) return "Medium";
+  return "High";
+}
+
+function buildBucketContribution(
+  rows: Array<{ totalReturn: number; eventType: string; category: string; depthBucket: string }>,
+  mode: "original" | "inverse",
+) {
+  const group = (keyGetter: (row: (typeof rows)[number]) => string) => {
+    const map = new Map<string, { count: number; returnSum: number; absMove: number }>();
+    for (const row of rows) {
+      const key = keyGetter(row);
+      const current = map.get(key) || { count: 0, returnSum: 0, absMove: 0 };
+      current.count += 1;
+      current.returnSum += row.totalReturn;
+      current.absMove += Math.abs(row.totalReturn);
+      map.set(key, current);
+    }
+    return Array.from(map.entries())
+      .map(([bucket, v]) => ({
+        bucket,
+        events: v.count,
+        avgReturn: v.count > 0 ? Number((v.returnSum / v.count).toFixed(2)) : null,
+        returnSum: Number(v.returnSum.toFixed(2)),
+        absMove: Number(v.absMove.toFixed(2)),
+        contributionPct: 0,
+      }))
+      .map((bucket) => {
+        if (mode === "original") {
+          const totalAbsMove = rows.reduce((sum, r) => sum + Math.abs(r.totalReturn), 0);
+          return {
+            ...bucket,
+            contributionPct: totalAbsMove > 0 ? Number(pct(bucket.absMove, totalAbsMove).toFixed(2)) : 0,
+          };
+        }
+
+        const totalDirectionalMove = Array.from(map.values()).reduce((sum, v) => sum + Math.abs(v.returnSum), 0);
+        return {
+          ...bucket,
+          contributionPct: totalDirectionalMove > 0 ? Number(pct(bucket.returnSum, totalDirectionalMove).toFixed(2)) : 0,
+        };
+      })
+      .sort((a, b) => b.contributionPct - a.contributionPct);
+  };
+
+  const byEventType = group((row) => row.eventType);
+  const byCategory = group((row) => row.category);
+  const byLiquidityBucket = group((row) => row.depthBucket);
+
+  const topFactors = [
+    ...byEventType.map((x) => ({ factorType: "eventType", factorLabel: x.bucket, events: x.events, avgReturn: x.avgReturn, score: x.contributionPct })),
+    ...byCategory.map((x) => ({ factorType: "category", factorLabel: x.bucket, events: x.events, avgReturn: x.avgReturn, score: x.contributionPct })),
+    ...byLiquidityBucket.map((x) => ({ factorType: "liquidity", factorLabel: x.bucket, events: x.events, avgReturn: x.avgReturn, score: x.contributionPct })),
+  ]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10)
+    .map((x) => ({
+      factorType: x.factorType,
+      factorLabel: x.factorLabel,
+      events: x.events,
+      avgReturn: x.avgReturn,
+      contributionPct: Number(x.score.toFixed(2)),
+    }));
+
+  return {
+    byEventType,
+    byCategory,
+    byLiquidityBucket,
+    topFactors,
+  };
+}
+
+function buildRiskMetrics(rows: Array<{ totalReturn: number; createdAt: string }>, avgMaxDrawdown: number | null) {
+  if (rows.length === 0) {
+    return {
+      calmarRatio: null,
+      sortinoRatio: null,
+      profitFactor: null,
+      maxLosingStreak: 0,
+      totalReturn: null,
+      annualizedReturn: null,
+    };
+  }
+
+  const returns = rows.map((r) => r.totalReturn / 100);
+  const mean = returns.reduce((sum, r) => sum + r, 0) / returns.length;
+  const downside = returns.filter((r) => r < 0);
+  const downsideDev = downside.length > 0
+    ? Math.sqrt(downside.reduce((sum, r) => sum + r * r, 0) / downside.length)
+    : 0;
+
+  const grossProfit = returns.filter((r) => r > 0).reduce((sum, r) => sum + r, 0);
+  const grossLossAbs = Math.abs(returns.filter((r) => r < 0).reduce((sum, r) => sum + r, 0));
+  const profitFactor = grossLossAbs > 0 ? grossProfit / grossLossAbs : null;
+
+  let maxLosingStreak = 0;
+  let currentLosingStreak = 0;
+  for (const r of returns) {
+    if (r < 0) {
+      currentLosingStreak += 1;
+      if (currentLosingStreak > maxLosingStreak) maxLosingStreak = currentLosingStreak;
+    } else {
+      currentLosingStreak = 0;
+    }
+  }
+
+  let equity = 1;
+  for (const r of returns) equity *= 1 + r;
+  const totalReturn = (equity - 1) * 100;
+
+  const start = new Date(rows[0].createdAt).getTime();
+  const end = new Date(rows[rows.length - 1].createdAt).getTime();
+  const days = Math.max(1, (end - start) / (1000 * 60 * 60 * 24));
+  const annualizedReturn = Math.pow(Math.max(0.0001, equity), 365 / days) - 1;
+
+  const calmarRatio = avgMaxDrawdown && avgMaxDrawdown > 0
+    ? ((annualizedReturn * 100) / avgMaxDrawdown)
+    : null;
+  const sortinoRatio = downsideDev > 0
+    ? (mean / downsideDev) * Math.sqrt(returns.length)
+    : null;
+
+  return {
+    calmarRatio: calmarRatio == null ? null : Number(calmarRatio.toFixed(3)),
+    sortinoRatio: sortinoRatio == null ? null : Number(sortinoRatio.toFixed(3)),
+    profitFactor: profitFactor == null ? null : Number(profitFactor.toFixed(3)),
+    maxLosingStreak,
+    totalReturn: Number(totalReturn.toFixed(2)),
+    annualizedReturn: Number((annualizedReturn * 100).toFixed(2)),
+  };
+}
+
+function computeEdgeFromOriginalVsInverse(
+  original: { aggregateWinRate: number | null; avgReturn: number | null },
+  inverse: { aggregateWinRate: number | null; avgReturn: number | null },
+) {
+  const wrDiff = (original.aggregateWinRate ?? 0) - (inverse.aggregateWinRate ?? 0);
+  const retDiff = (original.avgReturn ?? 0) - (inverse.avgReturn ?? 0);
+  if (wrDiff > 15 && retDiff > 8) return { hasEdge: true, strength: "strong" as const };
+  if (wrDiff > 8 && retDiff > 4) return { hasEdge: true, strength: "moderate" as const };
+  if (wrDiff > 3 || retDiff > 2) return { hasEdge: true, strength: "weak" as const };
+  return { hasEdge: false, strength: "none" as const };
+}
+
+async function persistAutoBacktestRun(args: {
+  checkedAtIso: string;
+  dataStartDate: Date | null;
+  dataEndDate: Date | null;
+  quality: any;
+}) {
+  try {
+    const autoModel = await prisma.modelBacktest.upsert({
+      where: { id: 1 },
+      update: {
+        name: "Auto Latest PolyOiyen",
+        version: "auto",
+        modelType: "PolyOiyen",
+        status: "active",
+        notes: "System-managed auto snapshots from /api/polyoiyen/data-health",
+        dataStartDate: args.dataStartDate,
+        dataEndDate: args.dataEndDate,
+        parameters: JSON.stringify({ source: "data-health", mode: "auto" }),
+      },
+      create: {
+        id: 1,
+        name: "Auto Latest PolyOiyen",
+        version: "auto",
+        modelType: "PolyOiyen",
+        status: "active",
+        notes: "System-managed auto snapshots from /api/polyoiyen/data-health",
+        dataStartDate: args.dataStartDate,
+        dataEndDate: args.dataEndDate,
+        parameters: JSON.stringify({ source: "data-health", mode: "auto" }),
+      },
+    });
+
+    const latestRun = await prisma.backtestVersionRun.findFirst({
+      where: { modelBacktestId: autoModel.id },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, createdAt: true, totalRuns: true, avgReturn: true, aggregateWinRate: true },
+    });
+
+    const nowMs = Date.now();
+    const shouldSkipByInterval = latestRun ? (nowMs - latestRun.createdAt.getTime()) < 10 * 60 * 1000 : false;
+    const isSameAsLatest = latestRun
+      ? latestRun.totalRuns === args.quality.totalRuns
+        && Number((latestRun.avgReturn ?? 0).toFixed(2)) === Number((args.quality.avgReturn ?? 0).toFixed(2))
+        && Number((latestRun.aggregateWinRate ?? 0).toFixed(2)) === Number((args.quality.aggregateWinRate ?? 0).toFixed(2))
+      : false;
+
+    if (shouldSkipByInterval && isSameAsLatest) return;
+
+    await prisma.backtestVersionRun.create({
+      data: {
+        modelBacktestId: autoModel.id,
+        totalRuns: args.quality.totalRuns,
+        aggregateWinRate: args.quality.aggregateWinRate,
+        avgReturn: args.quality.avgReturn,
+        avgMaxDrawdown: args.quality.avgMaxDrawdown,
+        equityCurveJson: JSON.stringify(args.quality.equityCurve),
+        lossAttributionJson: JSON.stringify(args.quality.lossAttribution),
+        worstEventsJson: JSON.stringify(args.quality.lossAttribution.worstEvents),
+        diagnosticsJson: JSON.stringify(args.quality.diagnostics),
+        backtestStatus: args.quality.status,
+      },
+    });
+
+    for (const strategy of args.quality.lossAttribution.byStrategy) {
+      const existing = await prisma.strategyVariant.findFirst({
+        where: {
+          modelBacktestId: autoModel.id,
+          strategyName: strategy.strategyName,
+          isInverse: false,
+        },
+        select: { id: true },
+      });
+      if (!existing) {
+        await prisma.strategyVariant.create({
+          data: {
+            modelBacktestId: autoModel.id,
+            strategyName: strategy.strategyName,
+            isInverse: false,
+            runsCount: strategy.runs,
+            winRate: strategy.winRate,
+            avgReturn: strategy.avgReturn,
+            maxDrawdown: strategy.maxDrawdown,
+            lossContributionPct: strategy.lossContributionPct,
+          },
+        });
+      } else {
+        await prisma.strategyVariant.update({
+          where: { id: existing.id },
+          data: {
+            runsCount: strategy.runs,
+            winRate: strategy.winRate,
+            avgReturn: strategy.avgReturn,
+            maxDrawdown: strategy.maxDrawdown,
+            lossContributionPct: strategy.lossContributionPct,
+          },
+        });
+      }
+    }
+  } catch (err) {
+    console.error("auto persist backtest failed", err);
+  }
+}
+
 async function fetchResolvedWinnerSide(eventId: string): Promise<"YES" | "NO" | null> {
   try {
     const res = await fetch(`https://gamma-api.polymarket.com/events/${encodeURIComponent(eventId)}`, {
@@ -454,11 +713,20 @@ export async function GET(req: Request) {
       const bestCategory = Object.entries(r.categoryScores)
         .sort((a, b) => b[1] - a[1])[0]?.[0];
       const strategyName = bestCategory ? `${bestCategory} Strategy` : "PolyOiyen Strategy";
+      const category = bestCategory || "PolyOiyen";
+      const eventType = classifyEventType(r.marketQuestion || "");
+      const sideBias = r.yesBuyAmount >= r.noBuyAmount ? "YES_BIAS" : "NO_BIAS";
+      const investedBucket = bucketLiquidity(invested);
 
       return {
         eventId: r.eventId,
         marketQuestion: r.marketQuestion,
         strategyName,
+        category,
+        eventType,
+        sideBias,
+        depthBucket: investedBucket,
+        invested: Number(invested.toFixed(2)),
         totalReturn: Number(ret.toFixed(2)),
         totalTrades: 1,
         winningTrades: isWin ? 1 : 0,
@@ -498,10 +766,55 @@ export async function GET(req: Request) {
     ? strategyDrawdowns.reduce((sum, row) => sum + row.maxDrawdown, 0) / strategyDrawdowns.length
     : null;
 
+  const inverseResolvedRunsSorted = resolvedRunsSorted.map((row) => ({
+    ...row,
+    strategyName: `${row.strategyName} (inverse version)`,
+    sideBias: row.sideBias === "YES_BIAS" ? "NO_BIAS" : "YES_BIAS",
+    totalReturn: Number((-row.totalReturn).toFixed(2)),
+    winningTrades: row.losingTrades,
+    losingTrades: row.winningTrades,
+    winRate: row.winRate == null ? null : Number((100 - row.winRate).toFixed(2)),
+  }));
+
+  const inverseWins = inverseResolvedRunsSorted.reduce((sum, r) => sum + r.winningTrades, 0);
+  const inverseLosses = inverseResolvedRunsSorted.reduce((sum, r) => sum + r.losingTrades, 0);
+  const inverseTradeCount = inverseWins + inverseLosses;
+  const inverseAggregateWinRate = inverseTradeCount > 0 ? pct(inverseWins, inverseTradeCount) : null;
+  const inverseAvgReturn = inverseResolvedRunsSorted.length > 0
+    ? inverseResolvedRunsSorted.reduce((sum, r) => sum + r.totalReturn, 0) / inverseResolvedRunsSorted.length
+    : null;
+
+  const inverseStrategyPerformance = new Map<string, { returns: number[] }>();
+  for (const row of inverseResolvedRunsSorted) {
+    const current = inverseStrategyPerformance.get(row.strategyName) || { returns: [] };
+    current.returns.push(row.totalReturn);
+    inverseStrategyPerformance.set(row.strategyName, current);
+  }
+
+  const inverseStrategyDrawdowns = Array.from(inverseStrategyPerformance.entries()).map(([strategyName, performance]) => ({
+    strategyName,
+    maxDrawdown: computeMaxDrawdownFromReturns(performance.returns),
+  }));
+
+  const inverseAvgMaxDrawdown = inverseStrategyDrawdowns.length > 0
+    ? inverseStrategyDrawdowns.reduce((sum, row) => sum + row.maxDrawdown, 0) / inverseStrategyDrawdowns.length
+    : null;
+
   const equityCurve = {
     aggregate: buildEquityCurvePoints(resolvedRunsSorted),
     byStrategy: Array.from(strategyPerformance.keys()).map((strategyName) => {
       const rows = resolvedRunsSorted.filter((row) => row.strategyName === strategyName);
+      const points = buildEquityCurvePoints(rows);
+      const maxDrawdown = computeMaxDrawdownFromReturns(rows.map((row) => row.totalReturn));
+      return {
+        strategyName,
+        maxDrawdown,
+        points,
+      };
+    }),
+    inverseAggregate: buildEquityCurvePoints(inverseResolvedRunsSorted),
+    inverseByStrategy: Array.from(inverseStrategyPerformance.keys()).map((strategyName) => {
+      const rows = inverseResolvedRunsSorted.filter((row) => row.strategyName === strategyName);
       const points = buildEquityCurvePoints(rows);
       const maxDrawdown = computeMaxDrawdownFromReturns(rows.map((row) => row.totalReturn));
       return {
@@ -568,6 +881,67 @@ export async function GET(req: Request) {
     })
     .sort((a, b) => b.lossContributionPct - a.lossContributionPct);
 
+  const inverseStrategyMap = new Map<string, { runs: number; wins: number; losses: number; returnSum: number }>();
+  for (const row of inverseResolvedRunsSorted) {
+    const current = inverseStrategyMap.get(row.strategyName) || { runs: 0, wins: 0, losses: 0, returnSum: 0 };
+    current.runs += 1;
+    current.wins += row.winningTrades;
+    current.losses += row.losingTrades;
+    current.returnSum += row.totalReturn;
+    inverseStrategyMap.set(row.strategyName, current);
+  }
+
+  const inverseStrategyLeaderboard = Array.from(inverseStrategyMap.entries())
+    .map(([strategyName, s]) => {
+      const closedTrades = Math.max(0, s.wins + s.losses);
+      const maxDrawdown = inverseStrategyDrawdowns.find((row) => row.strategyName === strategyName)?.maxDrawdown ?? null;
+      return {
+        strategyName,
+        runs: s.runs,
+        winRate: closedTrades > 0 ? pct(s.wins, closedTrades) : null,
+        avgReturn: s.runs > 0 ? s.returnSum / s.runs : null,
+        maxDrawdown,
+      };
+    })
+    .sort((a, b) => (b.avgReturn ?? -9999) - (a.avgReturn ?? -9999));
+
+  const totalInverseLossAbs = inverseResolvedRunsSorted.reduce((sum, row) => sum + Math.abs(Math.min(0, row.totalReturn)), 0);
+  const inverseLossAttributionByStrategy = inverseStrategyLeaderboard
+    .map((s) => {
+      const rows = inverseResolvedRunsSorted.filter((r) => r.strategyName === s.strategyName);
+      const lossAbs = rows.reduce((sum, r) => sum + Math.abs(Math.min(0, r.totalReturn)), 0);
+      return {
+        strategyName: s.strategyName,
+        runs: s.runs,
+        winRate: s.winRate == null ? null : Number(s.winRate.toFixed(2)),
+        avgReturn: s.avgReturn == null ? null : Number(s.avgReturn.toFixed(2)),
+        maxDrawdown: s.maxDrawdown == null ? null : Number(s.maxDrawdown.toFixed(2)),
+        lossContributionPct: totalInverseLossAbs > 0 ? Number(pct(lossAbs, totalInverseLossAbs).toFixed(2)) : 0,
+      };
+    })
+    .sort((a, b) => b.lossContributionPct - a.lossContributionPct);
+
+  const inverseSummary = {
+    aggregateWinRate: inverseAggregateWinRate == null ? null : Number(inverseAggregateWinRate.toFixed(2)),
+    avgReturn: inverseAvgReturn == null ? null : Number(inverseAvgReturn.toFixed(2)),
+    avgMaxDrawdown: inverseAvgMaxDrawdown == null ? null : Number(inverseAvgMaxDrawdown.toFixed(2)),
+    edge: computeEdgeFromOriginalVsInverse(
+      {
+        aggregateWinRate: backtestWinRate == null ? null : Number(backtestWinRate.toFixed(2)),
+        avgReturn: avgReturn == null ? null : Number(avgReturn.toFixed(2)),
+      },
+      {
+        aggregateWinRate: inverseAggregateWinRate == null ? null : Number(inverseAggregateWinRate.toFixed(2)),
+        avgReturn: inverseAvgReturn == null ? null : Number(inverseAvgReturn.toFixed(2)),
+      },
+    ),
+  };
+
+  const riskMetrics = {
+    original: buildRiskMetrics(resolvedRunsSorted, avgMaxDrawdown),
+    inverse: buildRiskMetrics(inverseResolvedRunsSorted, inverseAvgMaxDrawdown),
+  };
+
   const worstEvents = resolvedRuns
     .map((r) => ({
       eventId: r.eventId,
@@ -579,7 +953,54 @@ export async function GET(req: Request) {
     .sort((a, b) => a.totalReturn - b.totalReturn)
     .slice(0, 8);
 
+  const bestEvents = resolvedRuns
+    .map((r) => ({
+      eventId: r.eventId,
+      marketQuestion: r.marketQuestion,
+      strategyName: r.strategyName,
+      totalReturn: r.totalReturn,
+      createdAt: r.createdAt,
+    }))
+    .sort((a, b) => b.totalReturn - a.totalReturn)
+    .slice(0, 8);
+
+  const inverseWorstEvents = inverseResolvedRunsSorted
+    .map((r) => ({
+      eventId: r.eventId,
+      marketQuestion: r.marketQuestion,
+      strategyName: r.strategyName,
+      totalReturn: r.totalReturn,
+      createdAt: r.createdAt,
+    }))
+    .sort((a, b) => a.totalReturn - b.totalReturn)
+    .slice(0, 8);
+
+  const inverseBestEvents = inverseResolvedRunsSorted
+    .map((r) => ({
+      eventId: r.eventId,
+      marketQuestion: r.marketQuestion,
+      strategyName: r.strategyName,
+      totalReturn: r.totalReturn,
+      createdAt: r.createdAt,
+    }))
+    .sort((a, b) => b.totalReturn - a.totalReturn)
+    .slice(0, 8);
+
+  const bucketContributions = {
+    original: buildBucketContribution(resolvedRunsSorted, "original"),
+    inverse: buildBucketContribution(inverseResolvedRunsSorted, "inverse"),
+  };
+
   const recentRuns = resolvedRuns.slice(0, 8).map((r) => ({
+    symbol: r.eventId,
+    strategyName: r.strategyName,
+    totalReturn: r.totalReturn,
+    totalTrades: r.totalTrades,
+    winRate: r.winRate,
+    createdAt: r.createdAt,
+  }));
+
+  const inverseRecentRuns = inverseResolvedRunsSorted.slice(0, 8).map((r) => ({
     symbol: r.eventId,
     strategyName: r.strategyName,
     totalReturn: r.totalReturn,
@@ -682,7 +1103,7 @@ export async function GET(req: Request) {
     });
   }
 
-  return NextResponse.json({
+  const responsePayload = {
     checkedAt: new Date().toISOString(),
     status: dbOk && upstreamOk ? "healthy" : "degraded",
     services: {
@@ -725,9 +1146,16 @@ export async function GET(req: Request) {
       },
       lossAttribution: {
         byStrategy: lossAttributionByStrategy,
+        inverseByStrategy: inverseLossAttributionByStrategy,
         worstEvents,
+        bestEvents,
+        inverseWorstEvents,
+        inverseBestEvents,
+        bucketContributions,
       },
       equityCurve,
+      inverseSummary,
+      riskMetrics,
       bestStrategy: bestStrategy
         ? {
             strategyName: bestStrategy.strategyName,
@@ -737,8 +1165,18 @@ export async function GET(req: Request) {
           }
         : null,
       recentRuns,
+      inverseRecentRuns,
     },
     categoryHealth,
     trend24h: trend,
+  };
+
+  await persistAutoBacktestRun({
+    checkedAtIso: responsePayload.checkedAt,
+    dataStartDate: resolvedRunsSorted[0]?.createdAt ? new Date(resolvedRunsSorted[0].createdAt) : null,
+    dataEndDate: resolvedRunsSorted[resolvedRunsSorted.length - 1]?.createdAt ? new Date(resolvedRunsSorted[resolvedRunsSorted.length - 1].createdAt) : null,
+    quality: responsePayload.backtestQuality,
   });
+
+  return NextResponse.json(responsePayload);
 }

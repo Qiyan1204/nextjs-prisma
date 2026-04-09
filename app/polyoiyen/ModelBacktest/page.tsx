@@ -27,6 +27,14 @@ type ModelBacktestPayload = {
         maxDrawdown: number | null;
         lossContributionPct: number;
       }>;
+      inverseByStrategy: Array<{
+        strategyName: string;
+        runs: number;
+        winRate: number | null;
+        avgReturn: number | null;
+        maxDrawdown: number | null;
+        lossContributionPct: number;
+      }>;
       worstEvents: Array<{
         eventId: string;
         marketQuestion: string;
@@ -34,6 +42,41 @@ type ModelBacktestPayload = {
         totalReturn: number;
         createdAt: string;
       }>;
+      bestEvents: Array<{
+        eventId: string;
+        marketQuestion: string;
+        strategyName: string;
+        totalReturn: number;
+        createdAt: string;
+      }>;
+      inverseWorstEvents: Array<{
+        eventId: string;
+        marketQuestion: string;
+        strategyName: string;
+        totalReturn: number;
+        createdAt: string;
+      }>;
+      inverseBestEvents: Array<{
+        eventId: string;
+        marketQuestion: string;
+        strategyName: string;
+        totalReturn: number;
+        createdAt: string;
+      }>;
+      bucketContributions: {
+        original: {
+          byEventType: Array<{ bucket: string; events: number; avgReturn: number | null; contributionPct: number }>;
+          byCategory: Array<{ bucket: string; events: number; avgReturn: number | null; contributionPct: number }>;
+          byLiquidityBucket: Array<{ bucket: string; events: number; avgReturn: number | null; contributionPct: number }>;
+          topFactors: Array<{ factorType: string; factorLabel: string; events: number; avgReturn: number | null; contributionPct: number }>;
+        };
+        inverse: {
+          byEventType: Array<{ bucket: string; events: number; avgReturn: number | null; contributionPct: number }>;
+          byCategory: Array<{ bucket: string; events: number; avgReturn: number | null; contributionPct: number }>;
+          byLiquidityBucket: Array<{ bucket: string; events: number; avgReturn: number | null; contributionPct: number }>;
+          topFactors: Array<{ factorType: string; factorLabel: string; events: number; avgReturn: number | null; contributionPct: number }>;
+        };
+      };
     };
     equityCurve: {
       aggregate: Array<{
@@ -58,6 +101,55 @@ type ModelBacktestPayload = {
           returnPct: number;
         }>;
       }>;
+      inverseAggregate: Array<{
+        index: number;
+        eventId: string;
+        createdAt: string;
+        label: string;
+        equity: number;
+        drawdown: number;
+        returnPct: number;
+      }>;
+      inverseByStrategy: Array<{
+        strategyName: string;
+        maxDrawdown: number;
+        points: Array<{
+          index: number;
+          eventId: string;
+          createdAt: string;
+          label: string;
+          equity: number;
+          drawdown: number;
+          returnPct: number;
+        }>;
+      }>;
+    };
+    inverseSummary: {
+      aggregateWinRate: number | null;
+      avgReturn: number | null;
+      avgMaxDrawdown: number | null;
+      edge: {
+        hasEdge: boolean;
+        strength: "strong" | "moderate" | "weak" | "none";
+      };
+    };
+    riskMetrics: {
+      original: {
+        calmarRatio: number | null;
+        sortinoRatio: number | null;
+        profitFactor: number | null;
+        maxLosingStreak: number;
+        totalReturn: number | null;
+        annualizedReturn: number | null;
+      };
+      inverse: {
+        calmarRatio: number | null;
+        sortinoRatio: number | null;
+        profitFactor: number | null;
+        maxLosingStreak: number;
+        totalReturn: number | null;
+        annualizedReturn: number | null;
+      };
     };
     bestStrategy: {
       strategyName: string;
@@ -66,6 +158,14 @@ type ModelBacktestPayload = {
       avgReturn: number | null;
     } | null;
     recentRuns: Array<{
+      symbol: string;
+      strategyName: string;
+      totalReturn: number;
+      totalTrades: number;
+      winRate: number | null;
+      createdAt: string;
+    }>;
+    inverseRecentRuns: Array<{
       symbol: string;
       strategyName: string;
       totalReturn: number;
@@ -119,6 +219,7 @@ export default function ModelBacktestPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedCurve, setSelectedCurve] = useState<string>("__aggregate__");
+  const [viewMode, setViewMode] = useState<"original" | "inverse">("original");
 
   async function load() {
     setLoading(true);
@@ -142,21 +243,57 @@ export default function ModelBacktestPage() {
   useEffect(() => {
     if (!data) return;
     if (selectedCurve === "__aggregate__") return;
-    const hasCurve = data.backtestQuality.equityCurve.byStrategy.some((curve) => curve.strategyName === selectedCurve);
+    const sourceByStrategy = viewMode === "original"
+      ? data.backtestQuality.equityCurve.byStrategy
+      : data.backtestQuality.equityCurve.inverseByStrategy;
+    const hasCurve = sourceByStrategy.some((curve) => curve.strategyName === selectedCurve);
     if (!hasCurve) setSelectedCurve("__aggregate__");
-  }, [data, selectedCurve]);
+  }, [data, selectedCurve, viewMode]);
+
+  useEffect(() => {
+    setSelectedCurve("__aggregate__");
+  }, [viewMode]);
 
   const selectedCurveData = data
     ? selectedCurve === "__aggregate__"
-      ? data.backtestQuality.equityCurve.aggregate
-      : data.backtestQuality.equityCurve.byStrategy.find((curve) => curve.strategyName === selectedCurve)?.points ?? data.backtestQuality.equityCurve.aggregate
+      ? (viewMode === "original" ? data.backtestQuality.equityCurve.aggregate : data.backtestQuality.equityCurve.inverseAggregate)
+      : (viewMode === "original"
+          ? data.backtestQuality.equityCurve.byStrategy.find((curve) => curve.strategyName === selectedCurve)?.points
+          : data.backtestQuality.equityCurve.inverseByStrategy.find((curve) => curve.strategyName === selectedCurve)?.points)
+        ?? (viewMode === "original" ? data.backtestQuality.equityCurve.aggregate : data.backtestQuality.equityCurve.inverseAggregate)
     : [];
 
   const selectedCurveMeta = data
     ? selectedCurve === "__aggregate__"
-      ? { strategyName: "Aggregate", maxDrawdown: data.backtestQuality.avgMaxDrawdown }
-      : data.backtestQuality.equityCurve.byStrategy.find((curve) => curve.strategyName === selectedCurve) ?? { strategyName: selectedCurve, maxDrawdown: null, points: [] }
+      ? {
+          strategyName: viewMode === "original" ? "Aggregate (Original)" : "Aggregate (Inverse)",
+          maxDrawdown: viewMode === "original" ? data.backtestQuality.avgMaxDrawdown : data.backtestQuality.inverseSummary.avgMaxDrawdown,
+        }
+      : (viewMode === "original"
+          ? data.backtestQuality.equityCurve.byStrategy.find((curve) => curve.strategyName === selectedCurve)
+          : data.backtestQuality.equityCurve.inverseByStrategy.find((curve) => curve.strategyName === selectedCurve))
+        ?? { strategyName: selectedCurve, maxDrawdown: null, points: [] }
     : { strategyName: "Aggregate", maxDrawdown: null };
+
+  const isInverse = viewMode === "inverse";
+  const bestInverseStrategy = data
+    ? [...data.backtestQuality.lossAttribution.inverseByStrategy].sort((a, b) => (b.avgReturn ?? -9999) - (a.avgReturn ?? -9999))[0] ?? null
+    : null;
+  const currentWorstEvents = data
+    ? (isInverse ? data.backtestQuality.lossAttribution.inverseWorstEvents : data.backtestQuality.lossAttribution.worstEvents)
+    : [];
+  const currentBestEvents = data
+    ? (isInverse ? data.backtestQuality.lossAttribution.inverseBestEvents : data.backtestQuality.lossAttribution.bestEvents)
+    : [];
+  const currentRecentRuns = data
+    ? (isInverse ? data.backtestQuality.inverseRecentRuns : data.backtestQuality.recentRuns)
+    : [];
+  const currentBucketContribution = data
+    ? (isInverse ? data.backtestQuality.lossAttribution.bucketContributions.inverse : data.backtestQuality.lossAttribution.bucketContributions.original)
+    : { byEventType: [], byCategory: [], byLiquidityBucket: [], topFactors: [] };
+  const currentRiskMetrics = data
+    ? (isInverse ? data.backtestQuality.riskMetrics.inverse : data.backtestQuality.riskMetrics.original)
+    : { calmarRatio: null, sortinoRatio: null, profitFactor: null, maxLosingStreak: 0, totalReturn: null, annualizedReturn: null };
 
   const maxDrawdownPoint = selectedCurveData.reduce<
     { index: number; label: string; drawdown: number; equity: number } | null
@@ -177,24 +314,56 @@ export default function ModelBacktestPage() {
               Model Backtest
             </h1>
             <p style={{ marginTop: 10, color: "rgba(255,255,255,0.72)", fontSize: 14, lineHeight: 1.65 }}>
-              Strategy quality, win rate, return, and loss attribution for PolyOiyen models.
+              Strategy quality, win rate, return, loss attribution, and automatic inverse strategy comparison.
             </p>
           </div>
-          <button
-            onClick={load}
-            style={{
-              padding: "6px 11px",
-              borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.2)",
-              background: "rgba(255,255,255,0.05)",
-              color: "#fff",
-              fontWeight: 600,
-              cursor: "pointer",
-              fontSize: 12,
-            }}
-          >
-            Refresh
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ display: "inline-flex", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 8, overflow: "hidden" }}>
+              <button
+                onClick={() => setViewMode("original")}
+                style={{
+                  padding: "6px 12px",
+                  border: "none",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  color: "#fff",
+                  background: viewMode === "original" ? "rgba(249,115,22,0.35)" : "rgba(255,255,255,0.04)",
+                }}
+              >
+                Original
+              </button>
+              <button
+                onClick={() => setViewMode("inverse")}
+                style={{
+                  padding: "6px 12px",
+                  border: "none",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  color: "#fff",
+                  background: viewMode === "inverse" ? "rgba(248,113,113,0.35)" : "rgba(255,255,255,0.04)",
+                }}
+              >
+                Inverse
+              </button>
+            </div>
+            <button
+              onClick={load}
+              style={{
+                padding: "6px 11px",
+                borderRadius: 8,
+                border: "1px solid rgba(255,255,255,0.2)",
+                background: "rgba(255,255,255,0.05)",
+                color: "#fff",
+                fontWeight: 600,
+                cursor: "pointer",
+                fontSize: 12,
+              }}
+            >
+              Refresh
+            </button>
+          </div>
         </section>
 
         {loading ? (
@@ -225,6 +394,7 @@ export default function ModelBacktestPage() {
               );
             })()}
 
+            {!isInverse ? (
             <section style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, background: "rgba(255,255,255,0.04)", padding: 16, marginBottom: 12 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                 <div style={{ fontSize: 13, fontWeight: 800 }}>Backtest Overview</div>
@@ -242,32 +412,36 @@ export default function ModelBacktestPage() {
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 10, marginTop: 10 }}>
                 <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 10, padding: 10, background: "rgba(0,0,0,0.16)" }}>
                   <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)", textTransform: "uppercase" }}>Aggregate Win Rate</div>
-                  <div style={{ marginTop: 6, fontSize: 28, fontWeight: 800, color: (data.backtestQuality.aggregateWinRate ?? 0) >= 55 ? "#86efac" : "#fdba74" }}>
-                    {data.backtestQuality.aggregateWinRate == null ? "N/A" : `${data.backtestQuality.aggregateWinRate.toFixed(2)}%`}
+                  <div style={{ marginTop: 6, fontSize: 28, fontWeight: 800, color: ((isInverse ? data.backtestQuality.inverseSummary.aggregateWinRate : data.backtestQuality.aggregateWinRate) ?? 0) >= 55 ? "#86efac" : "#fdba74" }}>
+                    {isInverse
+                      ? (data.backtestQuality.inverseSummary.aggregateWinRate == null ? "N/A" : `${data.backtestQuality.inverseSummary.aggregateWinRate.toFixed(2)}%`)
+                      : (data.backtestQuality.aggregateWinRate == null ? "N/A" : `${data.backtestQuality.aggregateWinRate.toFixed(2)}%`)}
                   </div>
                 </div>
 
                 <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 10, padding: 10, background: "rgba(0,0,0,0.16)" }}>
                   <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)", textTransform: "uppercase" }}>Avg Return</div>
-                  <div style={{ marginTop: 6, fontSize: 22, fontWeight: 800, color: "#fde68a" }}>{fmt(data.backtestQuality.avgReturn, "%")}</div>
+                  <div style={{ marginTop: 6, fontSize: 22, fontWeight: 800, color: "#fde68a" }}>{fmt(isInverse ? data.backtestQuality.inverseSummary.avgReturn : data.backtestQuality.avgReturn, "%")}</div>
                 </div>
 
                 <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 10, padding: 10, background: "rgba(0,0,0,0.16)" }}>
                   <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)", textTransform: "uppercase" }}>Avg Max Drawdown</div>
-                  <div style={{ marginTop: 6, fontSize: 22, fontWeight: 800, color: "#fca5a5" }}>{fmt(data.backtestQuality.avgMaxDrawdown, "%")}</div>
+                  <div style={{ marginTop: 6, fontSize: 22, fontWeight: 800, color: "#fca5a5" }}>{fmt(isInverse ? data.backtestQuality.inverseSummary.avgMaxDrawdown : data.backtestQuality.avgMaxDrawdown, "%")}</div>
                 </div>
 
                 <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 10, padding: 10, background: "rgba(0,0,0,0.16)" }}>
-                  <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)", textTransform: "uppercase" }}>Best Strategy</div>
+                  <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)", textTransform: "uppercase" }}>{isInverse ? "Best Inverse Strategy" : "Best Strategy"}</div>
                   <div style={{ marginTop: 6, fontSize: 13, fontWeight: 700, color: "#fff" }}>
-                    {data.backtestQuality.bestStrategy?.strategyName ?? "N/A"}
+                    {isInverse ? (bestInverseStrategy?.strategyName ?? "N/A") : (data.backtestQuality.bestStrategy?.strategyName ?? "N/A")}
                   </div>
                   <div style={{ marginTop: 4, fontSize: 11, color: "rgba(255,255,255,0.68)" }}>
-                    win rate {fmt(data.backtestQuality.bestStrategy?.winRate, "%")} · runs {data.backtestQuality.bestStrategy?.runs ?? 0}
+                    win rate {fmt(isInverse ? bestInverseStrategy?.winRate : data.backtestQuality.bestStrategy?.winRate, "%")} · runs {isInverse ? (bestInverseStrategy?.runs ?? 0) : (data.backtestQuality.bestStrategy?.runs ?? 0)}
                   </div>
                 </div>
+
               </div>
             </section>
+            ) : null}
 
             <section style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, background: "rgba(255,255,255,0.04)", padding: 16, marginBottom: 12 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
@@ -277,28 +451,30 @@ export default function ModelBacktestPage() {
                     {selectedCurveMeta.strategyName} · Max DD {fmt(selectedCurveMeta.maxDrawdown, "%")}
                   </div>
                 </div>
-                <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "rgba(255,255,255,0.72)" }}>
-                  Strategy
-                  <select
-                    value={selectedCurve}
-                    onChange={(e) => setSelectedCurve(e.target.value)}
-                    style={{
-                      background: "rgba(0,0,0,0.25)",
-                      color: "#fff",
-                      border: "1px solid rgba(255,255,255,0.14)",
-                      borderRadius: 8,
-                      padding: "6px 10px",
-                      fontSize: 12,
-                    }}
-                  >
-                    <option value="__aggregate__">Aggregate</option>
-                    {data.backtestQuality.equityCurve.byStrategy.map((curve) => (
-                      <option key={curve.strategyName} value={curve.strategyName}>
-                        {curve.strategyName}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "rgba(255,255,255,0.72)" }}>
+                    Strategy
+                    <select
+                      value={selectedCurve}
+                      onChange={(e) => setSelectedCurve(e.target.value)}
+                      style={{
+                        background: "rgba(0,0,0,0.25)",
+                        color: "#fff",
+                        border: "1px solid rgba(255,255,255,0.14)",
+                        borderRadius: 8,
+                        padding: "6px 10px",
+                        fontSize: 12,
+                      }}
+                    >
+                      <option value="__aggregate__">Aggregate</option>
+                      {(viewMode === "original" ? data.backtestQuality.equityCurve.byStrategy : data.backtestQuality.equityCurve.inverseByStrategy).map((curve) => (
+                        <option key={curve.strategyName} value={curve.strategyName}>
+                          {curve.strategyName}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
               </div>
 
               <div style={{ width: "100%", height: 320 }}>
@@ -352,7 +528,8 @@ export default function ModelBacktestPage() {
             <section style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, background: "rgba(255,255,255,0.04)", padding: 16, marginBottom: 12 }}>
               <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 10 }}>Loss Attribution</div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))", gap: 12 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", gap: 12 }}>
+                {!isInverse ? (
                 <div style={{ border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, background: "rgba(0,0,0,0.12)", padding: 10 }}>
                   <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, color: "rgba(255,255,255,0.9)" }}>Loss Contribution by Strategy</div>
                   <div style={{ overflowX: "auto" }}>
@@ -387,7 +564,9 @@ export default function ModelBacktestPage() {
                     </table>
                   </div>
                 </div>
+                ) : null}
 
+                {!isInverse ? (
                 <div style={{ border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, background: "rgba(0,0,0,0.12)", padding: 10 }}>
                   <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, color: "rgba(255,255,255,0.9)" }}>Worst Events</div>
                   <div style={{ overflowX: "auto" }}>
@@ -400,18 +579,165 @@ export default function ModelBacktestPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {data.backtestQuality.lossAttribution.worstEvents.map((row) => (
+                        {currentWorstEvents.map((row) => (
                           <tr key={`${row.eventId}-${row.createdAt}`} style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
                             <td style={{ padding: "8px 10px", fontWeight: 700 }}>{row.eventId}</td>
                             <td style={{ padding: "8px 10px" }}>{row.strategyName}</td>
                             <td style={{ padding: "8px 10px", color: row.totalReturn >= 0 ? "#86efac" : "#fca5a5" }}>{fmt(row.totalReturn, "%")}</td>
                           </tr>
                         ))}
-                        {data.backtestQuality.lossAttribution.worstEvents.length === 0 ? (
+                        {currentWorstEvents.length === 0 ? (
                           <tr>
                             <td colSpan={3} style={{ padding: "10px", color: "rgba(255,255,255,0.6)" }}>No resolved events yet.</td>
                           </tr>
                         ) : null}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                ) : null}
+
+                {isInverse ? (
+                <div style={{ border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, background: "rgba(0,0,0,0.12)", padding: 10 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, color: "rgba(255,255,255,0.9)" }}>Inverse Loss Contribution</div>
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520, fontSize: 12 }}>
+                      <thead>
+                        <tr style={{ textAlign: "left", color: "rgba(255,255,255,0.65)", borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
+                          <th style={{ padding: "8px 10px" }}>Strategy</th>
+                          <th style={{ padding: "8px 10px" }}>Loss %</th>
+                          <th style={{ padding: "8px 10px" }}>Avg Return</th>
+                          <th style={{ padding: "8px 10px" }}>Max DD</th>
+                          <th style={{ padding: "8px 10px" }}>Win Rate</th>
+                          <th style={{ padding: "8px 10px" }}>Runs</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {data.backtestQuality.lossAttribution.inverseByStrategy.map((row) => (
+                          <tr key={row.strategyName} style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+                            <td style={{ padding: "8px 10px" }}>{row.strategyName}</td>
+                            <td style={{ padding: "8px 10px", color: row.lossContributionPct >= 40 ? "#fca5a5" : "#fdba74" }}>{fmt(row.lossContributionPct, "%")}</td>
+                            <td style={{ padding: "8px 10px", color: (row.avgReturn ?? 0) >= 0 ? "#86efac" : "#fca5a5" }}>{fmt(row.avgReturn, "%")}</td>
+                            <td style={{ padding: "8px 10px", color: (row.maxDrawdown ?? 0) >= 20 ? "#fca5a5" : "#fdba74" }}>{fmt(row.maxDrawdown, "%")}</td>
+                            <td style={{ padding: "8px 10px" }}>{fmt(row.winRate, "%")}</td>
+                            <td style={{ padding: "8px 10px" }}>{row.runs}</td>
+                          </tr>
+                        ))}
+                        {data.backtestQuality.lossAttribution.inverseByStrategy.length === 0 ? (
+                          <tr>
+                            <td colSpan={6} style={{ padding: "10px", color: "rgba(255,255,255,0.6)" }}>No inverse strategy attribution yet.</td>
+                          </tr>
+                        ) : null}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                ) : null}
+              </div>
+            </section>
+
+            <section style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, background: "rgba(255,255,255,0.04)", padding: 16, marginBottom: 12 }}>
+              <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 10 }}>Risk Metrics ({isInverse ? "Inverse" : "Original"})</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 10 }}>
+                <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 10, padding: 10, background: "rgba(0,0,0,0.16)" }}>
+                  <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)" }}>Calmar Ratio</div>
+                  <div style={{ marginTop: 6, fontSize: 20, fontWeight: 800 }}>{fmt(currentRiskMetrics.calmarRatio)}</div>
+                </div>
+                <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 10, padding: 10, background: "rgba(0,0,0,0.16)" }}>
+                  <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)" }}>Sortino Ratio</div>
+                  <div style={{ marginTop: 6, fontSize: 20, fontWeight: 800 }}>{fmt(currentRiskMetrics.sortinoRatio)}</div>
+                </div>
+                <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 10, padding: 10, background: "rgba(0,0,0,0.16)" }}>
+                  <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)" }}>Profit Factor</div>
+                  <div style={{ marginTop: 6, fontSize: 20, fontWeight: 800 }}>{fmt(currentRiskMetrics.profitFactor)}</div>
+                </div>
+                <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 10, padding: 10, background: "rgba(0,0,0,0.16)" }}>
+                  <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)" }}>Max Losing Streak</div>
+                  <div style={{ marginTop: 6, fontSize: 20, fontWeight: 800 }}>{currentRiskMetrics.maxLosingStreak}</div>
+                </div>
+              </div>
+            </section>
+
+            <section style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, background: "rgba(255,255,255,0.04)", padding: 16, marginBottom: 12 }}>
+              <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 10 }}>Event Attribution Insights ({isInverse ? "Inverse" : "Original"})</div>
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
+                <div style={{ width: "100%", maxWidth: 980, display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", gap: 12 }}>
+                <div style={{ border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, background: "rgba(0,0,0,0.12)", padding: 10 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Best Events</div>
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 460, fontSize: 12 }}>
+                      <thead>
+                        <tr style={{ textAlign: "left", color: "rgba(255,255,255,0.65)", borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
+                          <th style={{ padding: "8px 10px" }}>Event</th>
+                          <th style={{ padding: "8px 10px" }}>Strategy</th>
+                          <th style={{ padding: "8px 10px" }}>Return</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {currentBestEvents.map((row) => (
+                          <tr key={`${row.eventId}-${row.createdAt}`} style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+                            <td style={{ padding: "8px 10px", fontWeight: 700 }}>{row.eventId}</td>
+                            <td style={{ padding: "8px 10px" }}>{row.strategyName}</td>
+                            <td style={{ padding: "8px 10px", color: "#86efac" }}>{fmt(row.totalReturn, "%")}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div style={{ border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, background: "rgba(0,0,0,0.12)", padding: 10 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Bucket Contributions</div>
+                  <div>
+                    <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed", fontSize: 12 }}>
+                      <thead>
+                        <tr style={{ textAlign: "left", color: "rgba(255,255,255,0.65)", borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
+                          <th style={{ padding: "8px 10px", width: "18%" }}>Type</th>
+                          <th style={{ padding: "8px 10px", width: "30%" }}>Bucket</th>
+                          <th style={{ padding: "8px 10px", width: "12%" }}>Events</th>
+                          <th style={{ padding: "8px 10px", width: "15%" }}>Avg Ret</th>
+                          <th style={{ padding: "8px 10px", width: "25%" }}>{isInverse ? "Signed Contribution" : "Contribution"}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[...currentBucketContribution.byEventType.slice(0, 3).map((x) => ({ type: "EventType", ...x })), ...currentBucketContribution.byCategory.slice(0, 3).map((x) => ({ type: "Category", ...x })), ...currentBucketContribution.byLiquidityBucket.slice(0, 3).map((x) => ({ type: "Liquidity", ...x }))].map((row) => (
+                          <tr key={`${row.type}-${row.bucket}`} style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+                            <td style={{ padding: "8px 10px", wordBreak: "break-word" }}>{row.type}</td>
+                            <td style={{ padding: "8px 10px", fontWeight: 700, wordBreak: "break-word" }}>{row.bucket}</td>
+                            <td style={{ padding: "8px 10px" }}>{row.events}</td>
+                            <td style={{ padding: "8px 10px", color: (row.avgReturn ?? 0) >= 0 ? "#86efac" : "#fca5a5" }}>{fmt(row.avgReturn, "%")}</td>
+                            <td style={{ padding: "8px 10px", color: (row.contributionPct ?? 0) >= 0 ? "#86efac" : "#fca5a5", wordBreak: "break-word" }}>{fmt(row.contributionPct, "%")}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                </div>
+
+                <div style={{ width: "100%", maxWidth: 980, border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, background: "rgba(0,0,0,0.12)", padding: 10 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Top 10 Factors</div>
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520, fontSize: 12 }}>
+                      <thead>
+                        <tr style={{ textAlign: "left", color: "rgba(255,255,255,0.65)", borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
+                          <th style={{ padding: "8px 10px" }}>Factor Type</th>
+                          <th style={{ padding: "8px 10px" }}>Factor</th>
+                          <th style={{ padding: "8px 10px" }}>Events</th>
+                          <th style={{ padding: "8px 10px" }}>Avg Ret</th>
+                          <th style={{ padding: "8px 10px" }}>{isInverse ? "Signed Contribution" : "Contribution"}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {currentBucketContribution.topFactors.map((f) => (
+                          <tr key={`${f.factorType}-${f.factorLabel}`} style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+                            <td style={{ padding: "8px 10px" }}>{f.factorType}</td>
+                            <td style={{ padding: "8px 10px", fontWeight: 700 }}>{f.factorLabel}</td>
+                            <td style={{ padding: "8px 10px" }}>{f.events}</td>
+                            <td style={{ padding: "8px 10px", color: (f.avgReturn ?? 0) >= 0 ? "#86efac" : "#fca5a5" }}>{fmt(f.avgReturn, "%")}</td>
+                            <td style={{ padding: "8px 10px", color: (f.contributionPct ?? 0) >= 0 ? "#86efac" : "#fca5a5" }}>{fmt(f.contributionPct, "%")}</td>
+                          </tr>
+                        ))}
                       </tbody>
                     </table>
                   </div>
@@ -434,7 +760,7 @@ export default function ModelBacktestPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {data.backtestQuality.recentRuns.map((row) => (
+                    {currentRecentRuns.map((row) => (
                       <tr key={`${row.strategyName}-${row.symbol}-${row.createdAt}`} style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
                         <td style={{ padding: "8px 10px", color: "rgba(255,255,255,0.66)" }}>{new Date(row.createdAt).toLocaleString()}</td>
                         <td style={{ padding: "8px 10px", fontWeight: 700 }}>{row.symbol}</td>
@@ -444,7 +770,7 @@ export default function ModelBacktestPage() {
                         <td style={{ padding: "8px 10px" }}>{row.totalTrades}</td>
                       </tr>
                     ))}
-                    {data.backtestQuality.recentRuns.length === 0 ? (
+                    {currentRecentRuns.length === 0 ? (
                       <tr>
                         <td colSpan={6} style={{ padding: "10px", color: "rgba(255,255,255,0.6)" }}>No backtest runs yet. Run strategies to populate this panel.</td>
                       </tr>
