@@ -1,12 +1,13 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 
 /**
  * GET /api/polyoiyen/backtest-versions/[id]
  * Get detailed backtest information including all runs and strategies
  */
-export async function GET(request: Request, { params }: { params: { id: string } }) {
+export async function GET(_request: NextRequest, context: { params: Promise<{ id: string }> }) {
   try {
+    const params = await context.params;
     const id = parseInt(params.id);
 
     const backtest = await prisma.modelBacktest.findUnique({
@@ -67,8 +68,9 @@ export async function GET(request: Request, { params }: { params: { id: string }
  * PUT /api/polyoiyen/backtest-versions/[id]
  * Update backtest metadata (name, notes, status, etc.)
  */
-export async function PUT(request: Request, { params }: { params: { id: string } }) {
+export async function PUT(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   try {
+    const params = await context.params;
     const id = parseInt(params.id);
     const body = await request.json();
     const { name, notes, status, description } = body;
@@ -94,8 +96,9 @@ export async function PUT(request: Request, { params }: { params: { id: string }
  * DELETE /api/polyoiyen/backtest-versions/[id]
  * Archive or delete a backtest version
  */
-export async function DELETE(request: Request, { params }: { params: { id: string } }) {
+export async function DELETE(_request: NextRequest, context: { params: Promise<{ id: string }> }) {
   try {
+    const params = await context.params;
     const id = parseInt(params.id);
 
     // Just mark as archived instead of deleting
