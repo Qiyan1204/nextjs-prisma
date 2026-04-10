@@ -479,6 +479,105 @@ async function probe(baseUrl: string, endpointKey: string, path: string) {
   return { endpoint: endpointKey, ok, statusCode, latencyMs };
 }
 
+function isPrismaConnectionBusy(error: unknown): boolean {
+  const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : "";
+  const msg = error instanceof Error ? error.message : String(error || "");
+  return code === "P2037" || /too many database connections|remaining connection slots/i.test(msg);
+}
+
+function buildDegradedDataHealthResponse(selectedEventIds: Set<string>, reason: string) {
+  const categoryHealth: Record<CategoryKey, { eventCount: number; tokenCoveragePct: number; avgLiquidity: number }> = {
+    elonTweets: { eventCount: 0, tokenCoveragePct: 0, avgLiquidity: 0 },
+    movieBoxOffice: { eventCount: 0, tokenCoveragePct: 0, avgLiquidity: 0 },
+    fedRates: { eventCount: 0, tokenCoveragePct: 0, avgLiquidity: 0 },
+    nbaGames: { eventCount: 0, tokenCoveragePct: 0, avgLiquidity: 0 },
+  };
+
+  return {
+    checkedAt: new Date().toISOString(),
+    status: "degraded",
+    services: {
+      database: { ok: false, latencyMs: null },
+      polymarketUpstream: { ok: true, latencyMs: null },
+    },
+    telemetry24h: {
+      counts: { poly_probe: 0, invest_pull: 0, invest_action: 0, health_ok: 0, health_fail: 1 },
+      healthChecks: 1,
+      uptimePercent: 0,
+      sampleSize: 0,
+    },
+    probes: { latest: [], endpointBreakdown: [] },
+    freshness: {
+      lastPullMetricAt: null,
+      pullMetricAgeMinutes: null,
+      lastDepthSnapshotAt: null,
+      depthSnapshotAgeMinutes: null,
+      lastAlertNotificationAt: null,
+      alertNotificationAgeMinutes: null,
+    },
+    alerts24h: {
+      notificationsSent: 0,
+      cooldownSkipped: 0,
+      cooldownHitRatePercent: 0,
+    },
+    backtestQuality: {
+      totalRuns: 0,
+      aggregateWinRate: null,
+      avgReturn: null,
+      avgMaxDrawdown: null,
+      status: "degraded",
+      diagnostics: {
+        resolvedSamples: 0,
+        unresolvedEvents: selectedEventIds.size,
+        excludedNoBuyEvents: 0,
+        scannedEvents: 0,
+        selectionFilterApplied: selectedEventIds.size > 0,
+        requestedEventIds: selectedEventIds.size,
+        matchedEventIds: 0,
+      },
+      lossAttribution: {
+        byStrategy: [],
+        inverseByStrategy: [],
+        worstEvents: [],
+        bestEvents: [],
+        inverseWorstEvents: [],
+        inverseBestEvents: [],
+        bucketContributions: {
+          original: { byEventType: [], byCategory: [], byLiquidityBucket: [], topFactors: [] },
+          inverse: { byEventType: [], byCategory: [], byLiquidityBucket: [], topFactors: [] },
+        },
+      },
+      equityCurve: {
+        aggregate: [],
+        byStrategy: [],
+        inverseAggregate: [],
+        inverseByStrategy: [],
+      },
+      inverseSummary: {
+        aggregateWinRate: null,
+        avgReturn: null,
+        avgMaxDrawdown: null,
+        edge: { hasEdge: false, strength: "none" },
+      },
+      riskMetrics: {
+        original: { calmarRatio: null, sortinoRatio: null, profitFactor: null, maxLosingStreak: 0, totalReturn: null, annualizedReturn: null },
+        inverse: { calmarRatio: null, sortinoRatio: null, profitFactor: null, maxLosingStreak: 0, totalReturn: null, annualizedReturn: null },
+      },
+      bestStrategy: null,
+      recentRuns: [],
+      inverseRecentRuns: [],
+    },
+    selection: {
+      eventIdsFilterApplied: selectedEventIds.size > 0,
+      requestedEventIds: selectedEventIds.size,
+      matchedEventIds: 0,
+    },
+    categoryHealth,
+    trend24h: [],
+    degradedReason: reason,
+  };
+}
+
 export async function GET(req: Request) {
   const now = Date.now();
   const oneHourAgo = new Date(now - 60 * 60 * 1000);
@@ -491,6 +590,8 @@ export async function GET(req: Request) {
       .filter(Boolean)
   );
   const baseUrl = new URL(req.url).origin;
+
+  try {
 
   const dbStarted = Date.now();
   let dbLatencyMs = 0;
@@ -568,55 +669,56 @@ export async function GET(req: Request) {
 
   const latestProbe = await Promise.all(probePaths.map((x) => probe(baseUrl, x.key, x.path)));
 
-  const [pullRows, endpointRows24h, latestPullMetric, latestDepthSnapshot, latestAlertNotify, alertEvents24h] = await Promise.all([
-    prisma.pullMetric.findMany({
-      where: {
-        createdAt: {
-          gte: since,
-          lte: new Date(now),
-        },
+  // Keep DB access mostly sequential to reduce connection bursts in serverless environments.
+  const pullRows = await prisma.pullMetric.findMany({
+    where: {
+      createdAt: {
+        gte: since,
+        lte: new Date(now),
       },
-      select: {
-        kind: true,
-        createdAt: true,
+    },
+    select: {
+      kind: true,
+      createdAt: true,
+    },
+    orderBy: {
+      createdAt: "desc",
+    },
+    take: 5000,
+  });
+
+  const endpointRows24h = await prisma.endpointProbe.findMany({
+    where: {
+      createdAt: {
+        gte: since,
+        lte: new Date(now),
       },
-      orderBy: {
-        createdAt: "desc",
+    },
+    select: {
+      endpoint: true,
+      ok: true,
+      latencyMs: true,
+      createdAt: true,
+    },
+    orderBy: {
+      createdAt: "desc",
+    },
+    take: 20000,
+  });
+
+  const latestPullMetric = await prisma.pullMetric.findFirst({ orderBy: { createdAt: "desc" }, select: { createdAt: true } });
+  const latestDepthSnapshot = await prisma.marketDepthSnapshot.findFirst({ orderBy: { sampledAt: "desc" }, select: { sampledAt: true } });
+  const latestAlertNotify = await prisma.alertNotificationEvent.findFirst({ orderBy: { createdAt: "desc" }, select: { createdAt: true } });
+  const alertEvents24h = await prisma.alertNotificationEvent.groupBy({
+    by: ["eventType"],
+    where: {
+      createdAt: {
+        gte: since,
+        lte: new Date(now),
       },
-      take: 5000,
-    }),
-    prisma.endpointProbe.findMany({
-      where: {
-        createdAt: {
-          gte: since,
-          lte: new Date(now),
-        },
-      },
-      select: {
-        endpoint: true,
-        ok: true,
-        latencyMs: true,
-        createdAt: true,
-      },
-      orderBy: {
-        createdAt: "desc",
-      },
-      take: 20000,
-    }),
-    prisma.pullMetric.findFirst({ orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
-    prisma.marketDepthSnapshot.findFirst({ orderBy: { sampledAt: "desc" }, select: { sampledAt: true } }),
-    prisma.alertNotificationEvent.findFirst({ orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
-    prisma.alertNotificationEvent.groupBy({
-      by: ["eventType"],
-      where: {
-        createdAt: {
-          gte: since,
-          lte: new Date(now),
-        },
-      },
-      _count: { _all: true },
-    }),
-  ]);
+    },
+    _count: { _all: true },
+  });
 
   const polyBetRows = await prisma.polyBet.findMany({
     where: {
@@ -1286,4 +1388,12 @@ export async function GET(req: Request) {
   });
 
   return NextResponse.json(responsePayload);
+  } catch (error) {
+    if (isPrismaConnectionBusy(error)) {
+      console.warn("data-health degraded fallback: database connection busy", error);
+      return NextResponse.json(buildDegradedDataHealthResponse(selectedEventIds, "database_connection_busy"), { status: 200 });
+    }
+    console.error("data-health fatal error", error);
+    return NextResponse.json({ error: "Failed to load data health" }, { status: 500 });
+  }
 }
