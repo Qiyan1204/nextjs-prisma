@@ -543,7 +543,6 @@ export async function GET(req: Request) {
 
   const probePaths: Array<{ key: string; path: string }> = [
     { key: "health", path: "/api/health" },
-    { key: "platform_metrics", path: "/api/platform-metrics" },
     { key: "polymarket_events", path: "/api/polymarket?limit=2&offset=0&active=true&closed=false" },
     { key: "top_candidates", path: "/api/polyoiyen/top-candidates?limit=3" },
   ];

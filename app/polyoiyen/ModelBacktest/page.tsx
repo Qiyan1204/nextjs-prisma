@@ -247,9 +247,33 @@ function ModelBacktestContent() {
         params.set("eventIds", selectedEventIds.join(","));
       }
       const endpoint = params.toString() ? `/api/polyoiyen/data-health?${params.toString()}` : "/api/polyoiyen/data-health";
-      const res = await fetch(endpoint, { cache: "no-store" });
-      if (!res.ok) throw new Error("Failed to fetch model backtest data");
-      const payload = (await res.json()) as ModelBacktestPayload;
+      let lastErr: Error | null = null;
+      let payload: ModelBacktestPayload | null = null;
+
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        try {
+          const res = await fetch(endpoint, { cache: "no-store" });
+          if (!res.ok) {
+            let detail = "";
+            try {
+              const body = await res.json();
+              detail = body?.error ? String(body.error) : "";
+            } catch {
+              // ignore body parse errors
+            }
+            throw new Error(detail ? `Failed to fetch model backtest data: ${detail}` : "Failed to fetch model backtest data");
+          }
+          payload = (await res.json()) as ModelBacktestPayload;
+          break;
+        } catch (err) {
+          lastErr = err instanceof Error ? err : new Error("Failed to fetch model backtest data");
+          if (attempt < 3) {
+            await new Promise((resolve) => setTimeout(resolve, 350 * attempt));
+          }
+        }
+      }
+
+      if (!payload) throw lastErr || new Error("Failed to fetch model backtest data");
       setData(payload);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load model backtest data");
