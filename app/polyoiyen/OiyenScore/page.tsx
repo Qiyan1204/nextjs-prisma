@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import { useRouter } from "next/navigation";
 import PolyHeader from "../PolyHeader";
 import { eventMatchesCategory, toEventText, type CategoryKey, CATEGORY_CONFIG, TAG_SLUGS_BY_CATEGORY } from "../shared/categoryConfig";
+import { eventMatchesGroupPreset, getDefaultPresetForCategory, getPresetByKey, getPresetsForCategory } from "../shared/marketGroupProfiles";
 import {
   DEFAULT_ASSESSMENT_WEIGHTS,
   SETTINGS_PARAM_KEYS,
@@ -126,11 +127,11 @@ function truncateToOneDecimal(value: number): number {
   return Math.floor(value * 10) / 10;
 }
 
-function buildScoringConfigKey(config: ScoringConfig, category: CategoryKey): string {
+function buildScoringConfigKey(config: ScoringConfig, category: CategoryKey, presetKey: string): string {
   const weightKey = (Object.keys(WEIGHT_PARAM_KEYS) as Array<keyof AssessmentWeights>)
     .map((k) => `${k}:${config.assessmentWeights[k].toFixed(2)}`)
     .join("|");
-  return `cat=${category};w=${config.timeWindow};lp=${config.penaltySensitivity.toFixed(2)};${weightKey}`;
+  return `cat=${category};grp=${presetKey};w=${config.timeWindow};lp=${config.penaltySensitivity.toFixed(2)};${weightKey}`;
 }
 
 function sortRows(rows: OiyenScoreRow[]): OiyenScoreRow[] {
@@ -210,10 +211,11 @@ async function fetchAllEventsByStatus(active: boolean, closed: boolean): Promise
   return out;
 }
 
-async function fetchFilteredRecentEvents(category: CategoryKey): Promise<PolyEvent[]> {
+async function fetchFilteredRecentEvents(category: CategoryKey, presetKey?: string | null): Promise<PolyEvent[]> {
   const pageSize = OIYEN_FETCH_PAGE_SIZE;
   const maxPages = OIYEN_FETCH_MAX_PAGES_BY_CATEGORY[category] ?? OIYEN_FETCH_MAX_PAGES;
   const tagSlugs = TAG_SLUGS_BY_CATEGORY[category] || [];
+  const preset = getPresetByKey(category, presetKey);
   const since = Date.now() - 365 * 86_400_000;
   const seen = new Set<string>();
   const collected: PolyEvent[] = [];
@@ -256,6 +258,7 @@ async function fetchFilteredRecentEvents(category: CategoryKey): Promise<PolyEve
           const endDate = parseDate(event.endDate) || parseDate(event.startDate);
           if (!endDate || endDate.getTime() < since) continue;
           if (!eventFilter(event)) continue;
+          if (!eventMatchesGroupPreset(event, preset)) continue;
 
           collected.push(event);
           if (collected.length >= OIYEN_MAX_SCORED_EVENTS) break outer;
@@ -365,12 +368,13 @@ function getEventFilterForCategory(category: CategoryKey): (event: PolyEvent) =>
     if (!hasCompleteYesNoTokens(event)) return false;
 
     const text = toEventText(event);
-    const hasAnySignal = (signals: string[]) => signals.some((signal) => text.includes(signal));
+    const config = CATEGORY_CONFIG.find((c) => c.key === category);
+    const pageSignals = config?.pageSignals || [];
+    const hasCategoryPageSignal = pageSignals.some((signal) => text.includes(signal.toLowerCase()));
+    const hasCategoryMatch = eventMatchesCategory(event, category);
 
     switch (category) {
       case "movieBoxOffice":
-        const hasMoviePageSignal = hasAnySignal(["pop-culture/movie", "predictions/movie", "movies", "pop-culture"]);
-
         // Strict movie filtering
         const hasStrongBoxOfficeSignal = [
           "box office",
@@ -381,7 +385,7 @@ function getEventFilterForCategory(category: CategoryKey): (event: PolyEvent) =>
           "weekend gross",
         ].some((signal) => text.includes(signal));
 
-        if (!hasStrongBoxOfficeSignal && !hasMoviePageSignal) return false;
+        if (!hasStrongBoxOfficeSignal && !hasCategoryPageSignal) return false;
 
         const hasNonMovieSignal = [
           "trump",
@@ -397,27 +401,9 @@ function getEventFilterForCategory(category: CategoryKey): (event: PolyEvent) =>
           "congress",
         ].some((signal) => text.includes(signal));
 
-        return !hasNonMovieSignal;
+        return hasCategoryMatch && !hasNonMovieSignal;
 
       case "fedRates":
-        const hasEconomicPolicyPageSignal = hasAnySignal([
-          "predictions/economic-policy",
-          "economic-policy",
-          "economic policy",
-          "fed-rates",
-        ]);
-
-        // Filter out false positives (e.g., "fedex", "federal agency" not about rates)
-        const hasRateSignal = [
-          "rate hike",
-          "rate cut",
-          "interest rate",
-          "fomc",
-          "federal reserve",
-          "fed funds",
-          "discount rate",
-        ].some((signal) => text.includes(signal));
-
         const hasNonFedSignal = [
           "fedex",
           "federal agency",
@@ -425,39 +411,12 @@ function getEventFilterForCategory(category: CategoryKey): (event: PolyEvent) =>
           "federal court",
         ].some((signal) => text.includes(signal));
 
-        return (hasEconomicPolicyPageSignal || hasRateSignal) && !hasNonFedSignal;
+        return hasCategoryMatch && !hasNonFedSignal;
 
       case "elonTweets":
-        const hasElonPageSignal = hasAnySignal(["predictions/elon-tweets", "elon-tweets", "elon-musk"]);
-
-        // Filter to actual Elon/Twitter events
-        const hasElonSignal = [
-          "elon",
-          "musk",
-          "tweet",
-          "twitter",
-          "x.com",
-          "spacex",
-          "tesla",
-        ].some((signal) => text.includes(signal));
-
-        return hasElonPageSignal || hasElonSignal;
+        return hasCategoryMatch;
 
       case "nbaGames":
-        const hasNbaPageSignal = hasAnySignal(["predictions/nba", "nba"]);
-
-        // Filter to actual NBA events
-        const hasNbaSignal = [
-          "nba",
-          "basketball",
-          "playoffs",
-          "lakers",
-          "celtics",
-          "warriors",
-          "nba championship",
-          "nba finals",
-        ].some((signal) => text.includes(signal));
-
         const hasNonNbaSignal = [
           "nfl",
           "nhl",
@@ -466,7 +425,7 @@ function getEventFilterForCategory(category: CategoryKey): (event: PolyEvent) =>
           "football",
         ].some((signal) => text.includes(signal));
 
-        return (hasNbaPageSignal || hasNbaSignal) && !hasNonNbaSignal;
+        return hasCategoryMatch && !hasNonNbaSignal;
 
       default:
         return false;
@@ -481,6 +440,7 @@ export default function OiyenScorePage() {
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string>("");
   const [selectedCategory, setSelectedCategory] = useState<CategoryKey>("movieBoxOffice");
+  const [selectedPresetKey, setSelectedPresetKey] = useState<string>(getDefaultPresetForCategory("movieBoxOffice").key);
   const [scoringConfig, setScoringConfig] = useState<ScoringConfig>({
     timeWindow: "7D",
     assessmentWeights: { ...DEFAULT_ASSESSMENT_WEIGHTS },
@@ -496,6 +456,11 @@ export default function OiyenScorePage() {
   const [showBackToTop, setShowBackToTop] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; row: OiyenScoreRow } | null>(null);
   const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
+  const availablePresets = useMemo(() => getPresetsForCategory(selectedCategory), [selectedCategory]);
+  const activePreset = useMemo(
+    () => getPresetByKey(selectedCategory, selectedPresetKey),
+    [selectedCategory, selectedPresetKey]
+  );
 
   function navigateToEvent(eventId: string) {
     setContextMenu(null);
@@ -506,9 +471,16 @@ export default function OiyenScorePage() {
     // Parse category from URL
     const searchParams = new URLSearchParams(window.location.search);
     const categoryParam = searchParams.get("category");
-    if (categoryParam && CATEGORY_CONFIG.some(c => c.key === categoryParam)) {
-      setSelectedCategory(categoryParam as CategoryKey);
-    }
+    const initialCategory = categoryParam && CATEGORY_CONFIG.some(c => c.key === categoryParam)
+      ? (categoryParam as CategoryKey)
+      : "movieBoxOffice";
+    setSelectedCategory(initialCategory);
+
+    const groupParam = searchParams.get("group");
+    const initialPreset = groupParam
+      ? getPresetByKey(initialCategory, groupParam)
+      : getDefaultPresetForCategory(initialCategory);
+    setSelectedPresetKey(initialPreset.key);
 
     const parsedUiConfig = parseUiConfigFromUrl();
     setUiConfig(parsedUiConfig);
@@ -542,6 +514,11 @@ export default function OiyenScorePage() {
   }, [selectedCategory, uiConfig.initialVisibleRows]);
 
   useEffect(() => {
+    if (availablePresets.some((preset) => preset.key === selectedPresetKey)) return;
+    setSelectedPresetKey(getDefaultPresetForCategory(selectedCategory).key);
+  }, [availablePresets, selectedPresetKey]);
+
+  useEffect(() => {
     if (!loadMoreSentinelRef.current) return;
     if (loading) return;
     if (rows.length <= visibleLimit) return;
@@ -573,7 +550,7 @@ export default function OiyenScorePage() {
       try {
         const parsedConfig = parseScoringConfigFromUrl();
         setScoringConfig(parsedConfig);
-        const configKey = buildScoringConfigKey(parsedConfig, selectedCategory);
+        const configKey = buildScoringConfigKey(parsedConfig, selectedCategory, activePreset.key);
 
         try {
           const raw = localStorage.getItem(OIYEN_SCORE_CACHE_KEY);
@@ -602,7 +579,7 @@ export default function OiyenScorePage() {
           // ignore malformed cache
         }
 
-        const filtered = await fetchFilteredRecentEvents(selectedCategory);
+        const filtered = await fetchFilteredRecentEvents(selectedCategory, activePreset.key);
         if (filtered.length === 0) {
           throw new Error("Failed to load historical markets");
         }
@@ -713,7 +690,7 @@ export default function OiyenScorePage() {
     return () => {
       alive = false;
     };
-  }, [selectedCategory]);
+  }, [selectedCategory, activePreset.key]);
 
   const stats = useMemo(() => {
     if (rows.length === 0) {
@@ -736,6 +713,18 @@ export default function OiyenScorePage() {
     };
   }, [rows]);
 
+  const modelBacktestHref = useMemo(() => {
+    const selectedIds = rows.slice(0, 24).map((row) => row.eventId).filter(Boolean);
+    const params = new URLSearchParams();
+    if (selectedIds.length > 0) {
+      params.set("eventIds", selectedIds.join(","));
+    }
+    params.set("group", activePreset.key);
+    params.set("groupLabel", activePreset.label);
+    const query = params.toString();
+    return query ? `/polyoiyen/ModelBacktest?${query}` : "/polyoiyen/ModelBacktest";
+  }, [rows, activePreset.key, activePreset.label]);
+
   return (
     <>
       <PolyHeader active="OiyenScore" />
@@ -748,8 +737,11 @@ export default function OiyenScorePage() {
                 key={cat.key}
                 onClick={() => {
                   setSelectedCategory(cat.key);
+                  const nextPresetKey = getDefaultPresetForCategory(cat.key).key;
+                  setSelectedPresetKey(nextPresetKey);
                   const params = new URLSearchParams(window.location.search);
                   params.set("category", cat.key);
+                  if (nextPresetKey) params.set("group", nextPresetKey);
                   window.history.replaceState({}, "", `?${params.toString()}`);
                 }}
                 style={{
@@ -768,6 +760,40 @@ export default function OiyenScorePage() {
                 {cat.label}
               </button>
             ))}
+
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
+              <label style={{ fontSize: 12, color: "rgba(255,255,255,0.62)", fontWeight: 600 }}>Group preset</label>
+              <select
+                value={activePreset.key}
+                onChange={(event) => {
+                  const nextKey = event.target.value;
+                  setSelectedPresetKey(nextKey);
+                  const params = new URLSearchParams(window.location.search);
+                  params.set("category", selectedCategory);
+                  params.set("group", nextKey);
+                  window.history.replaceState({}, "", `?${params.toString()}`);
+                }}
+                style={{
+                  background: "rgba(16,10,5,0.92)",
+                  color: "#fff",
+                  border: "1px solid rgba(255,255,255,0.2)",
+                  borderRadius: 10,
+                  padding: "8px 10px",
+                  fontSize: 12,
+                  fontWeight: 600,
+                }}
+              >
+                {availablePresets.map((preset) => (
+                  <option key={preset.key} value={preset.key}>
+                    {preset.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </section>
+
+          <section style={{ marginBottom: 14, fontSize: 12, color: "rgba(255,255,255,0.62)", lineHeight: 1.6 }}>
+            <strong style={{ color: "#fde68a" }}>{activePreset.label}</strong>: {activePreset.description}
           </section>
 
           <section
@@ -789,7 +815,7 @@ export default function OiyenScorePage() {
                   Oiyen Score
                 </h1>
                 <p style={{ marginTop: 12, fontSize: 15, lineHeight: 1.7, color: "rgba(255,255,255,0.74)" }}>
-                  This page collects major {CATEGORY_CONFIG.find(c => c.key === selectedCategory)?.label.toLowerCase()} markets from the last 12 months and scores them with the same engine used in Cross-Category Event Analysis.
+                  This page collects major {CATEGORY_CONFIG.find(c => c.key === selectedCategory)?.label.toLowerCase()} markets from the last 12 months, then applies your selected grouping preset before scoring with the same engine used in Cross-Category Event Analysis.
                   Final Oiyen Score is computed as Base Score minus Liquidity Penalty.
                 </p>
               </div>
@@ -838,15 +864,18 @@ export default function OiyenScorePage() {
               }}
             >
               <div>
-                <div style={{ fontSize: 13, fontWeight: 800 }}>Box office market board</div>
+                <div style={{ fontSize: 13, fontWeight: 800 }}>{activePreset.label} market board</div>
                 <div style={{ fontSize: 11, color: "rgba(255,255,255,0.58)", marginTop: 4 }}>
-                  Ranked by the same assessment engine used in Cross-Category Event Analysis (current URL-synced params).
+                  Ranked by the same assessment engine used in Cross-Category Event Analysis (current URL-synced params and selected group preset).
                 </div>
                 <div style={{ fontSize: 11, color: "rgba(255,255,255,0.5)", marginTop: 4 }}>
                   Left click row to open event · Right click row for actions
                 </div>
               </div>
               <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <Link href={modelBacktestHref} style={linkButtonStyle}>
+                  Run backtest on this group
+                </Link>
                 <Link href="/polyoiyen/Cross-CategoryEventAnalysis" style={linkButtonStyle}>
                   Open strategy lab
                 </Link>

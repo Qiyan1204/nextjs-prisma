@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { recordPull } from "@/lib/pullMetrics";
+import { CATEGORY_CONFIG, eventMatchesCategory } from "@/app/polyoiyen/shared/categoryConfig";
 
 type PolyMarketLite = {
   outcomePrices?: string;
@@ -27,25 +28,6 @@ type OrderBookResponse = {
   bids?: OrderBookLevel[];
   asks?: OrderBookLevel[];
 };
-
-type CategoryConfig = {
-  key: string;
-  keywords: string[];
-};
-
-const CATEGORY_CONFIG: CategoryConfig[] = [
-  { key: "elonTweets", keywords: ["elon", "musk", "tweet", "twitter", "x.com"] },
-  { key: "movieBoxOffice", keywords: ["box office", "movie", "film", "opening weekend"] },
-  { key: "fedRates", keywords: ["federal reserve", "fed", "fomc", "rate hike", "rate cut", "interest rate"] },
-  { key: "nbaGames", keywords: ["nba", "basketball", "playoffs", "lakers", "celtics", "warriors"] },
-];
-
-function toEventText(event: PolyEventLite): string {
-  const title = event.title || "";
-  const desc = event.description || "";
-  const tags = (event.tags || []).map((t) => t.label || "").join(" ");
-  return `${title} ${desc} ${tags}`.toLowerCase();
-}
 
 function pickActiveMarket(markets: PolyMarketLite[] | undefined): PolyMarketLite | undefined {
   if (!Array.isArray(markets) || markets.length === 0) return undefined;
@@ -137,7 +119,7 @@ export async function GET(req: NextRequest) {
 
     for (const cat of CATEGORY_CONFIG) {
       const matches = events
-        .filter((e) => cat.keywords.some((kw) => toEventText(e).includes(kw)))
+        .filter((e) => eventMatchesCategory(e, cat.key))
         .sort((a, b) => Number(b.volume || 0) - Number(a.volume || 0))
         .slice(0, maxPerCategory);
 

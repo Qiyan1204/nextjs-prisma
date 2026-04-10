@@ -2,7 +2,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import PolyHeader from "./PolyHeader";
-import { QUICK_MARKET_FILTERS } from "./shared/categoryConfig";
+import { CATEGORY_CONFIG, QUICK_MARKET_FILTERS, type CategoryKey } from "./shared/categoryConfig";
+import { eventMatchesGroupPreset, getDefaultPresetForCategory } from "./shared/marketGroupProfiles";
 
 // ═══════════════════════════════════════════════════════
 //  TYPES
@@ -216,7 +217,6 @@ const TAG_OPTIONS = [
   "All", "Politics", "Sports", "Crypto", "Pop Culture",
   "Business", "Science", "Technology",
 ];
-const QUICK_FILTER_FETCH_LIMIT = 300;
 const LARGE_ORDER_THRESHOLD = 500; // default $500 for "large" orders
 const BOOKMARK_STORAGE_KEY = "polyoiyen-bookmarks-v1";
 
@@ -388,6 +388,12 @@ function getActiveMarket(markets: PolyMarket[] | undefined): PolyMarket | undefi
   return markets.find(m => !m.closed) || markets[0];
 }
 
+function hasTradablePrices(market: PolyMarket | undefined): boolean {
+  if (!market) return false;
+  const { yes, no } = parsePrices(market);
+  return yes > 0 && yes < 1 && no > 0 && no < 1;
+}
+
 function parseTokenIds(market: PolyMarket): { yes: string; no: string } {
   try {
     const ids = JSON.parse(market.clobTokenIds || "[]");
@@ -415,6 +421,15 @@ function formatMoney(v: number): string {
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
   if (v >= 1_000) return `$${(v / 1_000).toFixed(1)}K`;
   return `$${v.toFixed(2)}`;
+}
+
+export function getModelBacktestHref(event: PolyEvent): string {
+  const params = new URLSearchParams({
+    eventIds: String(event.id),
+    group: "single-event",
+    groupLabel: event.title,
+  });
+  return `/polyoiyen/ModelBacktest?${params.toString()}`;
 }
 
 function mean(values: number[]): number {
@@ -1949,11 +1964,13 @@ function EventCard({
   onSelect,
   isBookmarked,
   onToggleBookmark,
+  onAddToBacktest,
 }: {
   event: PolyEvent;
   onSelect: (e: PolyEvent) => void;
   isBookmarked: boolean;
   onToggleBookmark: (e: PolyEvent) => void;
+  onAddToBacktest: (e: PolyEvent) => void;
 }) {
   const market = getActiveMarket(event.markets);
   const prices = market ? parsePrices(market) : { yes: 0.5, no: 0.5 };
@@ -2039,6 +2056,28 @@ function EventCard({
           </span>
         )}
       </div>
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onAddToBacktest(event);
+        }}
+        style={{
+          marginTop: 4,
+          width: "100%",
+          padding: "8px 10px",
+          borderRadius: 8,
+          border: "1px solid rgba(251,146,60,0.42)",
+          background: "rgba(249,115,22,0.12)",
+          color: "var(--orange2)",
+          fontSize: 12,
+          fontWeight: 700,
+          fontFamily: "'DM Sans', sans-serif",
+          cursor: "pointer",
+          transition: "all 0.15s",
+        }}
+      >
+        Add to Backtest Basket
+      </button>
     </div>
   );
 }
@@ -2051,11 +2090,13 @@ export function DetailPage({
   onBack,
   isBookmarked,
   onToggleBookmark,
+  onAddToBacktest,
 }: {
   event: PolyEvent;
   onBack: () => void;
   isBookmarked: boolean;
   onToggleBookmark: (e: PolyEvent) => void;
+  onAddToBacktest: (e: PolyEvent) => void;
 }) {
   const [side, setSide] = useState("YES");
   const [amount, setAmount] = useState("10");
@@ -2220,6 +2261,24 @@ export function DetailPage({
               }}>
                 {event.title}
               </h1>
+              <div style={{ marginBottom: 12 }}>
+                <button
+                  onClick={() => onAddToBacktest(event)}
+                  style={{
+                    padding: "9px 14px",
+                    borderRadius: 8,
+                    border: "1px solid rgba(251,146,60,0.45)",
+                    background: "rgba(249,115,22,0.12)",
+                    color: "var(--orange2)",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    fontFamily: "'DM Sans', sans-serif",
+                    cursor: "pointer",
+                  }}
+                >
+                  Add to Backtest Basket
+                </button>
+              </div>
               <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
                 {[
                   { k: "Volume", v: formatVolume(event.volume) },
@@ -2857,12 +2916,14 @@ function NewsSection() {
 // ═══════════════════════════════════════════════════════
 function ListPage({
   onSelect,
+  onAddToBacktest,
   bookmarkedIds,
   bookmarkedEvents,
   setBookmarkedEvents,
   toggleBookmark,
 }: {
   onSelect: (e: PolyEvent) => void;
+  onAddToBacktest: (e: PolyEvent) => void;
   bookmarkedIds: string[];
   bookmarkedEvents: Record<string, PolyEvent>;
   setBookmarkedEvents: React.Dispatch<React.SetStateAction<Record<string, PolyEvent>>>;
@@ -2877,6 +2938,33 @@ function ListPage({
   const [search, setSearch] = useState("");
   const [bookmarkFilter, setBookmarkFilter] = useState(false);
   const [quickMarket, setQuickMarket] = useState("All");
+
+  const getCuratedPresetForQuickMarket = useCallback((quickMarketLabel: string) => {
+    const category = CATEGORY_CONFIG.find((c) => c.label === quickMarketLabel);
+    if (!category) return null;
+    return getDefaultPresetForCategory(category.key as CategoryKey);
+  }, []);
+
+  const isStrictNoFallbackQuickMarket = useCallback((quickMarketLabel: string) => {
+    const preset = getCuratedPresetForQuickMarket(quickMarketLabel);
+    return preset?.key === "elon-tweet-windows";
+  }, [getCuratedPresetForQuickMarket]);
+
+  const eventMatchesQuickFilter = useCallback((event: PolyEvent, quickFilterLabel: string) => {
+    if (quickFilterLabel === "All") return true;
+    const quickFilter = QUICK_MARKET_FILTERS.find((f) => f.label === quickFilterLabel);
+    if (!quickFilter) return true;
+
+    const text = `${event.title || ""} ${event.description || ""} ${event.slug || ""} ${(event.tags || [])
+      .map((t) => `${t.label || ""} ${t.slug || ""}`)
+      .join(" ")}`.toLowerCase();
+
+    return (
+      quickFilter.tagSlugs.some((slug) => text.includes(slug.toLowerCase())) ||
+      quickFilter.signals.some((signal) => text.includes(signal.toLowerCase())) ||
+      quickFilter.keywords.some((kw) => text.includes(kw.toLowerCase()))
+    );
+  }, []);
 
   // Sync newly-loaded events into bookmarkedEvents cache
   useEffect(() => {
@@ -2900,39 +2988,110 @@ function ListPage({
       try {
         const quickFilter = QUICK_MARKET_FILTERS.find((f) => f.label === quickMarket);
         const usingQuickFilter = quickMarket !== "All";
-        const requestLimit = usingQuickFilter ? QUICK_FILTER_FETCH_LIMIT : LIMIT;
         const requestOffset = usingQuickFilter ? 0 : currentOffset;
 
         let data: PolyEvent[] = [];
 
         if (usingQuickFilter && quickFilter && quickFilter.tagSlugs.length > 0) {
-          const perSlugLimit = Math.max(60, Math.floor(requestLimit / quickFilter.tagSlugs.length));
-          const fetched = await Promise.all(
-            quickFilter.tagSlugs.map(async (slug) => {
+          const curatedPreset = getCuratedPresetForQuickMarket(quickMarket);
+          const strictNoFallback = isStrictNoFallbackQuickMarket(quickMarket);
+
+          const fetchAllByTagSlug = async (slug: string): Promise<PolyEvent[]> => {
+            const pageSize = 200;
+            let pageOffset = 0;
+            const deduped = new Map<string, PolyEvent>();
+
+            while (true) {
               const quickParams = new URLSearchParams({
-                limit: String(perSlugLimit),
-                offset: "0",
+                limit: String(pageSize),
+                offset: String(pageOffset),
                 tagSlug: slug,
               });
+              if (strictNoFallback) {
+                quickParams.set("active", "false");
+                quickParams.set("closed", "true");
+              }
+
               const quickRes = await fetch(`/api/polymarket?${quickParams.toString()}`);
-              if (!quickRes.ok) return [] as PolyEvent[];
+              if (!quickRes.ok) break;
+
               const quickData = await quickRes.json();
-              return Array.isArray(quickData)
-                ? (quickData as PolyEvent[])
+              const eventsPage: PolyEvent[] = Array.isArray(quickData)
+                ? quickData
                 : Array.isArray(quickData?.events)
-                  ? (quickData.events as PolyEvent[])
+                  ? quickData.events
                   : [];
-            })
+
+              if (eventsPage.length === 0) break;
+              eventsPage.forEach((event) => {
+                if (event?.id && !deduped.has(event.id)) deduped.set(event.id, event);
+              });
+
+              if (eventsPage.length < pageSize) break;
+              pageOffset += pageSize;
+            }
+
+            return Array.from(deduped.values());
+          };
+
+          const fetched = await Promise.all(
+            quickFilter.tagSlugs.map((slug) => fetchAllByTagSlug(slug))
           );
 
           const deduped = new Map<string, PolyEvent>();
           fetched.flat().forEach((event) => {
             if (event?.id && !deduped.has(event.id)) deduped.set(event.id, event);
           });
-          data = Array.from(deduped.values());
+          const dedupedEvents = Array.from(deduped.values());
+          data = dedupedEvents;
+
+          if (curatedPreset) {
+            const curated = dedupedEvents.filter((event) => eventMatchesGroupPreset(event, curatedPreset));
+            data = strictNoFallback ? curated : curated.length > 0 ? curated : dedupedEvents;
+          }
+
+          // If tag_slug returns no events (taxonomy drift or temporary upstream gap),
+          // retry with generic events endpoint and apply quick filter locally.
+          if (data.length === 0 && !strictNoFallback) {
+            const pageSize = 200;
+            let pageOffset = 0;
+            const fallbackEvents: PolyEvent[] = [];
+
+            while (true) {
+              const fallbackParams = new URLSearchParams({
+                limit: String(pageSize),
+                offset: String(pageOffset),
+                active: "true",
+                closed: "false",
+              });
+              const fallbackRes = await fetch(`/api/polymarket?${fallbackParams.toString()}`);
+              if (!fallbackRes.ok) break;
+
+              const fallbackRaw = await fallbackRes.json();
+              const pageData: PolyEvent[] = Array.isArray(fallbackRaw)
+                ? fallbackRaw
+                : Array.isArray(fallbackRaw?.events)
+                  ? fallbackRaw.events
+                  : [];
+
+              if (pageData.length === 0) break;
+              fallbackEvents.push(...pageData);
+
+              if (pageData.length < pageSize) break;
+              pageOffset += pageSize;
+            }
+
+            const quickMatched = fallbackEvents.filter((event) => eventMatchesQuickFilter(event, quickMarket));
+            if (curatedPreset) {
+              const curated = quickMatched.filter((event) => eventMatchesGroupPreset(event, curatedPreset));
+              data = strictNoFallback ? curated : curated.length > 0 ? curated : quickMatched;
+            } else {
+              data = quickMatched;
+            }
+          }
         } else {
           const params = new URLSearchParams({
-            limit: String(requestLimit),
+            limit: String(LIMIT),
             offset: String(requestOffset),
           });
           if (tag !== "All") params.set("tag", tag);
@@ -2959,7 +3118,7 @@ function ListPage({
         setLoadingMore(false);
       }
     },
-    [tag, quickMarket]
+    [tag, quickMarket, eventMatchesQuickFilter, getCuratedPresetForQuickMarket, isStrictNoFallbackQuickMarket]
   );
 
   useEffect(() => {
@@ -2988,16 +3147,12 @@ function ListPage({
       !search ||
       text.includes(search.toLowerCase());
 
-    const quickFilter = QUICK_MARKET_FILTERS.find((f) => f.label === quickMarket);
-    const quickMatch =
-      quickMarket === "All" ||
-      (quickFilter
-        ? quickFilter.tagSlugs.some((slug) => text.includes(slug.toLowerCase())) ||
-          quickFilter.signals.some((signal) => text.includes(signal.toLowerCase())) ||
-          quickFilter.keywords.some((kw) => text.includes(kw.toLowerCase()))
-        : true);
+    const curatedPreset = getCuratedPresetForQuickMarket(quickMarket);
 
-    return searchMatch && quickMatch;
+    const curatedMatch = curatedPreset ? eventMatchesGroupPreset(e, curatedPreset) : true;
+    const tradableMatch = quickMarket === "Elon Tweets" ? hasTradablePrices(getActiveMarket(e.markets)) : true;
+
+    return searchMatch && curatedMatch && tradableMatch;
   });
 
   return (
@@ -3172,6 +3327,7 @@ function ListPage({
                   onSelect={onSelect}
                   isBookmarked={bookmarkedIds.includes(e.id)}
                   onToggleBookmark={toggleBookmark}
+                  onAddToBacktest={onAddToBacktest}
                 />
               ))}
             </div>
@@ -3246,6 +3402,7 @@ export default function App() {
       <style>{GLOBAL_CSS}</style>
       <ListPage
         onSelect={(event) => router.push(`/polyoiyen/${encodeURIComponent(event.id)}`)}
+        onAddToBacktest={(event) => router.push(getModelBacktestHref(event))}
         bookmarkedIds={bookmarkedIds}
         bookmarkedEvents={bookmarkedEvents}
         setBookmarkedEvents={setBookmarkedEvents}

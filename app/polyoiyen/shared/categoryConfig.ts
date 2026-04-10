@@ -21,7 +21,7 @@ export const CATEGORY_CONFIG: CategoryConfigItem[] = [
     label: "Movie Box Office",
     tagSlugs: ["movies"],
     keywords: ["box office", "movie", "opening weekend", "domestic gross", "worldwide gross", "theatrical"],
-    pageSignals: ["pop-culture/movie", "predictions/movie", "movie"],
+    pageSignals: ["pop-culture/movies", "pop-culture/movie", "predictions/movie", "movie"],
   },
   {
     key: "fedRates",

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { DetailPage, GLOBAL_CSS, type PolyEvent } from "../page";
+import { DetailPage, GLOBAL_CSS, getModelBacktestHref, type PolyEvent } from "../page";
 
 const BOOKMARK_STORAGE_KEY = "polyoiyen-bookmarks-v1";
 
@@ -130,6 +130,7 @@ export default function PolyOiyenEventPage() {
           onBack={() => router.push("/polyoiyen")}
           isBookmarked={bookmarkedIds.includes(event.id)}
           onToggleBookmark={toggleBookmark}
+          onAddToBacktest={(target) => router.push(getModelBacktestHref(target))}
         />
       )}
     </>

@@ -4,6 +4,7 @@ import { CATEGORY_CONFIG, TAG_SLUGS_BY_CATEGORY, type CategoryKey } from "@/app/
 import { hasCompleteYesNoTokens } from "@/app/polyoiyen/shared/marketAssessmentEngine";
 
 type PullKind = "poly_probe" | "invest_pull" | "invest_action" | "health_ok" | "health_fail";
+const FIXED_BACKTEST_BUDGET_USD = 1000;
 
 function pct(part: number, total: number): number {
   if (!Number.isFinite(total) || total <= 0) return 0;
@@ -396,6 +397,61 @@ async function fetchResolvedWinnerSide(eventId: string): Promise<"YES" | "NO" | 
   }
 }
 
+async function fetchSyntheticBacktestSeed(eventId: string): Promise<{
+  marketQuestion: string;
+  chosenSide: "YES" | "NO";
+  entryPrice: number;
+  at: Date;
+} | null> {
+  try {
+    const res = await fetch(`https://gamma-api.polymarket.com/events/${encodeURIComponent(eventId)}`, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+
+    const payload = await res.json();
+    const markets = Array.isArray(payload?.markets) ? payload.markets : [];
+    const activeMarket = markets.find((m: { active?: boolean; closed?: boolean }) => m?.active !== false && m?.closed !== true) || markets[0];
+
+    const prices = parseJsonArray<number | string>(activeMarket?.outcomePrices).map((x) => Number(x));
+    const yesPriceRaw = Number(prices?.[0]);
+    const noPriceRaw = Number(prices?.[1]);
+    const yesPrice = Number.isFinite(yesPriceRaw) && yesPriceRaw > 0 && yesPriceRaw < 1 ? yesPriceRaw : null;
+    const noPrice = Number.isFinite(noPriceRaw) && noPriceRaw > 0 && noPriceRaw < 1 ? noPriceRaw : null;
+
+    let chosenSide: "YES" | "NO" = "YES";
+    let entryPrice = 0.5;
+    if (yesPrice != null && noPrice != null) {
+      if (noPrice > yesPrice) {
+        chosenSide = "NO";
+        entryPrice = noPrice;
+      } else {
+        chosenSide = "YES";
+        entryPrice = yesPrice;
+      }
+    } else if (yesPrice != null) {
+      chosenSide = "YES";
+      entryPrice = yesPrice;
+    } else if (noPrice != null) {
+      chosenSide = "NO";
+      entryPrice = noPrice;
+    }
+
+    const atIso = payload?.endDate || payload?.updatedAt || payload?.startDate || payload?.createdAt;
+    const at = atIso ? new Date(atIso) : new Date();
+
+    return {
+      marketQuestion: String(payload?.title || payload?.question || `Event ${eventId}`),
+      chosenSide,
+      entryPrice,
+      at: Number.isFinite(at.getTime()) ? at : new Date(),
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function probe(baseUrl: string, endpointKey: string, path: string) {
   const started = Date.now();
   let ok = false;
@@ -427,6 +483,13 @@ export async function GET(req: Request) {
   const now = Date.now();
   const oneHourAgo = new Date(now - 60 * 60 * 1000);
   const since = new Date(now - 24 * 60 * 60 * 1000);
+  const reqUrl = new URL(req.url);
+  const selectedEventIds = new Set(
+    (reqUrl.searchParams.get("eventIds") || "")
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean)
+  );
   const baseUrl = new URL(req.url).origin;
 
   const dbStarted = Date.now();
@@ -691,7 +754,42 @@ export async function GET(req: Request) {
     groupedPoly.set(key, current);
   }
 
-  const groupedList = Array.from(groupedPoly.values()).sort((a, b) => b.lastAt.getTime() - a.lastAt.getTime());
+  const groupedListBeforeFilter = Array.from(groupedPoly.values()).sort((a, b) => b.lastAt.getTime() - a.lastAt.getTime());
+  const groupedList = selectedEventIds.size > 0
+    ? groupedListBeforeFilter.filter((row) => selectedEventIds.has(row.eventId))
+    : groupedListBeforeFilter;
+
+  let syntheticNoBuyInjected = 0;
+  if (selectedEventIds.size > 0) {
+    const have = new Set(groupedList.map((row) => row.eventId));
+    const missingIds = Array.from(selectedEventIds).filter((id) => !have.has(id));
+    if (missingIds.length > 0) {
+      const seeds = await Promise.all(missingIds.map((id) => fetchSyntheticBacktestSeed(id)));
+      seeds.forEach((seed, idx) => {
+        const eventId = missingIds[idx];
+        if (!seed) return;
+        const entryPrice = Math.max(0.01, Math.min(0.99, seed.entryPrice));
+        const shares = Number((FIXED_BACKTEST_BUDGET_USD / entryPrice).toFixed(6));
+
+        groupedList.push({
+          eventId,
+          marketQuestion: seed.marketQuestion,
+          yesBuyAmount: seed.chosenSide === "YES" ? FIXED_BACKTEST_BUDGET_USD : 0,
+          yesBuyShares: seed.chosenSide === "YES" ? shares : 0,
+          yesSellAmount: 0,
+          yesSellShares: 0,
+          noBuyAmount: seed.chosenSide === "NO" ? FIXED_BACKTEST_BUDGET_USD : 0,
+          noBuyShares: seed.chosenSide === "NO" ? shares : 0,
+          noSellAmount: 0,
+          noSellShares: 0,
+          claimAmount: 0,
+          categoryScores: { "Backtest Basket": FIXED_BACKTEST_BUDGET_USD },
+          lastAt: seed.at,
+        });
+        syntheticNoBuyInjected += 1;
+      });
+    }
+  }
   const evaluableEvents = groupedList.filter((x) => (x.yesBuyAmount + x.noBuyAmount) > 0);
   const excludedNoBuyEvents = groupedList.length - evaluableEvents.length;
   const targetEventIds = Array.from(new Set(evaluableEvents.map((x) => x.eventId))).slice(0, 120);
@@ -1142,7 +1240,12 @@ export async function GET(req: Request) {
         resolvedSamples: resolvedRuns.length,
         unresolvedEvents,
         excludedNoBuyEvents,
+        syntheticNoBuyInjected,
+        fixedBacktestBudgetUsd: FIXED_BACKTEST_BUDGET_USD,
         scannedEvents: groupedList.length,
+        selectionFilterApplied: selectedEventIds.size > 0,
+        requestedEventIds: selectedEventIds.size,
+        matchedEventIds: groupedList.length,
       },
       lossAttribution: {
         byStrategy: lossAttributionByStrategy,
@@ -1166,6 +1269,11 @@ export async function GET(req: Request) {
         : null,
       recentRuns,
       inverseRecentRuns,
+    },
+    selection: {
+      eventIdsFilterApplied: selectedEventIds.size > 0,
+      requestedEventIds: selectedEventIds.size,
+      matchedEventIds: groupedList.length,
     },
     categoryHealth,
     trend24h: trend,

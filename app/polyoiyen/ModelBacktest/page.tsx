@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import PolyHeader from "../PolyHeader";
 import { CartesianGrid, Line, LineChart, ReferenceDot, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
@@ -17,6 +18,9 @@ type ModelBacktestPayload = {
       unresolvedEvents: number;
       excludedNoBuyEvents: number;
       scannedEvents: number;
+      selectionFilterApplied?: boolean;
+      requestedEventIds?: number;
+      matchedEventIds?: number;
     };
     lossAttribution: {
       byStrategy: Array<{
@@ -174,6 +178,11 @@ type ModelBacktestPayload = {
       createdAt: string;
     }>;
   };
+  selection?: {
+    eventIdsFilterApplied: boolean;
+    requestedEventIds: number;
+    matchedEventIds: number;
+  };
 };
 
 function fmt(value: number | null | undefined, suffix = ""): string {
@@ -215,17 +224,30 @@ function EquityTooltip({ active, payload }: { active?: boolean; payload?: Array<
 }
 
 export default function ModelBacktestPage() {
+  const searchParams = useSearchParams();
   const [data, setData] = useState<ModelBacktestPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedCurve, setSelectedCurve] = useState<string>("__aggregate__");
   const [viewMode, setViewMode] = useState<"original" | "inverse">("original");
 
+  const selectedGroupKey = searchParams.get("group") || "";
+  const selectedGroupLabel = searchParams.get("groupLabel") || "";
+  const selectedEventIds = useMemo(() => {
+    const raw = searchParams.get("eventIds") || "";
+    return raw.split(",").map((x) => x.trim()).filter(Boolean);
+  }, [searchParams]);
+
   async function load() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/polyoiyen/data-health", { cache: "no-store" });
+      const params = new URLSearchParams();
+      if (selectedEventIds.length > 0) {
+        params.set("eventIds", selectedEventIds.join(","));
+      }
+      const endpoint = params.toString() ? `/api/polyoiyen/data-health?${params.toString()}` : "/api/polyoiyen/data-health";
+      const res = await fetch(endpoint, { cache: "no-store" });
       if (!res.ok) throw new Error("Failed to fetch model backtest data");
       const payload = (await res.json()) as ModelBacktestPayload;
       setData(payload);
@@ -238,7 +260,7 @@ export default function ModelBacktestPage() {
 
   useEffect(() => {
     load();
-  }, []);
+  }, [searchParams]);
 
   useEffect(() => {
     if (!data) return;
@@ -316,6 +338,11 @@ export default function ModelBacktestPage() {
             <p style={{ marginTop: 10, color: "rgba(255,255,255,0.72)", fontSize: 14, lineHeight: 1.65 }}>
               Strategy quality, win rate, return, loss attribution, and automatic inverse strategy comparison.
             </p>
+            {selectedEventIds.length > 0 && (
+              <p style={{ marginTop: 8, color: "#fde68a", fontSize: 12, lineHeight: 1.6 }}>
+                Filtered group: {selectedGroupLabel || selectedGroupKey || "custom"} ({selectedEventIds.length} selected event IDs)
+              </p>
+            )}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{ display: "inline-flex", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 8, overflow: "hidden" }}>
@@ -407,6 +434,11 @@ export default function ModelBacktestPage() {
                 <span>Unresolved events: {data.backtestQuality.diagnostics.unresolvedEvents}</span>
                 <span>Excluded (no buy): {data.backtestQuality.diagnostics.excludedNoBuyEvents}</span>
                 <span>Recent runs: {data.backtestQuality.totalRuns}</span>
+                {data.selection?.eventIdsFilterApplied && (
+                  <span>
+                    Group filter matched {data.selection.matchedEventIds}/{data.selection.requestedEventIds}
+                  </span>
+                )}
               </div>
 
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 10, marginTop: 10 }}>
