@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import PolyHeader from "../PolyHeader";
 import { CartesianGrid, Line, LineChart, ReferenceDot, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -224,6 +224,24 @@ function EquityTooltip({ active, payload }: { active?: boolean; payload?: Array<
 }
 
 export default function ModelBacktestPage() {
+  function ModelBacktestContent() {
+
+  export default function ModelBacktestPage() {
+    return (
+      <Suspense
+        fallback={
+          <div style={{ minHeight: "100vh", background: "radial-gradient(circle at top, #2a1707 0%, #130902 38%, #0c0602 100%)", color: "#f5f5f4" }}>
+            <PolyHeader active="ModelBacktest" />
+            <main style={{ maxWidth: 1180, margin: "0 auto", padding: "28px 20px 54px" }}>
+              <div style={{ padding: 20, color: "rgba(255,255,255,0.65)" }}>Loading model backtest...</div>
+            </main>
+          </div>
+        }
+      >
+        <ModelBacktestContent />
+      </Suspense>
+    );
+  }
   const searchParams = useSearchParams();
   const [data, setData] = useState<ModelBacktestPayload | null>(null);
   const [loading, setLoading] = useState(true);
