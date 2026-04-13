@@ -37,6 +37,7 @@ model User {
   resolutions         Resolution[]         @relation("MarketResolver")
   polyBets            PolyBet[]
   polyAlerts          PolyAlert[]
+  polyEventComments   PolyEventComment[]
 }
 
 // NextAuth Account 模型（用于 OAuth）
@@ -374,6 +375,24 @@ model PolyAlert {
 
   @@index([userId])
   @@index([eventId])
+}
+
+// PolyOiyen: user comments on Polymarket event detail pages
+model PolyEventComment {
+  id              Int               @id @default(autoincrement())
+  userId          Int
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  eventId         String            // Polymarket event id
+  parentCommentId Int?
+  parentComment   PolyEventComment? @relation("CommentReplies", fields: [parentCommentId], references: [id], onDelete: SetNull)
+  replies         PolyEventComment[] @relation("CommentReplies")
+  content         String
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @default(now()) @updatedAt
+
+  @@index([eventId, createdAt])
+  @@index([userId, createdAt])
+  @@index([parentCommentId, createdAt])
 }
 
 // Persistent API pull/execution telemetry for OiyenCompare density charts

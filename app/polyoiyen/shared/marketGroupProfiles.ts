@@ -79,7 +79,7 @@ export const MARKET_GROUP_PRESETS: MarketGroupPreset[] = [
 ];
 
 const DEFAULT_PRESET_KEY_BY_CATEGORY: Record<CategoryKey, string> = {
-  elonTweets: "elon-tweets-live",
+  elonTweets: "elon-tweet-windows",
   movieBoxOffice: "movies-box-office-core",
   fedRates: "fed-rates-core",
   nbaGames: "nba-games-core",

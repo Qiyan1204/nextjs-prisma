@@ -54,11 +54,15 @@ export async function GET() {
 
     let tradesToday = 0;
     let weeklyVolume = 0;
+    let lifetimeTradeCount = 0;
+    let lifetimeVolume = 0;
 
     for (const b of bets) {
       const amount = Number(b.amount);
       const type = b.type || "BUY";
       if (type === "BUY" || type === "SELL") {
+        lifetimeTradeCount += 1;
+        lifetimeVolume += amount;
         if (b.createdAt >= todayStart) tradesToday += 1;
         if (b.createdAt >= weekStart) weeklyVolume += amount;
       }
@@ -95,6 +99,17 @@ export async function GET() {
     for (let i = sellProfitFlags.length - 1; i >= 0; i -= 1) {
       if (sellProfitFlags[i]) currentWinStreak += 1;
       else break;
+    }
+
+    let maxWinStreak = 0;
+    let runningWinStreak = 0;
+    for (const isWin of sellProfitFlags) {
+      if (isWin) {
+        runningWinStreak += 1;
+        if (runningWinStreak > maxWinStreak) maxWinStreak = runningWinStreak;
+      } else {
+        runningWinStreak = 0;
+      }
     }
 
     const activeAlerts = alerts.filter((a) => a.active).length;
@@ -140,7 +155,12 @@ export async function GET() {
       },
     ];
 
-    const totalXP = missions.filter((m) => m.achieved).reduce((sum, m) => sum + m.points, 0);
+    // Lifetime XP should not drop when daily/weekly missions roll over.
+    const totalXP =
+      (lifetimeTradeCount > 0 ? 20 : 0) +
+      (maxWinStreak >= 3 ? 80 : 0) +
+      (lifetimeVolume >= 2000 ? 120 : 0) +
+      (triggeredAlerts >= 2 ? 60 : 0);
 
     return NextResponse.json({
       summary: {

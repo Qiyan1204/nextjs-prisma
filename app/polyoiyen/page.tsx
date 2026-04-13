@@ -62,6 +62,20 @@ interface UserAlert {
   triggeredAt: string | null;
 }
 
+interface EventComment {
+  id: number;
+  eventId: string;
+  parentCommentId?: number | null;
+  content: string;
+  createdAt: string;
+  updatedAt?: string;
+  user: {
+    id: number;
+    name: string | null;
+    image: string | null;
+  };
+}
+
 interface NewsArticle {
   title: string;
   description: string;
@@ -219,6 +233,7 @@ const TAG_OPTIONS = [
 ];
 const LARGE_ORDER_THRESHOLD = 500; // default $500 for "large" orders
 const BOOKMARK_STORAGE_KEY = "polyoiyen-bookmarks-v1";
+const ELON_TWEETS_ONLY_YEAR = 2026;
 
 // ═══════════════════════════════════════════════════════
 //  GLOBAL STYLES
@@ -392,6 +407,16 @@ function hasTradablePrices(market: PolyMarket | undefined): boolean {
   if (!market) return false;
   const { yes, no } = parsePrices(market);
   return yes > 0 && yes < 1 && no > 0 && no < 1;
+}
+
+function eventTouchesYear(event: Pick<PolyEvent, "startDate" | "endDate">, year: number): boolean {
+  const startTs = Date.parse(event.startDate || "");
+  const endTs = Date.parse(event.endDate || "");
+
+  const startYear = Number.isFinite(startTs) ? new Date(startTs).getUTCFullYear() : null;
+  const endYear = Number.isFinite(endTs) ? new Date(endTs).getUTCFullYear() : null;
+
+  return startYear === year || endYear === year;
 }
 
 function parseTokenIds(market: PolyMarket): { yes: string; no: string } {
@@ -2109,6 +2134,17 @@ export function DetailPage({
   const [showPredictors, setShowPredictors] = useState(false);
   const [showVolatility, setShowVolatility] = useState(false);
   const [showSignal, setShowSignal] = useState(false);
+  const [isCommentAuth, setIsCommentAuth] = useState(false);
+  const [commentUserId, setCommentUserId] = useState<number | null>(null);
+  const [comments, setComments] = useState<EventComment[]>([]);
+  const [commentsLoading, setCommentsLoading] = useState(true);
+  const [commentsError, setCommentsError] = useState("");
+  const [commentInput, setCommentInput] = useState("");
+  const [commentSubmitting, setCommentSubmitting] = useState(false);
+  const [replyingToCommentId, setReplyingToCommentId] = useState<number | null>(null);
+  const [hoveredCommentId, setHoveredCommentId] = useState<number | null>(null);
+  const [editingCommentId, setEditingCommentId] = useState<number | null>(null);
+  const [editCommentInput, setEditCommentInput] = useState("");
 
   const market = getActiveMarket(event.markets);
   const prices = market ? parsePrices(market) : { yes: 0.5, no: 0.5 };
@@ -2126,6 +2162,11 @@ export function DetailPage({
     fetchUserBets();
   }, []);
 
+  useEffect(() => {
+    fetchComments();
+    checkCommentAuth();
+  }, [event.id]);
+
   async function fetchUserBets() {
     try {
       const res = await fetch("/api/polybets");
@@ -2138,6 +2179,253 @@ export function DetailPage({
     } finally {
       setLoadingBets(false);
     }
+  }
+
+  async function checkCommentAuth() {
+    try {
+      const res = await fetch("/api/auth/me", { cache: "no-store" });
+      if (!res.ok) {
+        setIsCommentAuth(false);
+        setCommentUserId(null);
+        return;
+      }
+      const data = await res.json();
+      setIsCommentAuth(true);
+      setCommentUserId(typeof data?.user?.id === "number" ? data.user.id : null);
+    } catch {
+      setIsCommentAuth(false);
+      setCommentUserId(null);
+    }
+  }
+
+  async function fetchComments() {
+    setCommentsLoading(true);
+    setCommentsError("");
+    try {
+      const params = new URLSearchParams({ eventId: event.id });
+      const res = await fetch(`/api/polyoiyen/event-comments?${params.toString()}`, { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok) {
+        const message = [data?.error, data?.detail].filter(Boolean).join(" - ");
+        throw new Error(message || "Failed to load comments");
+      }
+      setComments(Array.isArray(data?.comments) ? data.comments : []);
+    } catch (err) {
+      setCommentsError(err instanceof Error ? err.message : "Failed to load comments");
+    } finally {
+      setCommentsLoading(false);
+    }
+  }
+
+  async function handlePostComment() {
+    const content = commentInput.trim();
+    if (!isCommentAuth || !content || commentSubmitting) return;
+
+    setCommentSubmitting(true);
+    try {
+      const payload: { eventId: string; content: string; parentCommentId?: number } = {
+        eventId: event.id,
+        content,
+      };
+      if (replyingToCommentId != null) {
+        payload.parentCommentId = replyingToCommentId;
+      }
+
+      const res = await fetch("/api/polyoiyen/event-comments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (res.status === 401) {
+          setIsCommentAuth(false);
+          throw new Error("Please login first to comment.");
+        }
+        const message = [data?.error, data?.detail].filter(Boolean).join(" - ");
+        throw new Error(message || "Failed to post comment");
+      }
+
+      if (data?.comment) {
+        setComments((prev) => [...prev, data.comment as EventComment]);
+      }
+      setCommentInput("");
+      setReplyingToCommentId(null);
+      setCommentsError("");
+    } catch (err) {
+      setCommentsError(err instanceof Error ? err.message : "Failed to post comment");
+    } finally {
+      setCommentSubmitting(false);
+    }
+  }
+
+  function startEditComment(comment: EventComment) {
+    setEditingCommentId(comment.id);
+    setEditCommentInput(comment.content);
+    setCommentsError("");
+  }
+
+  function cancelEditComment() {
+    setEditingCommentId(null);
+    setEditCommentInput("");
+  }
+
+  async function saveEditComment(commentId: number) {
+    const content = editCommentInput.trim();
+    if (!content || commentSubmitting) return;
+
+    setCommentSubmitting(true);
+    try {
+      const res = await fetch("/api/polyoiyen/event-comments", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ commentId, content }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        const message = [data?.error, data?.detail].filter(Boolean).join(" - ");
+        throw new Error(message || "Failed to edit comment");
+      }
+
+      if (data?.comment) {
+        setComments((prev) => prev.map((c) => (c.id === commentId ? (data.comment as EventComment) : c)));
+      }
+      setEditingCommentId(null);
+      setEditCommentInput("");
+      setCommentsError("");
+    } catch (err) {
+      setCommentsError(err instanceof Error ? err.message : "Failed to edit comment");
+    } finally {
+      setCommentSubmitting(false);
+    }
+  }
+
+  async function handleDeleteComment(commentId: number) {
+    if (commentSubmitting) return;
+    const ok = window.confirm("Delete this comment?");
+    if (!ok) return;
+
+    setCommentSubmitting(true);
+    try {
+      const res = await fetch("/api/polyoiyen/event-comments", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ commentId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        const message = [data?.error, data?.detail].filter(Boolean).join(" - ");
+        throw new Error(message || "Failed to delete comment");
+      }
+
+      await fetchComments();
+      setCommentsError("");
+    } catch (err) {
+      setCommentsError(err instanceof Error ? err.message : "Failed to delete comment");
+    } finally {
+      setCommentSubmitting(false);
+    }
+  }
+
+  const commentsSorted = [...comments].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+  const topLevelComments = commentsSorted.filter((c) => c.parentCommentId == null);
+
+  function renderCommentThread(comment: EventComment, depth = 0) {
+    const replies = commentsSorted.filter((c) => c.parentCommentId === comment.id);
+    const isOwn = commentUserId != null && comment.user?.id === commentUserId;
+    const isHoveringOwn = isOwn && hoveredCommentId === comment.id;
+    const isEditing = editingCommentId === comment.id;
+    const author = comment.user?.name || "User";
+
+    return (
+      <div key={comment.id} style={{ marginLeft: depth > 0 ? 18 : 0 }}>
+        <div
+          onMouseEnter={() => setHoveredCommentId(comment.id)}
+          onMouseLeave={() => setHoveredCommentId((prev) => (prev === comment.id ? null : prev))}
+          style={{ border: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.03)", borderRadius: 10, padding: "10px 12px" }}
+        >
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 6 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+              <div style={{ width: 24, height: 24, borderRadius: 999, background: "rgba(249,115,22,0.14)", color: "var(--orange2)", fontSize: 11, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                {author.slice(0, 1).toUpperCase()}
+              </div>
+              <span style={{ fontSize: 12, color: "var(--text)", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{author}</span>
+            </div>
+            <span style={{ fontSize: 10.5, color: "var(--dim)", fontFamily: "'DM Mono', monospace", flexShrink: 0 }}>
+              {new Date(comment.createdAt).toLocaleString()}
+              {Date.parse(comment.updatedAt || comment.createdAt) > Date.parse(comment.createdAt) + 1000 ? " · edited" : ""}
+            </span>
+          </div>
+
+          {isEditing ? (
+            <div>
+              <textarea
+                value={editCommentInput}
+                onChange={(e) => setEditCommentInput(e.target.value)}
+                style={{
+                  width: "100%",
+                  minHeight: 80,
+                  resize: "vertical",
+                  borderRadius: 8,
+                  border: "1px solid var(--bdr)",
+                  background: "rgba(255,255,255,0.03)",
+                  color: "var(--text)",
+                  padding: "8px 10px",
+                  fontSize: 13,
+                  fontFamily: "'DM Sans', sans-serif",
+                  outline: "none",
+                }}
+              />
+              <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+                <button onClick={() => saveEditComment(comment.id)} disabled={commentSubmitting || editCommentInput.trim().length === 0} style={{ padding: "6px 10px", borderRadius: 7, border: "1px solid rgba(52,211,153,0.35)", background: "rgba(52,211,153,0.12)", color: "var(--yes)", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Save</button>
+                <button onClick={cancelEditComment} disabled={commentSubmitting} style={{ padding: "6px 10px", borderRadius: 7, border: "1px solid var(--bdr)", background: "rgba(255,255,255,0.03)", color: "var(--muted)", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.82)", lineHeight: 1.6, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+              {comment.content}
+            </div>
+          )}
+
+          <div style={{ marginTop: 8, display: "flex", gap: 10, alignItems: "center" }}>
+            <button
+              onClick={() => {
+                setReplyingToCommentId(comment.id);
+                setEditingCommentId(null);
+                setCommentsError("");
+              }}
+              style={{ background: "none", border: "none", padding: 0, fontSize: 11, fontWeight: 700, color: "var(--orange2)", cursor: "pointer" }}
+            >
+              Reply
+            </button>
+
+            {isHoveringOwn && !isEditing && (
+              <>
+                <button
+                  onClick={() => startEditComment(comment)}
+                  style={{ background: "none", border: "none", padding: 0, fontSize: 11, fontWeight: 700, color: "#93c5fd", cursor: "pointer" }}
+                >
+                  Edit
+                </button>
+                <button
+                  onClick={() => handleDeleteComment(comment.id)}
+                  style={{ background: "none", border: "none", padding: 0, fontSize: 11, fontWeight: 700, color: "#fca5a5", cursor: "pointer" }}
+                >
+                  Delete
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+
+        {replies.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
+            {replies.map((reply) => renderCommentThread(reply, depth + 1))}
+          </div>
+        )}
+      </div>
+    );
   }
 
   const KNOWN_CATEGORIES = ["Politics","Sports","Crypto","Pop Culture","Business","Finance","Science","Technology"];
@@ -2488,6 +2776,82 @@ export function DetailPage({
                 </div>
               </div>
             )}
+
+            <div className="card" style={{ padding: "20px 24px" }}>
+              <SectionTitle icon="💬" text="Comments" />
+
+              {replyingToCommentId != null && (
+                <div style={{ marginBottom: 10, fontSize: 11, color: "var(--orange2)", display: "flex", alignItems: "center", gap: 8 }}>
+                  Replying to comment #{replyingToCommentId}
+                  <button
+                    onClick={() => setReplyingToCommentId(null)}
+                    style={{ background: "none", border: "none", color: "var(--muted)", fontSize: 11, cursor: "pointer", padding: 0 }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+
+              <div style={{ marginBottom: 12 }}>
+                <textarea
+                  value={commentInput}
+                  onChange={(e) => setCommentInput(e.target.value)}
+                  disabled={!isCommentAuth || commentSubmitting}
+                  placeholder={isCommentAuth ? "Share your view on this event..." : "Login required to comment"}
+                  style={{
+                    width: "100%",
+                    minHeight: 90,
+                    resize: "vertical",
+                    borderRadius: 10,
+                    border: "1px solid var(--bdr)",
+                    background: "rgba(255,255,255,0.03)",
+                    color: "var(--text)",
+                    padding: "10px 12px",
+                    fontSize: 13,
+                    fontFamily: "'DM Sans', sans-serif",
+                    outline: "none",
+                  }}
+                />
+
+                <div style={{ marginTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                  <div style={{ fontSize: 11, color: "var(--dim)" }}>
+                    {isCommentAuth ? "Be respectful. Max 500 chars." : <><a href="/login" style={{ color: "var(--orange2)", textDecoration: "none" }}>Login</a> to post comments.</>}
+                  </div>
+                  <button
+                    onClick={handlePostComment}
+                    disabled={!isCommentAuth || commentSubmitting || commentInput.trim().length === 0}
+                    style={{
+                      padding: "8px 14px",
+                      borderRadius: 8,
+                      border: "1px solid rgba(251,146,60,0.45)",
+                      background: "rgba(249,115,22,0.12)",
+                      color: "var(--orange2)",
+                      fontSize: 12,
+                      fontWeight: 700,
+                      fontFamily: "'DM Sans', sans-serif",
+                      cursor: !isCommentAuth || commentSubmitting || commentInput.trim().length === 0 ? "not-allowed" : "pointer",
+                      opacity: !isCommentAuth || commentSubmitting || commentInput.trim().length === 0 ? 0.5 : 1,
+                    }}
+                  >
+                    {commentSubmitting ? "Posting..." : "Post Comment"}
+                  </button>
+                </div>
+              </div>
+
+              {commentsError && (
+                <div style={{ marginBottom: 10, color: "#fca5a5", fontSize: 12 }}>{commentsError}</div>
+              )}
+
+              {commentsLoading ? (
+                <div style={{ fontSize: 12, color: "var(--muted)", padding: "8px 0" }}><span className="spin" /> Loading comments...</div>
+              ) : topLevelComments.length === 0 ? (
+                <div style={{ fontSize: 12, color: "var(--dim)", padding: "4px 0" }}>No comments yet. Be the first to share your view.</div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {topLevelComments.map((c) => renderCommentThread(c))}
+                </div>
+              )}
+            </div>
 
             {/* Large order banner after sub-markets */}
             <LargeOrderBanner items={largeOrders} />
@@ -3102,6 +3466,10 @@ function ListPage({
           data = Array.isArray(raw) ? raw : Array.isArray(raw?.events) ? raw.events : [];
         }
 
+        if (quickMarket === "Elon Tweets") {
+          data = data.filter((event) => eventTouchesYear(event, ELON_TWEETS_ONLY_YEAR));
+        }
+
         if (usingQuickFilter) {
           setHasMore(false);
           setEvents(data);
@@ -3147,12 +3515,11 @@ function ListPage({
       !search ||
       text.includes(search.toLowerCase());
 
-    const curatedPreset = getCuratedPresetForQuickMarket(quickMarket);
-
-    const curatedMatch = curatedPreset ? eventMatchesGroupPreset(e, curatedPreset) : true;
-    const tradableMatch = quickMarket === "Elon Tweets" ? hasTradablePrices(getActiveMarket(e.markets)) : true;
-
-    return searchMatch && curatedMatch && tradableMatch;
+    return searchMatch;
+  }).sort((a, b) => {
+    const aTs = Date.parse(a.startDate || a.endDate || "") || 0;
+    const bTs = Date.parse(b.startDate || b.endDate || "") || 0;
+    return bTs - aTs;
   });
 
   return (

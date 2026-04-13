@@ -12,7 +12,7 @@ export const CATEGORY_CONFIG: CategoryConfigItem[] = [
   {
     key: "elonTweets",
     label: "Elon Tweets",
-    tagSlugs: ["elon-musk"],
+    tagSlugs: ["tweets-markets"],
     keywords: ["elon", "musk", "tweet", "twitter", "x.com"],
     pageSignals: ["predictions/elon-tweets", "elon-tweets"],
   },
