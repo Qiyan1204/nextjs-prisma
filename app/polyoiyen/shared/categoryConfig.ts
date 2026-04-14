@@ -104,7 +104,14 @@ export const QUICK_MARKET_FILTERS: QuickMarketFilter[] = CATEGORY_CONFIG.map((cf
   tagSlugs: cfg.tagSlugs || [],
   signals: cfg.pageSignals || [],
   keywords: cfg.keywords,
-}));
+})).concat([
+  {
+    label: "NFL",
+    tagSlugs: ["nfl"],
+    signals: ["predictions/nfl", "nfl"],
+    keywords: ["nfl", "football", "super bowl", "touchdown", "quarterback"],
+  },
+]);
 
 /**
  * Tag slugs by category key for direct API filtering.

@@ -403,6 +403,12 @@ function getActiveMarket(markets: PolyMarket[] | undefined): PolyMarket | undefi
   return markets.find(m => !m.closed) || markets[0];
 }
 
+function getDefaultMarketIndex(markets: PolyMarket[] | undefined): number {
+  if (!markets || markets.length === 0) return 0;
+  const firstOpenIndex = markets.findIndex((m) => !m.closed);
+  return firstOpenIndex >= 0 ? firstOpenIndex : 0;
+}
+
 function hasTradablePrices(market: PolyMarket | undefined): boolean {
   if (!market) return false;
   const { yes, no } = parsePrices(market);
@@ -2145,14 +2151,23 @@ export function DetailPage({
   const [hoveredCommentId, setHoveredCommentId] = useState<number | null>(null);
   const [editingCommentId, setEditingCommentId] = useState<number | null>(null);
   const [editCommentInput, setEditCommentInput] = useState("");
+  const [selectedMarketIndex, setSelectedMarketIndex] = useState(() => getDefaultMarketIndex(event.markets));
 
-  const market = getActiveMarket(event.markets);
+  useEffect(() => {
+    setSelectedMarketIndex(getDefaultMarketIndex(event.markets));
+    setSide("YES");
+  }, [event.id]);
+
+  const market =
+    (event.markets && event.markets[selectedMarketIndex]) ||
+    getActiveMarket(event.markets);
   const prices = market ? parsePrices(market) : { yes: 0.5, no: 0.5 };
   const tokenIds = market ? parseTokenIds(market) : { yes: "", no: "" };
   const yesPct = Math.round(prices.yes * 100);
   const amtNum = parseFloat(amount) || 0;
   const currentPrice = side === "YES" ? prices.yes : prices.no;
   const sharesOut = currentPrice > 0 && amtNum > 0 ? amtNum / currentPrice : 0;
+  const selectedMarketLabel = market?.groupItemTitle?.trim() || "Primary Market";
 
   // Use the YES token for order book by default
   const activeTokenId = tokenIds.yes;
@@ -2447,7 +2462,7 @@ export function DetailPage({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           eventId: event.id,
-          marketQuestion: event.title,
+          marketQuestion: market?.groupItemTitle || event.title,
           side,
           amount: amtNum,
           shares: sharesOut,
@@ -2549,6 +2564,44 @@ export function DetailPage({
               }}>
                 {event.title}
               </h1>
+              {event.markets && event.markets.length > 1 && (
+                <div style={{
+                  marginBottom: 16,
+                  padding: "10px 12px",
+                  borderRadius: 10,
+                  border: "1px solid rgba(251,146,60,0.3)",
+                  background: "rgba(249,115,22,0.08)",
+                }}>
+                  <div style={{ fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--dim)", marginBottom: 4 }}>
+                    Selected Team / Market
+                  </div>
+                  <select
+                    value={String(selectedMarketIndex)}
+                    onChange={(e) => {
+                      setSelectedMarketIndex(Number(e.target.value));
+                      setSide("YES");
+                    }}
+                    style={{
+                      width: "100%",
+                      fontSize: 13,
+                      color: "var(--orange2)",
+                      fontWeight: 700,
+                      fontFamily: "'DM Sans', sans-serif",
+                      background: "rgba(0,0,0,0.22)",
+                      border: "1px solid rgba(251,146,60,0.32)",
+                      borderRadius: 8,
+                      padding: "8px 10px",
+                      outline: "none",
+                    }}
+                  >
+                    {event.markets.map((m, i) => (
+                      <option key={`${m.conditionId || m.groupItemTitle || "market"}-${i}`} value={String(i)}>
+                        {m.groupItemTitle || `Market ${i + 1}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div style={{ marginBottom: 12 }}>
                 <button
                   onClick={() => onAddToBacktest(event)}
@@ -2760,17 +2813,33 @@ export function DetailPage({
                   {event.markets.map((m, i) => {
                     const mp = parsePrices(m);
                     const yp = Math.round(mp.yes * 100);
+                    const isSelected = i === selectedMarketIndex;
                     return (
-                      <div key={i} style={{
-                        display: "flex", alignItems: "center", gap: 12, padding: "10px 14px",
-                        background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 10,
-                      }}>
+                      <button
+                        key={i}
+                        onClick={() => {
+                          setSelectedMarketIndex(i);
+                          setSide("YES");
+                        }}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 12,
+                          width: "100%",
+                          textAlign: "left",
+                          padding: "10px 14px",
+                          cursor: "pointer",
+                          background: isSelected ? "rgba(249,115,22,0.11)" : "rgba(255,255,255,0.03)",
+                          border: isSelected ? "1px solid rgba(251,146,60,0.42)" : "1px solid rgba(255,255,255,0.06)",
+                          borderRadius: 10,
+                        }}
+                      >
                         <span style={{ flex: 1, fontSize: 13, color: "var(--text)" }}>{m.groupItemTitle || `Market ${i + 1}`}</span>
                         <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 14, fontWeight: 700, color: "var(--yes)" }}>{yp}%</span>
                         <div style={{ width: 60, height: 5, background: "rgba(255,255,255,0.06)", borderRadius: 100, overflow: "hidden" }}>
                           <div style={{ height: "100%", width: `${yp}%`, background: "linear-gradient(90deg,#059669,#34d399)", borderRadius: 100 }} />
                         </div>
-                      </div>
+                      </button>
                     );
                   })}
                 </div>
@@ -2875,6 +2944,19 @@ export function DetailPage({
               </div>
 
               <div style={{ padding: "18px 18px 4px" }}>
+                {event.markets && event.markets.length > 1 && (
+                  <div style={{
+                    marginBottom: 12,
+                    padding: "8px 10px",
+                    borderRadius: 8,
+                    border: "1px solid rgba(255,255,255,0.1)",
+                    background: "rgba(255,255,255,0.03)",
+                    fontSize: 11,
+                    color: "var(--muted)",
+                  }}>
+                    Trading market: <span style={{ color: "var(--text)", fontWeight: 700 }}>{selectedMarketLabel}</span>
+                  </div>
+                )}
                 <div style={{ fontSize: 10, fontWeight: 700, color: "var(--dim)", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 7 }}>Amount (USD)</div>
                 <div style={{
                   display: "flex", alignItems: "center",
