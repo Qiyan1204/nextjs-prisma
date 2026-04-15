@@ -819,12 +819,16 @@ function AlertsPanel({
                 background: isTriggered ? "rgba(251,191,36,0.08)" : "rgba(255,255,255,0.03)",
                 border: `1px solid ${isTriggered ? "var(--warn-bdr)" : "rgba(255,255,255,0.06)"}`,
               }}>
-                <span style={{ fontSize: 14 }}>{a.alertType === "PRICE" ? "📈" : "🐋"}</span>
+                <span style={{ fontSize: 14 }}>
+                  {a.alertType === "PRICE" ? "📈" : a.alertType === "VOLUME_SPIKE" ? "📊" : "🐋"}
+                </span>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 11, color: "var(--text)", fontWeight: 600 }}>
                     {a.alertType === "PRICE"
                       ? `${a.side} → ${(Number(a.targetPrice) * 100).toFixed(1)}¢`
-                      : `Large order ≥ $${Number(a.threshold).toFixed(0)} on ${a.side}`}
+                      : a.alertType === "VOLUME_SPIKE"
+                        ? "Volume spike > 2x 30-day average"
+                        : `Large order ≥ $${Number(a.threshold).toFixed(0)} on ${a.side}`}
                   </div>
                   <div style={{ fontSize: 10, color: "var(--dim)" }}>
                     {isTriggered ? "🔔 Trigger condition met" : "Watching"}

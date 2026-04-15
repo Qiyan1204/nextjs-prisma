@@ -9,7 +9,7 @@ interface AlertRow {
   eventId: string;
   tokenId: string;
   marketQuestion: string;
-  alertType: "PRICE" | "LARGE_ORDER";
+  alertType: "PRICE" | "LARGE_ORDER" | "VOLUME_SPIKE";
   side: "YES" | "NO";
   severity?: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
   cooldownMinutes?: number;
@@ -55,6 +55,7 @@ interface AlertCardProps {
 
 function AlertCard({ alert, currentPrice, isTriggered, onDismiss }: AlertCardProps) {
   const isPriceAlert = alert.alertType === "PRICE";
+  const isVolumeAlert = alert.alertType === "VOLUME_SPIKE";
   const isYes = alert.side === "YES";
 
   const accentColor = isTriggered ? "#34d399" : "#f97316";
@@ -80,6 +81,16 @@ function AlertCard({ alert, currentPrice, isTriggered, onDismiss }: AlertCardPro
     } else {
       statusText = `Watching ${isYes ? "YES" : "NO"} price → target ${targetPct}`;
       detailText = currentPrice != null ? `Current price: ${curPct}` : "Fetching price…";
+    }
+  } else if (isVolumeAlert) {
+    const thresholdStr =
+      alert.threshold != null ? `$${Number(alert.threshold).toLocaleString()}` : "—";
+    if (isTriggered) {
+      statusText = "Volume spike detected (> 2x 30D average)";
+      detailText = `Triggered threshold: ${thresholdStr}`;
+    } else {
+      statusText = "Watching for volume spike (> 2x 30D average)";
+      detailText = `Trigger threshold: ${thresholdStr}`;
     }
   } else {
     const thresholdStr =
@@ -123,7 +134,7 @@ function AlertCard({ alert, currentPrice, isTriggered, onDismiss }: AlertCardPro
           fontSize: 18,
         }}
       >
-        {isPriceAlert ? "📈" : "🐋"}
+        {isPriceAlert ? "📈" : isVolumeAlert ? "📊" : "🐋"}
       </div>
 
       {/* Content */}
@@ -430,6 +441,7 @@ export default function PolyNotificationPage() {
     if (loading) return;
     alerts.forEach((a) => {
       if (a.active === false) return;
+      if (a.alertType === "VOLUME_SPIKE") return;
 
       const clientTriggered =
         (a.alertType === "LARGE_ORDER" && largeOrderHit[a.id] === true) ||
@@ -480,6 +492,9 @@ export default function PolyNotificationPage() {
 
   // Determine triggered status client-side
   function isClientTriggered(a: AlertRow): boolean {
+    if (a.alertType === "VOLUME_SPIKE") {
+      return a.triggered === true;
+    }
     if (a.alertType === "LARGE_ORDER") {
       return largeOrderHit[a.id] === true;
     }

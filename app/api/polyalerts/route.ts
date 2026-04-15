@@ -57,8 +57,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
-    if (alertType !== "PRICE" && alertType !== "LARGE_ORDER") {
-      return NextResponse.json({ error: "alertType must be PRICE or LARGE_ORDER" }, { status: 400 });
+    if (alertType !== "PRICE" && alertType !== "LARGE_ORDER" && alertType !== "VOLUME_SPIKE") {
+      return NextResponse.json({ error: "alertType must be PRICE, LARGE_ORDER, or VOLUME_SPIKE" }, { status: 400 });
     }
 
     if (side !== "YES" && side !== "NO") {
@@ -73,6 +73,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "threshold must be positive" }, { status: 400 });
     }
 
+    if (alertType === "VOLUME_SPIKE" && threshold != null && Number(threshold) <= 0) {
+      return NextResponse.json({ error: "threshold must be positive when provided" }, { status: 400 });
+    }
+
     const alert = await prisma.polyAlert.create({
       data: {
         userId: authUser.userId,
@@ -84,7 +88,7 @@ export async function POST(req: NextRequest) {
         severity: normalizeSeverity(severity),
         cooldownMinutes: normalizeCooldownMinutes(cooldownMinutes),
         targetPrice: alertType === "PRICE" ? Number(targetPrice) : null,
-        threshold: alertType === "LARGE_ORDER" ? Number(threshold) : null,
+        threshold: alertType === "LARGE_ORDER" || alertType === "VOLUME_SPIKE" ? (threshold == null ? null : Number(threshold)) : null,
       },
     });
 
@@ -183,14 +187,18 @@ export async function PUT(req: NextRequest) {
     const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
     if (webhookUrl) {
       const isPriceAlert = alert.alertType === "PRICE";
+      const isLargeOrderAlert = alert.alertType === "LARGE_ORDER";
       const sideEmoji = alert.side === "YES" ? "✅" : "❌";
       let description = "";
       if (isPriceAlert) {
         const targetPct = alert.targetPrice != null ? `${Math.round(Number(alert.targetPrice) * 100)}¢` : "—";
         description = `**${alert.side}** price reached **${targetPct}** target`;
-      } else {
+      } else if (isLargeOrderAlert) {
         const thresholdStr = alert.threshold != null ? `$${Number(alert.threshold).toLocaleString()}` : "—";
         description = `Large **${alert.side}** order ≥ **${thresholdStr}** detected in order book`;
+      } else {
+        const thresholdStr = alert.threshold != null ? `$${Number(alert.threshold).toLocaleString()}` : "—";
+        description = `Volume spike detected: current volume exceeded **2x** the 30-day average (${thresholdStr})`;
       }
 
       const severity = normalizeSeverity(alert.severity);
@@ -201,7 +209,7 @@ export async function PUT(req: NextRequest) {
         CRITICAL: 0xef4444,
       };
 
-      const marketUrl = `https://oiyen.quadrawebs.com/polyoiyen?eventId=${alert.eventId}`;
+      const marketUrl = `https://oiyen.quadrawebs.com/polyoiyen/${encodeURIComponent(alert.eventId)}`;
       const discordPayload = {
         embeds: [
           {

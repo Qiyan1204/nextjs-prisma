@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { getAuthUser } from "@/lib/auth";
-import { checkAndTriggerLargeOrderAlerts } from "@/lib/triggerAlerts";
+import {
+  checkAndTriggerLargeOrderAlerts,
+  checkAndTriggerVolumeSpikeAlerts,
+  ensureVolumeSpikeAlertForUser,
+} from "@/lib/triggerAlerts";
 import { recordPull } from "@/lib/pullMetrics";
 
 // GET: fetch user's bets, positions, or check if a large order exists
@@ -239,8 +243,14 @@ export async function POST(req: NextRequest) {
 
     // Check if this bet triggers any user's LARGE_ORDER alerts (any user, not just the bettor)
     if (betType === "BUY") {
+      ensureVolumeSpikeAlertForUser(authUser.userId, String(eventId), String(marketQuestion)).catch((err) =>
+        console.error("Volume spike alert auto-subscribe failed:", err)
+      );
       checkAndTriggerLargeOrderAlerts(String(eventId), String(side), Number(amount)).catch((err) =>
         console.error("Alert trigger check failed:", err)
+      );
+      checkAndTriggerVolumeSpikeAlerts(String(eventId), String(marketQuestion)).catch((err) =>
+        console.error("Volume spike trigger check failed:", err)
       );
     }
 

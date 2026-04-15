@@ -10,6 +10,7 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [quickLoading, setQuickLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -28,16 +29,9 @@ export default function LoginPage() {
       const data = await response.json();
 
       if (response.ok) {
-        // Debug: 打印用户角色
-        console.log("User logged in:", data.user);
-        console.log("User role:", data.user?.role);
-        
-        // ── Admin routing: if API returns { role: "ADMIN" }, go to admin panel ──
         if (data.user?.role === "ADMIN") {
-          console.log("Redirecting to admin panel...");
           router.push("/admin/polymanage");
         } else {
-          console.log("Redirecting to markets...");
           router.push("/markets");
         }
         router.refresh();
@@ -49,6 +43,40 @@ export default function LoginPage() {
       console.error("Login error:", err);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleIntermediateQuickEntry() {
+    setQuickLoading(true);
+    setError("");
+
+    try {
+      const response = await fetch("/api/auth/quick-intermediate", {
+        method: "POST",
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        setError(data.error || "Unable to continue as Intermediate User");
+        return;
+      }
+
+      localStorage.setItem("oiyenUserType", "INTERMEDIATE");
+      localStorage.setItem("oiyenHasWatchlistBuiltUp", "true");
+
+      const params = new URLSearchParams({
+        userType: "intermediate",
+        hasWatchlistBuiltUp: "1",
+      });
+
+      router.push(`/markets?${params.toString()}`);
+      router.refresh();
+    } catch (error) {
+      setError("Network error. Please try again.");
+      console.error("Quick intermediate entry error:", error);
+    } finally {
+      setQuickLoading(false);
     }
   }
 
@@ -84,6 +112,41 @@ export default function LoginPage() {
         }
         .input-field::placeholder {
           color: #9ca3af;
+        }
+
+        .user-type-toggle {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 6px;
+          padding: 4px;
+          background: #f3f4f6;
+          border-radius: 8px;
+          margin-bottom: 20px;
+        }
+
+        .user-type-btn {
+          border: none;
+          background: transparent;
+          color: #6b7280;
+          border-radius: 6px;
+          padding: 9px 10px;
+          font-size: 13px;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+
+        .user-type-btn.active {
+          background: white;
+          color: #111827;
+          box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+        }
+
+        .section-caption {
+          color: #4b5563;
+          font-size: 13px;
+          font-weight: 600;
+          margin-bottom: 10px;
         }
 
         .btn-primary {
@@ -243,7 +306,40 @@ export default function LoginPage() {
           </div>
         )}
 
-        {/* Form */}
+        {/* Entry options */}
+        <div>
+          <p className="section-caption">Quick Entry (No Login Required)</p>
+          <div className="user-type-toggle" role="tablist" aria-label="User type selection">
+            <button
+              type="button"
+              className="user-type-btn active"
+              onClick={handleIntermediateQuickEntry}
+              disabled={quickLoading || loading || googleLoading}
+            >
+              {quickLoading ? "Entering..." : "Intermediate User"}
+            </button>
+            <button
+              type="button"
+              className="user-type-btn active"
+              onClick={() => router.push("/register")}
+              disabled={quickLoading || loading || googleLoading}
+            >
+              New User
+            </button>
+          </div>
+
+          <p style={{ marginBottom: '4px', color: '#374151', fontSize: '13px', lineHeight: 1.5 }}>
+            Intermediate User can quick-enter without login.
+          </p>
+          <p style={{ marginBottom: '22px', color: '#6b7280', fontSize: '13px', lineHeight: 1.5 }}>
+            New User will go to account registration.
+          </p>
+        </div>
+
+        <div className="divider-text">
+          <span>or login with account</span>
+        </div>
+
         <form onSubmit={handleSubmit}>
           <div style={{ marginBottom: '18px' }}>
             <label className="label">Email Address</label>
@@ -254,7 +350,7 @@ export default function LoginPage() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
-              disabled={loading}
+              disabled={loading || quickLoading || googleLoading}
             />
           </div>
 
@@ -267,7 +363,7 @@ export default function LoginPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              disabled={loading}
+              disabled={loading || quickLoading || googleLoading}
             />
           </div>
 
@@ -281,7 +377,7 @@ export default function LoginPage() {
             </Link>
           </div>
 
-          <button type="submit" className="btn-primary" disabled={loading}>
+          <button type="submit" className="btn-primary" disabled={loading || quickLoading || googleLoading}>
             {loading ? (
               <>
                 <div className="spinner" />
@@ -305,7 +401,7 @@ export default function LoginPage() {
             setGoogleLoading(true);
             signIn("google", { callbackUrl: "/markets" });
           }}
-          disabled={googleLoading || loading}
+          disabled={googleLoading || quickLoading || loading}
         >
           {googleLoading ? (
             <>
