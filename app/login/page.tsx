@@ -308,7 +308,7 @@ export default function LoginPage() {
 
         {/* Entry options */}
         <div>
-          <p className="section-caption">Quick Entry (No Login Required)</p>
+          <p className="section-caption">Quick Entry</p>
           <div className="user-type-toggle" role="tablist" aria-label="User type selection">
             <button
               type="button"
@@ -327,13 +327,6 @@ export default function LoginPage() {
               New User
             </button>
           </div>
-
-          <p style={{ marginBottom: '4px', color: '#374151', fontSize: '13px', lineHeight: 1.5 }}>
-            Intermediate User can quick-enter without login.
-          </p>
-          <p style={{ marginBottom: '22px', color: '#6b7280', fontSize: '13px', lineHeight: 1.5 }}>
-            New User will go to account registration.
-          </p>
         </div>
 
         <div className="divider-text">
