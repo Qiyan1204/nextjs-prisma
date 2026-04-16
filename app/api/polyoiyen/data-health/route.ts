@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { getAuthUser } from "@/lib/auth";
 import { CATEGORY_CONFIG, TAG_SLUGS_BY_CATEGORY, type CategoryKey } from "@/app/polyoiyen/shared/categoryConfig";
 import { hasCompleteYesNoTokens } from "@/app/polyoiyen/shared/marketAssessmentEngine";
 
@@ -590,6 +591,8 @@ export async function GET(req: Request) {
       .filter(Boolean)
   );
   const baseUrl = new URL(req.url).origin;
+  const authUser = await getAuthUser();
+  const authUserId = authUser?.userId ?? null;
 
   try {
 
@@ -722,6 +725,7 @@ export async function GET(req: Request) {
 
   const polyBetRows = await prisma.polyBet.findMany({
     where: {
+      ...(authUserId ? { userId: authUserId } : { userId: -1 }),
       side: { in: ["YES", "NO"] },
       type: { in: ["BUY", "SELL", "CLAIM"] },
     },
@@ -801,6 +805,8 @@ export async function GET(req: Request) {
     noSellShares: number;
     claimAmount: number;
     categoryScores: Record<string, number>;
+    firstEntryAt: Date | null;
+    lastExitAt: Date | null;
     lastAt: Date;
   }>();
 
@@ -821,6 +827,8 @@ export async function GET(req: Request) {
       noSellShares: 0,
       claimAmount: 0,
       categoryScores: {},
+      firstEntryAt: null,
+      lastExitAt: null,
       lastAt: b.createdAt,
     };
 
@@ -838,6 +846,9 @@ export async function GET(req: Request) {
       }
       const cat = (b.category || "PolyOiyen").trim() || "PolyOiyen";
       current.categoryScores[cat] = (current.categoryScores[cat] || 0) + Math.max(0, amt);
+      if (!current.firstEntryAt || b.createdAt < current.firstEntryAt) {
+        current.firstEntryAt = b.createdAt;
+      }
     } else if (t === "SELL") {
       if (side === "YES") {
         current.yesSellAmount += amt;
@@ -846,8 +857,14 @@ export async function GET(req: Request) {
         current.noSellAmount += amt;
         current.noSellShares += sh;
       }
+      if (!current.lastExitAt || b.createdAt > current.lastExitAt) {
+        current.lastExitAt = b.createdAt;
+      }
     } else if (t === "CLAIM") {
       current.claimAmount += amt;
+      if (!current.lastExitAt || b.createdAt > current.lastExitAt) {
+        current.lastExitAt = b.createdAt;
+      }
     }
 
     if (b.createdAt > current.lastAt) current.lastAt = b.createdAt;
@@ -885,6 +902,8 @@ export async function GET(req: Request) {
           noSellShares: 0,
           claimAmount: 0,
           categoryScores: { "Backtest Basket": FIXED_BACKTEST_BUDGET_USD },
+          firstEntryAt: seed.at,
+          lastExitAt: null,
           lastAt: seed.at,
         });
         syntheticNoBuyInjected += 1;
@@ -906,6 +925,17 @@ export async function GET(req: Request) {
       const payoutRemaining = winner === "YES" ? netYesShares : netNoShares;
       const realizedValue = r.yesSellAmount + r.noSellAmount + r.claimAmount + payoutRemaining;
       const invested = r.yesBuyAmount + r.noBuyAmount;
+      const isYesBias = r.yesBuyAmount >= r.noBuyAmount;
+      const sideBias = isYesBias ? "YES_BIAS" : "NO_BIAS";
+      const entryAmount = isYesBias ? r.yesBuyAmount : r.noBuyAmount;
+      const entryShares = isYesBias ? r.yesBuyShares : r.noBuyShares;
+      const exitAmount = isYesBias ? r.yesSellAmount : r.noSellAmount;
+      const exitShares = isYesBias ? r.yesSellShares : r.noSellShares;
+      const entryPrice = entryShares > 0 ? entryAmount / entryShares : null;
+      const exitPrice = exitShares > 0 ? exitAmount / exitShares : null;
+      const exitedByAction = (r.yesSellAmount + r.noSellAmount + r.claimAmount) > 0;
+      const exitedByFlatShares = netYesShares <= 0.000001 && netNoShares <= 0.000001;
+      const hasExited = exitedByAction || exitedByFlatShares;
       const ret = invested > 0 ? ((realizedValue - invested) / invested) * 100 : 0;
       const isWin = ret >= 0;
 
@@ -914,7 +944,6 @@ export async function GET(req: Request) {
       const strategyName = bestCategory ? `${bestCategory} Strategy` : "PolyOiyen Strategy";
       const category = bestCategory || "PolyOiyen";
       const eventType = classifyEventType(r.marketQuestion || "");
-      const sideBias = r.yesBuyAmount >= r.noBuyAmount ? "YES_BIAS" : "NO_BIAS";
       const investedBucket = bucketLiquidity(invested);
 
       return {
@@ -926,6 +955,11 @@ export async function GET(req: Request) {
         sideBias,
         depthBucket: investedBucket,
         invested: Number(invested.toFixed(2)),
+        entryPrice: entryPrice == null ? null : Number(entryPrice.toFixed(6)),
+        exitPrice: exitPrice == null ? null : Number(exitPrice.toFixed(6)),
+        entryAt: (r.firstEntryAt || r.lastAt).toISOString(),
+        exitAt: r.lastExitAt ? r.lastExitAt.toISOString() : null,
+        hasExited,
         totalReturn: Number(ret.toFixed(2)),
         totalTrades: 1,
         winningTrades: isWin ? 1 : 0,
@@ -1192,7 +1226,16 @@ export async function GET(req: Request) {
 
   const recentRuns = resolvedRuns.slice(0, 8).map((r) => ({
     symbol: r.eventId,
+    eventId: r.eventId,
+    marketQuestion: r.marketQuestion,
     strategyName: r.strategyName,
+    position: r.sideBias,
+    invested: r.invested,
+    entryPrice: r.entryPrice,
+    exitPrice: r.exitPrice,
+    entryAt: r.entryAt,
+    exitAt: r.exitAt,
+    hasExited: r.hasExited,
     totalReturn: r.totalReturn,
     totalTrades: r.totalTrades,
     winRate: r.winRate,
@@ -1201,7 +1244,16 @@ export async function GET(req: Request) {
 
   const inverseRecentRuns = inverseResolvedRunsSorted.slice(0, 8).map((r) => ({
     symbol: r.eventId,
+    eventId: r.eventId,
+    marketQuestion: r.marketQuestion,
     strategyName: r.strategyName,
+    position: r.sideBias,
+    invested: r.invested,
+    entryPrice: r.entryPrice,
+    exitPrice: r.exitPrice,
+    entryAt: r.entryAt,
+    exitAt: r.exitAt,
+    hasExited: r.hasExited,
     totalReturn: r.totalReturn,
     totalTrades: r.totalTrades,
     winRate: r.winRate,

@@ -1,9 +1,21 @@
 "use client";
 
 import { Suspense, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import PolyHeader from "../PolyHeader";
 import { CartesianGrid, Line, LineChart, ReferenceDot, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+
+type PositionMarkerType = "ENTER" | "EXIT" | "OPEN";
+
+type PositionMarkerPoint = {
+  id: string;
+  ts: number;
+  label: string;
+  priceCents: number;
+  markerType: PositionMarkerType;
+  marketQuestion: string;
+  eventId: string;
+};
 
 type ModelBacktestPayload = {
   checkedAt: string;
@@ -163,7 +175,16 @@ type ModelBacktestPayload = {
     } | null;
     recentRuns: Array<{
       symbol: string;
+      eventId?: string;
+      marketQuestion?: string;
       strategyName: string;
+      position?: "YES_BIAS" | "NO_BIAS";
+      invested?: number;
+      entryPrice?: number | null;
+      exitPrice?: number | null;
+      entryAt?: string;
+      exitAt?: string | null;
+      hasExited?: boolean;
       totalReturn: number;
       totalTrades: number;
       winRate: number | null;
@@ -171,7 +192,16 @@ type ModelBacktestPayload = {
     }>;
     inverseRecentRuns: Array<{
       symbol: string;
+      eventId?: string;
+      marketQuestion?: string;
       strategyName: string;
+      position?: "YES_BIAS" | "NO_BIAS";
+      invested?: number;
+      entryPrice?: number | null;
+      exitPrice?: number | null;
+      entryAt?: string;
+      exitAt?: string | null;
+      hasExited?: boolean;
       totalReturn: number;
       totalTrades: number;
       winRate: number | null;
@@ -224,12 +254,24 @@ function EquityTooltip({ active, payload }: { active?: boolean; payload?: Array<
 }
 
 function ModelBacktestContent() {
+  const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
   const [data, setData] = useState<ModelBacktestPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedCurve, setSelectedCurve] = useState<string>("__aggregate__");
   const [viewMode, setViewMode] = useState<"original" | "inverse">("original");
+  const [positionFilter, setPositionFilter] = useState<"ALL" | "YES" | "NO">(() => {
+    const raw = searchParams.get("pf") || "ALL";
+    return raw === "YES" || raw === "NO" ? raw : "ALL";
+  });
+  const [lossFilter, setLossFilter] = useState<"ALL" | "LOSS_ONLY">(() => {
+    const raw = searchParams.get("lf") || "ALL";
+    return raw === "LOSS_ONLY" ? "LOSS_ONLY" : "ALL";
+  });
+  const [fromDate, setFromDate] = useState(() => searchParams.get("from") || "");
+  const [toDate, setToDate] = useState(() => searchParams.get("to") || "");
 
   const selectedGroupKey = searchParams.get("group") || "";
   const selectedGroupLabel = searchParams.get("groupLabel") || "";
@@ -237,6 +279,42 @@ function ModelBacktestContent() {
     const raw = searchParams.get("eventIds") || "";
     return raw.split(",").map((x) => x.trim()).filter(Boolean);
   }, [searchParams]);
+
+  useEffect(() => {
+    const rawPf = searchParams.get("pf") || "ALL";
+    const nextPf = rawPf === "YES" || rawPf === "NO" ? rawPf : "ALL";
+    const rawLf = searchParams.get("lf") || "ALL";
+    const nextLf = rawLf === "LOSS_ONLY" ? "LOSS_ONLY" : "ALL";
+    const nextFrom = searchParams.get("from") || "";
+    const nextTo = searchParams.get("to") || "";
+
+    setPositionFilter((prev) => (prev === nextPf ? prev : nextPf));
+    setLossFilter((prev) => (prev === nextLf ? prev : nextLf));
+    setFromDate((prev) => (prev === nextFrom ? prev : nextFrom));
+    setToDate((prev) => (prev === nextTo ? prev : nextTo));
+  }, [searchParams]);
+
+  useEffect(() => {
+    const nextParams = new URLSearchParams(searchParams.toString());
+
+    if (positionFilter === "ALL") nextParams.delete("pf");
+    else nextParams.set("pf", positionFilter);
+
+    if (lossFilter === "ALL") nextParams.delete("lf");
+    else nextParams.set("lf", lossFilter);
+
+    if (!fromDate) nextParams.delete("from");
+    else nextParams.set("from", fromDate);
+
+    if (!toDate) nextParams.delete("to");
+    else nextParams.set("to", toDate);
+
+    const current = searchParams.toString();
+    const next = nextParams.toString();
+    if (current !== next) {
+      router.replace(next ? `${pathname}?${next}` : pathname, { scroll: false });
+    }
+  }, [positionFilter, lossFilter, fromDate, toDate, searchParams, router, pathname]);
 
   async function load() {
     setLoading(true);
@@ -334,6 +412,81 @@ function ModelBacktestContent() {
   const currentRecentRuns = data
     ? (isInverse ? data.backtestQuality.inverseRecentRuns : data.backtestQuality.recentRuns)
     : [];
+  const filteredBacktestedPositions = useMemo(() => {
+    return currentRecentRuns.filter((row) => {
+      const side = row.position === "NO_BIAS" ? "NO" : "YES";
+      if (positionFilter !== "ALL" && side !== positionFilter) return false;
+      if (lossFilter === "LOSS_ONLY" && !(row.totalReturn < 0)) return false;
+
+      const createdAtMs = new Date(row.createdAt).getTime();
+      if (fromDate) {
+        const fromMs = new Date(`${fromDate}T00:00:00`).getTime();
+        if (Number.isFinite(fromMs) && createdAtMs < fromMs) return false;
+      }
+      if (toDate) {
+        const toMs = new Date(`${toDate}T23:59:59`).getTime();
+        if (Number.isFinite(toMs) && createdAtMs > toMs) return false;
+      }
+      return true;
+    });
+  }, [currentRecentRuns, positionFilter, lossFilter, fromDate, toDate]);
+
+  const positionPriceChartData = useMemo(() => {
+    const points: PositionMarkerPoint[] = [];
+
+    for (const row of filteredBacktestedPositions) {
+      const rowEventId = row.eventId || row.symbol;
+      const marketQuestion = row.marketQuestion || rowEventId;
+      const entryTime = row.entryAt || row.createdAt;
+      const entryTs = new Date(entryTime).getTime();
+      const entryPrice = Number(row.entryPrice ?? NaN);
+
+      if (Number.isFinite(entryTs) && Number.isFinite(entryPrice)) {
+        points.push({
+          id: `${rowEventId}-enter-${entryTs}`,
+          ts: entryTs,
+          label: new Date(entryTs).toLocaleDateString([], { month: "numeric", day: "numeric" }),
+          priceCents: Number((entryPrice * 100).toFixed(2)),
+          markerType: "ENTER",
+          marketQuestion,
+          eventId: rowEventId,
+        });
+      }
+
+      if (row.hasExited) {
+        const exitTs = new Date(row.exitAt || row.createdAt).getTime();
+        const exitPrice = Number(row.exitPrice ?? NaN);
+        const fallbackPriceCents = Number((entryPrice * 100).toFixed(2));
+        const exitPriceCents = Number.isFinite(exitPrice)
+          ? Number((exitPrice * 100).toFixed(2))
+          : (Number.isFinite(fallbackPriceCents) ? fallbackPriceCents : null);
+
+        if (Number.isFinite(exitTs) && exitPriceCents != null) {
+          points.push({
+            id: `${rowEventId}-exit-${exitTs}`,
+            ts: exitTs,
+            label: new Date(exitTs).toLocaleDateString([], { month: "numeric", day: "numeric" }),
+            priceCents: exitPriceCents,
+            markerType: "EXIT",
+            marketQuestion,
+            eventId: rowEventId,
+          });
+        }
+      } else if (Number.isFinite(entryTs) && Number.isFinite(entryPrice)) {
+        points.push({
+          id: `${rowEventId}-open-${entryTs}`,
+          ts: entryTs,
+          label: new Date(entryTs).toLocaleDateString([], { month: "numeric", day: "numeric" }),
+          priceCents: Number((entryPrice * 100).toFixed(2)),
+          markerType: "OPEN",
+          marketQuestion,
+          eventId: rowEventId,
+        });
+      }
+    }
+
+    return points.sort((a, b) => a.ts - b.ts);
+  }, [filteredBacktestedPositions]);
   const currentBucketContribution = data
     ? (isInverse ? data.backtestQuality.lossAttribution.bucketContributions.inverse : data.backtestQuality.lossAttribution.bucketContributions.original)
     : { byEventType: [], byCategory: [], byLiquidityBucket: [], topFactors: [] };
@@ -802,6 +955,189 @@ function ModelBacktestContent() {
             </section>
 
             <section style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, background: "rgba(255,255,255,0.04)", padding: 16 }}>
+              <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>Backtested Positions (Past Markets)</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+                <select
+                  value={positionFilter}
+                  onChange={(e) => setPositionFilter(e.target.value as "ALL" | "YES" | "NO")}
+                  style={{
+                    background: "rgba(0,0,0,0.25)",
+                    color: "#fff",
+                    border: "1px solid rgba(255,255,255,0.14)",
+                    borderRadius: 8,
+                    padding: "6px 10px",
+                    fontSize: 12,
+                  }}
+                >
+                  <option value="ALL">All Positions</option>
+                  <option value="YES">YES Only</option>
+                  <option value="NO">NO Only</option>
+                </select>
+
+                <select
+                  value={lossFilter}
+                  onChange={(e) => setLossFilter(e.target.value as "ALL" | "LOSS_ONLY")}
+                  style={{
+                    background: "rgba(0,0,0,0.25)",
+                    color: "#fff",
+                    border: "1px solid rgba(255,255,255,0.14)",
+                    borderRadius: 8,
+                    padding: "6px 10px",
+                    fontSize: 12,
+                  }}
+                >
+                  <option value="ALL">All Returns</option>
+                  <option value="LOSS_ONLY">Loss Only</option>
+                </select>
+
+                <label style={{ fontSize: 12, color: "rgba(255,255,255,0.72)", display: "flex", alignItems: "center", gap: 6 }}>
+                  From
+                  <input
+                    type="date"
+                    value={fromDate}
+                    onChange={(e) => setFromDate(e.target.value)}
+                    style={{
+                      background: "rgba(0,0,0,0.25)",
+                      color: "#fff",
+                      border: "1px solid rgba(255,255,255,0.14)",
+                      borderRadius: 8,
+                      padding: "6px 10px",
+                      fontSize: 12,
+                    }}
+                  />
+                </label>
+
+                <label style={{ fontSize: 12, color: "rgba(255,255,255,0.72)", display: "flex", alignItems: "center", gap: 6 }}>
+                  To
+                  <input
+                    type="date"
+                    value={toDate}
+                    onChange={(e) => setToDate(e.target.value)}
+                    style={{
+                      background: "rgba(0,0,0,0.25)",
+                      color: "#fff",
+                      border: "1px solid rgba(255,255,255,0.14)",
+                      borderRadius: 8,
+                      padding: "6px 10px",
+                      fontSize: 12,
+                    }}
+                  />
+                </label>
+
+                <span style={{ marginLeft: "auto", fontSize: 11, color: "rgba(255,255,255,0.6)" }}>
+                  Showing {filteredBacktestedPositions.length} / {currentRecentRuns.length}
+                </span>
+              </div>
+              <div style={{ overflowX: "auto", marginBottom: 14 }}>
+                <div style={{ width: "100%", height: 220, marginBottom: 12 }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={positionPriceChartData} margin={{ top: 8, right: 18, bottom: 8, left: 0 }}>
+                      <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="4 4" />
+                      <XAxis
+                        dataKey="label"
+                        tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 11 }}
+                        axisLine={{ stroke: "rgba(255,255,255,0.12)" }}
+                        tickLine={{ stroke: "rgba(255,255,255,0.12)" }}
+                      />
+                      <YAxis
+                        tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 11 }}
+                        axisLine={{ stroke: "rgba(255,255,255,0.12)" }}
+                        tickLine={{ stroke: "rgba(255,255,255,0.12)" }}
+                        tickFormatter={(v) => `${Number(v).toFixed(1)}¢`}
+                      />
+                      <Tooltip
+                        formatter={(value: number | string | undefined) => [`${Number(value ?? 0).toFixed(2)}¢`, "Price"]}
+                        labelFormatter={(_, payload) => {
+                          const p = payload?.[0]?.payload as PositionMarkerPoint | undefined;
+                          if (!p) return "";
+                          return `${new Date(p.ts).toLocaleString()} • ${p.marketQuestion}`;
+                        }}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="priceCents"
+                        stroke="rgba(255,255,255,0.28)"
+                        strokeWidth={1.6}
+                        dot={(props) => {
+                          const p = props.payload as PositionMarkerPoint;
+                          const color = p.markerType === "ENTER" ? "#86efac" : p.markerType === "EXIT" ? "#fca5a5" : "rgba(255,255,255,0.35)";
+                          return (
+                            <text x={props.cx} y={props.cy} textAnchor="middle" dominantBaseline="central" fill={color} fontSize={12}>
+                              ★
+                            </text>
+                          );
+                        }}
+                        activeDot={{ r: 0 }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 980, fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ textAlign: "left", color: "rgba(255,255,255,0.65)", borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
+                      <th style={{ padding: "8px 10px" }}>Flow</th>
+                      <th style={{ padding: "8px 10px" }}>Time</th>
+                      <th style={{ padding: "8px 10px" }}>Market</th>
+                      <th style={{ padding: "8px 10px" }}>Position</th>
+                      <th style={{ padding: "8px 10px" }}>Invested</th>
+                      <th style={{ padding: "8px 10px" }}>Strategy</th>
+                      <th style={{ padding: "8px 10px" }}>Win Rate</th>
+                      <th style={{ padding: "8px 10px" }}>Return</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredBacktestedPositions.map((row) => {
+                      const rowEventId = row.eventId || row.symbol;
+                      const positionLabel = row.position === "NO_BIAS" ? "NO" : "YES";
+                      const positionColor = row.position === "NO_BIAS" ? "#fca5a5" : "#86efac";
+                      const investedValue = Number(row.invested ?? 0);
+                      const entryTime = row.entryAt || row.createdAt;
+                      const entryTitle = `Entered at ${new Date(entryTime).toLocaleString()}`;
+                      const exitTitle = row.exitAt
+                        ? `Exited at ${new Date(row.exitAt).toLocaleString()}`
+                        : "No explicit exit yet";
+                      return (
+                        <tr key={`pos-${row.strategyName}-${rowEventId}-${row.createdAt}`} style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+                          <td style={{ padding: "8px 10px" }}>
+                            <span title={entryTitle} style={{ color: "#86efac", fontSize: 14, marginRight: 8 }}>★</span>
+                            {row.hasExited ? (
+                              <span title={exitTitle} style={{ color: "#fca5a5", fontSize: 14 }}>★</span>
+                            ) : (
+                              <span title={exitTitle} style={{ color: "rgba(255,255,255,0.28)", fontSize: 14 }}>★</span>
+                            )}
+                          </td>
+                          <td style={{ padding: "8px 10px", color: "rgba(255,255,255,0.66)" }}>{new Date(entryTime).toLocaleString()}</td>
+                          <td style={{ padding: "8px 10px", minWidth: 260 }}>
+                            <a
+                              href={`/polyoiyen/${encodeURIComponent(rowEventId)}`}
+                              style={{ color: "#fdba74", textDecoration: "none", fontWeight: 700 }}
+                              title={row.marketQuestion}
+                            >
+                              {row.marketQuestion || rowEventId}
+                            </a>
+                            <div style={{ marginTop: 2, fontSize: 10, color: "rgba(255,255,255,0.45)" }}>{rowEventId}</div>
+                          </td>
+                          <td style={{ padding: "8px 10px", color: positionColor, fontWeight: 700 }}>{positionLabel}</td>
+                          <td style={{ padding: "8px 10px", color: "#fde68a" }}>${investedValue.toFixed(2)}</td>
+                          <td style={{ padding: "8px 10px" }}>{row.strategyName}</td>
+                          <td style={{ padding: "8px 10px", color: (row.winRate ?? 0) >= 55 ? "#86efac" : "#fdba74" }}>{fmt(row.winRate, "%")}</td>
+                          <td style={{ padding: "8px 10px", color: row.totalReturn >= 0 ? "#86efac" : "#fca5a5" }}>{fmt(row.totalReturn, "%")}</td>
+                        </tr>
+                      );
+                    })}
+                    {filteredBacktestedPositions.length === 0 ? (
+                      <tr>
+                        <td colSpan={8} style={{ padding: "10px", color: "rgba(255,255,255,0.6)" }}>No positions match the current filters.</td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ marginBottom: 12, fontSize: 11, color: "rgba(255,255,255,0.58)" }}>
+                <span style={{ color: "#86efac", marginRight: 6 }}>★</span> entered
+                <span style={{ color: "#fca5a5", marginLeft: 14, marginRight: 6 }}>★</span> exited
+              </div>
+
               <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>Recent PolyOiyen Backtests</div>
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760, fontSize: 12 }}>

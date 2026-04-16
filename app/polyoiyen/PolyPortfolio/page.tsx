@@ -593,7 +593,7 @@ export default function PolyPortfolioPage() {
 
                       return (
                         <div key={`${p.eventId}-${p.side}`} className="pp-table-row">
-                          <a href={`/polyoiyen?eventId=${p.eventId}`} style={{
+                          <a href={`/polyoiyen/${encodeURIComponent(p.eventId)}`} style={{
                             fontSize: 13, fontWeight: 600, color: "white",
                             textDecoration: "none", overflow: "hidden",
                             textOverflow: "ellipsis", whiteSpace: "nowrap",
