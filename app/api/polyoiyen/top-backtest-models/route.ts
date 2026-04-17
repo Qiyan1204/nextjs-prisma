@@ -100,10 +100,13 @@ async function fetchEventMetaMap(eventIds: string[]): Promise<Record<string, { t
         });
         if (!res.ok) return [eventId, { title: "", winner: null }] as const;
         const payload = await res.json();
-        const markets = Array.isArray(payload?.markets) ? payload.markets : [];
+        const markets = Array.isArray(payload?.markets) ? (payload.markets as Array<{ outcomes?: unknown; outcomePrices?: unknown }>) : [];
         const title = typeof payload?.title === "string" ? payload.title : typeof payload?.question === "string" ? payload.question : "";
         const topLevelWinner = inferWinnerSideFromOutcomes(payload?.outcomes, payload?.outcomePrices);
-        const winner = topLevelWinner || markets.reduce<"YES" | "NO" | null>((current, market) => current || inferWinnerSideFromOutcomes(market?.outcomes, market?.outcomePrices), null);
+        let winner: "YES" | "NO" | null = topLevelWinner;
+        for (const market of markets) {
+          winner = winner || inferWinnerSideFromOutcomes(market?.outcomes, market?.outcomePrices);
+        }
         return [eventId, { title, winner }] as const;
       } catch {
         return [eventId, { title: "", winner: null }] as const;
