@@ -167,7 +167,7 @@ export async function GET(req: NextRequest) {
     const sortBy: SortBy = sortByRaw === "winRate" || sortByRaw === "tradeCount" ? sortByRaw : "return";
     const sortDir: SortDir = sortDirRaw === "asc" ? "asc" : "desc";
 
-    const bets = await prisma.polyBet.findMany({
+    const rawBets = await prisma.polyBet.findMany({
       select: {
         userId: true,
         eventId: true,
@@ -183,9 +183,22 @@ export async function GET(req: NextRequest) {
       orderBy: { createdAt: "asc" },
     });
 
+    const bets: RawBetRow[] = rawBets.map((bet) => ({
+      userId: bet.userId,
+      eventId: bet.eventId,
+      marketQuestion: bet.marketQuestion,
+      side: bet.side,
+      type: bet.type,
+      amount: Number(bet.amount),
+      shares: Number(bet.shares),
+      price: Number(bet.price),
+      category: bet.category,
+      createdAt: bet.createdAt,
+    }));
+
     const grouped = new Map<string, GroupedModel>();
 
-    for (const bet of bets as RawBetRow[]) {
+    for (const bet of bets) {
       const side = bet.side === "YES" || bet.side === "NO" ? bet.side : null;
       if (!side) continue;
 
