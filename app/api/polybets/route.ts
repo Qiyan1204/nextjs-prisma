@@ -8,6 +8,28 @@ import {
 } from "@/lib/triggerAlerts";
 import { recordPull } from "@/lib/pullMetrics";
 
+async function fetchEventTitleMap(eventIds: string[]): Promise<Record<string, string>> {
+  const uniqueEventIds = [...new Set(eventIds.filter(Boolean))];
+  const entries = await Promise.all(
+    uniqueEventIds.map(async (eventId) => {
+      try {
+        const res = await fetch(`https://gamma-api.polymarket.com/events/${encodeURIComponent(eventId)}`, {
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+        });
+        if (!res.ok) return [eventId, ""] as const;
+        const data = await res.json();
+        const title = typeof data?.title === "string" ? data.title : "";
+        return [eventId, title] as const;
+      } catch {
+        return [eventId, ""] as const;
+      }
+    })
+  );
+
+  return Object.fromEntries(entries.filter(([, title]) => Boolean(title))) as Record<string, string>;
+}
+
 // GET: fetch user's bets, positions, or check if a large order exists
 // ?positions=true → computed grouped portfolio positions
 // ?checkLargeOrder=true&eventId=X&side=YES&threshold=500 → large order detection
@@ -52,10 +74,13 @@ export async function GET(req: NextRequest) {
     });
 
     if (positions) {
+      const eventTitleMap = await fetchEventTitleMap(bets.map((b) => b.eventId));
+
       // Group by eventId+side → compute net position
       const grouped: Record<string, {
         eventId: string;
         marketQuestion: string;
+        eventTitle: string;
         side: string;
         category: string;
         totalBuyShares: number;
@@ -71,6 +96,7 @@ export async function GET(req: NextRequest) {
           grouped[key] = {
             eventId: b.eventId,
             marketQuestion: b.marketQuestion,
+            eventTitle: eventTitleMap[b.eventId] || b.marketQuestion,
             side: b.side,
             category: b.category || "Other",
             totalBuyShares: 0,
@@ -97,6 +123,7 @@ export async function GET(req: NextRequest) {
         // Always keep the latest category / marketQuestion
         if (b.category) g.category = b.category;
         g.marketQuestion = b.marketQuestion;
+        g.eventTitle = eventTitleMap[b.eventId] || g.eventTitle || b.marketQuestion;
       }
 
       const positionList = Object.values(grouped).map((g) => {
@@ -106,6 +133,7 @@ export async function GET(req: NextRequest) {
         return {
           eventId: g.eventId,
           marketQuestion: g.marketQuestion,
+          eventTitle: g.eventTitle,
           side: g.side,
           category: g.category,
           netShares: Math.max(netShares, 0),
@@ -119,6 +147,7 @@ export async function GET(req: NextRequest) {
         id: b.id,
         eventId: b.eventId,
         marketQuestion: b.marketQuestion,
+        eventTitle: eventTitleMap[b.eventId] || b.marketQuestion,
         side: b.side,
         type: b.type || "BUY",
         amount: Number(b.amount),

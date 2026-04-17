@@ -7,6 +7,7 @@ import PolyHeader from "../PolyHeader";
 interface Position {
   eventId: string;
   marketQuestion: string;
+  eventTitle?: string;
   side: string;
   category: string;
   netShares: number;
@@ -19,6 +20,7 @@ interface BetRow {
   id: number;
   eventId: string;
   marketQuestion: string;
+  eventTitle?: string;
   side: string;
   type: string;
   amount: number;
@@ -225,7 +227,7 @@ function TradeModal({ position, currentPrice, mode, onClose, onTrade }: TradeMod
         </div>
 
         <div style={{ fontSize: 13, color: "rgba(255,255,255,0.55)", marginBottom: 12 }}>
-          {position.marketQuestion}
+          {position.eventTitle || position.marketQuestion}
         </div>
 
         <div style={{
@@ -597,8 +599,8 @@ export default function PolyPortfolioPage() {
                             fontSize: 13, fontWeight: 600, color: "white",
                             textDecoration: "none", overflow: "hidden",
                             textOverflow: "ellipsis", whiteSpace: "nowrap",
-                          }} title={p.marketQuestion}>
-                            {p.marketQuestion}
+                          }} title={p.eventTitle || p.marketQuestion}>
+                            {p.eventTitle || p.marketQuestion}
                           </a>
                           <span style={{
                             fontSize: 11, fontWeight: 700,
@@ -719,7 +721,7 @@ export default function PolyPortfolioPage() {
                           <span style={{ fontSize: 16 }}>{typeIcon}</span>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ fontSize: 13, fontWeight: 600, color: "white", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                              {b.marketQuestion}
+                              {b.eventTitle || b.marketQuestion}
                             </div>
                             <div style={{ fontSize: 11, color: "rgba(255,255,255,0.35)" }}>
                               {timeStr(b.createdAt)}

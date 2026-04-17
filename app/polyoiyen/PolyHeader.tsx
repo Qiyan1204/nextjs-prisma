@@ -24,6 +24,7 @@ const NAV_LINKS = [
 const MORE_LINKS = [
   { label: "🩺 Data Health", href: "/polyoiyen/DataHealth", active: "DataHealth" },
   { label: "📐 Model backtest", href: "/polyoiyen/ModelBacktest", active: "ModelBacktest" },
+  { label: "📚 Top Backtest Models", href: "/polyoiyen/TopBacktestModels", active: "TopBacktestModels" },
   { label: "🎯 Top Candidates", href: "/polyoiyen/TopCandidates", active: "TopCandidates" },
   { label: "🏆 Leaderboard", href: "/polyoiyen/PolyLeaderboard", active: "Leaderboard" },
   { label: "🎁 Reward", href: "/polyoiyen/PolyReward", active: "Reward" },

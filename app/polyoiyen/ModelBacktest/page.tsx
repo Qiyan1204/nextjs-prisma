@@ -14,6 +14,7 @@ type PositionMarkerPoint = {
   priceCents: number;
   markerType: PositionMarkerType;
   marketQuestion: string;
+  eventTitle?: string;
   eventId: string;
 };
 
@@ -177,6 +178,7 @@ type ModelBacktestPayload = {
       symbol: string;
       eventId?: string;
       marketQuestion?: string;
+      eventTitle?: string;
       strategyName: string;
       position?: "YES_BIAS" | "NO_BIAS";
       invested?: number;
@@ -194,6 +196,7 @@ type ModelBacktestPayload = {
       symbol: string;
       eventId?: string;
       marketQuestion?: string;
+      eventTitle?: string;
       strategyName: string;
       position?: "YES_BIAS" | "NO_BIAS";
       invested?: number;
@@ -266,6 +269,7 @@ function ModelBacktestContent() {
     const raw = searchParams.get("pf") || "ALL";
     return raw === "YES" || raw === "NO" ? raw : "ALL";
   });
+  const [selectedPositionEventId, setSelectedPositionEventId] = useState<string>("");
   const [lossFilter, setLossFilter] = useState<"ALL" | "LOSS_ONLY">(() => {
     const raw = searchParams.get("lf") || "ALL";
     return raw === "LOSS_ONLY" ? "LOSS_ONLY" : "ALL";
@@ -431,12 +435,26 @@ function ModelBacktestContent() {
     });
   }, [currentRecentRuns, positionFilter, lossFilter, fromDate, toDate]);
 
+  useEffect(() => {
+    if (!selectedPositionEventId) return;
+    const stillVisible = filteredBacktestedPositions.some((row) => (row.eventId || row.symbol) === selectedPositionEventId);
+    if (!stillVisible) {
+      setSelectedPositionEventId("");
+    }
+  }, [filteredBacktestedPositions, selectedPositionEventId]);
+
   const positionPriceChartData = useMemo(() => {
     const points: PositionMarkerPoint[] = [];
 
-    for (const row of filteredBacktestedPositions) {
+    if (!selectedPositionEventId) {
+      return points;
+    }
+
+    const chartRows = filteredBacktestedPositions.filter((row) => (row.eventId || row.symbol) === selectedPositionEventId);
+
+    for (const row of chartRows) {
       const rowEventId = row.eventId || row.symbol;
-      const marketQuestion = row.marketQuestion || rowEventId;
+      const marketQuestion = row.eventTitle || row.marketQuestion || rowEventId;
       const entryTime = row.entryAt || row.createdAt;
       const entryTs = new Date(entryTime).getTime();
       const entryPrice = Number(row.entryPrice ?? NaN);
@@ -449,6 +467,7 @@ function ModelBacktestContent() {
           priceCents: Number((entryPrice * 100).toFixed(2)),
           markerType: "ENTER",
           marketQuestion,
+          eventTitle: row.eventTitle,
           eventId: rowEventId,
         });
       }
@@ -469,6 +488,7 @@ function ModelBacktestContent() {
             priceCents: exitPriceCents,
             markerType: "EXIT",
             marketQuestion,
+            eventTitle: row.eventTitle,
             eventId: rowEventId,
           });
         }
@@ -480,13 +500,14 @@ function ModelBacktestContent() {
           priceCents: Number((entryPrice * 100).toFixed(2)),
           markerType: "OPEN",
           marketQuestion,
+          eventTitle: row.eventTitle,
           eventId: rowEventId,
         });
       }
     }
 
     return points.sort((a, b) => a.ts - b.ts);
-  }, [filteredBacktestedPositions]);
+  }, [filteredBacktestedPositions, selectedPositionEventId]);
   const currentBucketContribution = data
     ? (isInverse ? data.backtestQuality.lossAttribution.bucketContributions.inverse : data.backtestQuality.lossAttribution.bucketContributions.original)
     : { byEventType: [], byCategory: [], byLiquidityBucket: [], topFactors: [] };
@@ -1030,47 +1051,53 @@ function ModelBacktestContent() {
               </div>
               <div style={{ overflowX: "auto", marginBottom: 14 }}>
                 <div style={{ width: "100%", height: 220, marginBottom: 12 }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={positionPriceChartData} margin={{ top: 8, right: 18, bottom: 8, left: 0 }}>
-                      <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="4 4" />
-                      <XAxis
-                        dataKey="label"
-                        tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 11 }}
-                        axisLine={{ stroke: "rgba(255,255,255,0.12)" }}
-                        tickLine={{ stroke: "rgba(255,255,255,0.12)" }}
-                      />
-                      <YAxis
-                        tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 11 }}
-                        axisLine={{ stroke: "rgba(255,255,255,0.12)" }}
-                        tickLine={{ stroke: "rgba(255,255,255,0.12)" }}
-                        tickFormatter={(v) => `${Number(v).toFixed(1)}¢`}
-                      />
-                      <Tooltip
-                        formatter={(value: number | string | undefined) => [`${Number(value ?? 0).toFixed(2)}¢`, "Price"]}
-                        labelFormatter={(_, payload) => {
-                          const p = payload?.[0]?.payload as PositionMarkerPoint | undefined;
-                          if (!p) return "";
-                          return `${new Date(p.ts).toLocaleString()} • ${p.marketQuestion}`;
-                        }}
-                      />
-                      <Line
-                        type="monotone"
-                        dataKey="priceCents"
-                        stroke="rgba(255,255,255,0.28)"
-                        strokeWidth={1.6}
-                        dot={(props) => {
-                          const p = props.payload as PositionMarkerPoint;
-                          const color = p.markerType === "ENTER" ? "#86efac" : p.markerType === "EXIT" ? "#fca5a5" : "rgba(255,255,255,0.35)";
-                          return (
-                            <text x={props.cx} y={props.cy} textAnchor="middle" dominantBaseline="central" fill={color} fontSize={12}>
-                              ★
-                            </text>
-                          );
-                        }}
-                        activeDot={{ r: 0 }}
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
+                  {selectedPositionEventId ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={positionPriceChartData} margin={{ top: 8, right: 18, bottom: 8, left: 0 }}>
+                        <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="4 4" />
+                        <XAxis
+                          dataKey="label"
+                          tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 11 }}
+                          axisLine={{ stroke: "rgba(255,255,255,0.12)" }}
+                          tickLine={{ stroke: "rgba(255,255,255,0.12)" }}
+                        />
+                        <YAxis
+                          tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 11 }}
+                          axisLine={{ stroke: "rgba(255,255,255,0.12)" }}
+                          tickLine={{ stroke: "rgba(255,255,255,0.12)" }}
+                          tickFormatter={(v) => `${Number(v).toFixed(1)}¢`}
+                        />
+                        <Tooltip
+                          formatter={(value: number | string | undefined) => [`${Number(value ?? 0).toFixed(2)}¢`, "Price"]}
+                          labelFormatter={(_, payload) => {
+                            const p = payload?.[0]?.payload as PositionMarkerPoint | undefined;
+                            if (!p) return "";
+                            return `${new Date(p.ts).toLocaleString()} • ${p.marketQuestion}`;
+                          }}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="priceCents"
+                          stroke="rgba(255,255,255,0.28)"
+                          strokeWidth={1.6}
+                          dot={(props) => {
+                            const p = props.payload as PositionMarkerPoint;
+                            const color = p.markerType === "ENTER" ? "#86efac" : p.markerType === "EXIT" ? "#fca5a5" : "rgba(255,255,255,0.35)";
+                            return (
+                              <text x={props.cx} y={props.cy} textAnchor="middle" dominantBaseline="central" fill={color} fontSize={12}>
+                                ★
+                              </text>
+                            );
+                          }}
+                          activeDot={{ r: 0 }}
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div style={{ height: "100%", borderRadius: 12, border: "1px dashed rgba(255,255,255,0.14)", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.5)", fontSize: 13 }}>
+                      Click a past market row to show its price chart
+                    </div>
+                  )}
                 </div>
                 <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 980, fontSize: 12 }}>
                   <thead>
@@ -1096,8 +1123,17 @@ function ModelBacktestContent() {
                       const exitTitle = row.exitAt
                         ? `Exited at ${new Date(row.exitAt).toLocaleString()}`
                         : "No explicit exit yet";
+                      const isSelected = selectedPositionEventId === rowEventId;
                       return (
-                        <tr key={`pos-${row.strategyName}-${rowEventId}-${row.createdAt}`} style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+                        <tr
+                          key={`pos-${row.strategyName}-${rowEventId}-${row.createdAt}`}
+                          onClick={() => setSelectedPositionEventId(rowEventId)}
+                          style={{
+                            borderBottom: "1px solid rgba(255,255,255,0.06)",
+                            cursor: "pointer",
+                            background: isSelected ? "rgba(249,115,22,0.08)" : "transparent",
+                          }}
+                        >
                           <td style={{ padding: "8px 10px" }}>
                             <span title={entryTitle} style={{ color: "#86efac", fontSize: 14, marginRight: 8 }}>★</span>
                             {row.hasExited ? (
@@ -1111,9 +1147,9 @@ function ModelBacktestContent() {
                             <a
                               href={`/polyoiyen/${encodeURIComponent(rowEventId)}`}
                               style={{ color: "#fdba74", textDecoration: "none", fontWeight: 700 }}
-                              title={row.marketQuestion}
+                              title={row.eventTitle || row.marketQuestion || rowEventId}
                             >
-                              {row.marketQuestion || rowEventId}
+                              {row.eventTitle || row.marketQuestion || rowEventId}
                             </a>
                             <div style={{ marginTop: 2, fontSize: 10, color: "rgba(255,255,255,0.45)" }}>{rowEventId}</div>
                           </td>

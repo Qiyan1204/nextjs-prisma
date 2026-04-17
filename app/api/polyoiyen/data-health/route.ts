@@ -453,6 +453,28 @@ async function fetchSyntheticBacktestSeed(eventId: string): Promise<{
   }
 }
 
+async function fetchEventTitleMap(eventIds: string[]): Promise<Record<string, string>> {
+  const uniqueEventIds = [...new Set(eventIds.filter(Boolean))];
+  const entries = await Promise.all(
+    uniqueEventIds.map(async (eventId) => {
+      try {
+        const res = await fetch(`https://gamma-api.polymarket.com/events/${encodeURIComponent(eventId)}`, {
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+        });
+        if (!res.ok) return [eventId, ""] as const;
+        const payload = await res.json();
+        const title = typeof payload?.title === "string" ? payload.title : "";
+        return [eventId, title] as const;
+      } catch {
+        return [eventId, ""] as const;
+      }
+    })
+  );
+
+  return Object.fromEntries(entries.filter(([, title]) => Boolean(title))) as Record<string, string>;
+}
+
 async function probe(baseUrl: string, endpointKey: string, path: string) {
   const started = Date.now();
   let ok = false;
@@ -795,6 +817,7 @@ export async function GET(req: Request) {
   const groupedPoly = new Map<string, {
     eventId: string;
     marketQuestion: string;
+    eventTitle: string;
     yesBuyAmount: number;
     yesBuyShares: number;
     yesSellAmount: number;
@@ -810,6 +833,8 @@ export async function GET(req: Request) {
     lastAt: Date;
   }>();
 
+  const eventTitleMap = await fetchEventTitleMap(polyBetRows.map((row) => row.eventId));
+
   for (const b of polyBetRows) {
     const side = b.side === "YES" || b.side === "NO" ? b.side : null;
     if (!side) continue;
@@ -817,6 +842,7 @@ export async function GET(req: Request) {
     const current = groupedPoly.get(key) || {
       eventId: b.eventId,
       marketQuestion: b.marketQuestion,
+      eventTitle: eventTitleMap[b.eventId] || b.marketQuestion,
       yesBuyAmount: 0,
       yesBuyShares: 0,
       yesSellAmount: 0,
@@ -869,6 +895,7 @@ export async function GET(req: Request) {
 
     if (b.createdAt > current.lastAt) current.lastAt = b.createdAt;
     if (b.marketQuestion) current.marketQuestion = b.marketQuestion;
+    current.eventTitle = eventTitleMap[b.eventId] || current.eventTitle || b.marketQuestion;
     groupedPoly.set(key, current);
   }
 
@@ -892,6 +919,7 @@ export async function GET(req: Request) {
         groupedList.push({
           eventId,
           marketQuestion: seed.marketQuestion,
+          eventTitle: seed.marketQuestion,
           yesBuyAmount: seed.chosenSide === "YES" ? FIXED_BACKTEST_BUDGET_USD : 0,
           yesBuyShares: seed.chosenSide === "YES" ? shares : 0,
           yesSellAmount: 0,
@@ -949,6 +977,7 @@ export async function GET(req: Request) {
       return {
         eventId: r.eventId,
         marketQuestion: r.marketQuestion,
+        eventTitle: r.eventTitle,
         strategyName,
         category,
         eventType,
@@ -1179,6 +1208,7 @@ export async function GET(req: Request) {
     .map((r) => ({
       eventId: r.eventId,
       marketQuestion: r.marketQuestion,
+      eventTitle: r.eventTitle,
       strategyName: r.strategyName,
       totalReturn: r.totalReturn,
       createdAt: r.createdAt,
@@ -1190,6 +1220,7 @@ export async function GET(req: Request) {
     .map((r) => ({
       eventId: r.eventId,
       marketQuestion: r.marketQuestion,
+      eventTitle: r.eventTitle,
       strategyName: r.strategyName,
       totalReturn: r.totalReturn,
       createdAt: r.createdAt,
@@ -1201,6 +1232,7 @@ export async function GET(req: Request) {
     .map((r) => ({
       eventId: r.eventId,
       marketQuestion: r.marketQuestion,
+      eventTitle: r.eventTitle,
       strategyName: r.strategyName,
       totalReturn: r.totalReturn,
       createdAt: r.createdAt,
@@ -1212,6 +1244,7 @@ export async function GET(req: Request) {
     .map((r) => ({
       eventId: r.eventId,
       marketQuestion: r.marketQuestion,
+      eventTitle: r.eventTitle,
       strategyName: r.strategyName,
       totalReturn: r.totalReturn,
       createdAt: r.createdAt,
@@ -1228,6 +1261,7 @@ export async function GET(req: Request) {
     symbol: r.eventId,
     eventId: r.eventId,
     marketQuestion: r.marketQuestion,
+    eventTitle: r.eventTitle,
     strategyName: r.strategyName,
     position: r.sideBias,
     invested: r.invested,
@@ -1246,6 +1280,7 @@ export async function GET(req: Request) {
     symbol: r.eventId,
     eventId: r.eventId,
     marketQuestion: r.marketQuestion,
+    eventTitle: r.eventTitle,
     strategyName: r.strategyName,
     position: r.sideBias,
     invested: r.invested,
