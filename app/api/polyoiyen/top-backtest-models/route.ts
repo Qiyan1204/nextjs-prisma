@@ -55,6 +55,26 @@ type ModelSummary = {
 type SortBy = "return" | "winRate" | "tradeCount";
 type SortDir = "asc" | "desc";
 
+const ALLOWED_MARKET_SEGMENTS = [
+  "movies box office",
+  "box office",
+  "elon tweets",
+  "elon",
+  "interest rates",
+  "federal reserve",
+  "fed rates",
+  "nba",
+  "basketball",
+  "nfl",
+  "football",
+  "super bowl",
+] as const;
+
+function isAllowedBacktestMarket(row: Pick<ModelSummary, "marketTitle" | "marketQuestion" | "category">): boolean {
+  const haystack = `${row.marketTitle || ""} ${row.marketQuestion || ""} ${row.category || ""}`.toLowerCase();
+  return ALLOWED_MARKET_SEGMENTS.some((segment) => haystack.includes(segment));
+}
+
 function parseJsonArray<T>(raw: unknown): T[] {
   if (Array.isArray(raw)) return raw as T[];
   if (typeof raw !== "string") return [];
@@ -264,7 +284,8 @@ export async function GET(req: NextRequest) {
         return summarizeGroup(group, meta?.winner ?? null);
       })
       .filter((item): item is ModelSummary => item !== null)
-      .filter((row) => row.tradeCount >= minTrades);
+      .filter((row) => row.tradeCount >= minTrades)
+      .filter((row) => isAllowedBacktestMarket(row));
 
     const searched = searchQuery
       ? summaries.filter((row) => {

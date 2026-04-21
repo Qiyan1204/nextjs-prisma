@@ -218,7 +218,10 @@ export default function TopBacktestModelsPage() {
               Top 20 winners, bottom 20 losers, and a paginated catalog of all backtested models.
             </p>
             <p style={{ marginTop: 6, fontSize: 12, color: "rgba(255,255,255,0.55)", lineHeight: 1.5 }}>
-              Aggregation scope: all users (global PolyBet history)
+              Aggregation scope: all users (global PolyBet history) · limited to Movies Box Office, Elon Tweets, Interest Rates, NBA, and NFL markets.
+            </p>
+            <p style={{ marginTop: 6, fontSize: 12, color: "rgba(255,255,255,0.55)", lineHeight: 1.5 }}>
+              Total Return = (realizedValue - invested) ÷ invested x 100% 
             </p>
           </section>
 

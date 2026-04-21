@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
+import { CartesianGrid, Legend, Line, LineChart, ReferenceDot, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import PolyHeader from "./PolyHeader";
 import { CATEGORY_CONFIG, QUICK_MARKET_FILTERS, type CategoryKey } from "./shared/categoryConfig";
 import { eventMatchesGroupPreset, getDefaultPresetForCategory } from "./shared/marketGroupProfiles";
@@ -38,6 +39,7 @@ interface UserBet {
   eventId: string;
   marketQuestion: string;
   side: string;
+  type: string;
   amount: string;
   shares: string;
   price: string;
@@ -202,6 +204,21 @@ interface VolatilityRatingResponse {
     noPriceObservations: number;
   };
   points: VolatilityRatingPoint[];
+  fetchedAt: string;
+}
+
+interface PriceHistoryPoint {
+  ts: number;
+  timeLabel: string;
+  yesPrice: number | null;
+  noPrice: number | null;
+  yesStepScore: number;
+  noStepScore: number;
+}
+
+interface PriceHistoryResponse {
+  points: PriceHistoryPoint[];
+  bucketSeconds: number;
   fetchedAt: string;
 }
 
@@ -452,6 +469,22 @@ function formatMoney(v: number): string {
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
   if (v >= 1_000) return `$${(v / 1_000).toFixed(1)}K`;
   return `$${v.toFixed(2)}`;
+}
+
+function findNearestHistoryPoint(points: PriceHistoryPoint[], tsMs: number): PriceHistoryPoint | null {
+  if (!points.length || !Number.isFinite(tsMs)) return null;
+  let nearest = points[0];
+  let nearestDelta = Math.abs(points[0].ts * 1000 - tsMs);
+
+  for (let i = 1; i < points.length; i += 1) {
+    const delta = Math.abs(points[i].ts * 1000 - tsMs);
+    if (delta < nearestDelta) {
+      nearest = points[i];
+      nearestDelta = delta;
+    }
+  }
+
+  return nearest;
 }
 
 export function getModelBacktestHref(event: PolyEvent): string {
@@ -2139,6 +2172,9 @@ export function DetailPage({
   const [confirmed, setConfirmed] = useState(false);
   const [userBets, setUserBets] = useState<UserBet[]>([]);
   const [loadingBets, setLoadingBets] = useState(true);
+  const [priceHistory, setPriceHistory] = useState<PriceHistoryPoint[]>([]);
+  const [priceHistoryLoading, setPriceHistoryLoading] = useState(true);
+  const [priceHistoryError, setPriceHistoryError] = useState("");
   const [largeOrders, setLargeOrders] = useState<LargeOrderItem[]>([]);
   const [detailTab, setDetailTab] = useState<"orderbook" | "positions">("orderbook");
   const [showPredictors, setShowPredictors] = useState(false);
@@ -2185,6 +2221,53 @@ export function DetailPage({
     fetchComments();
     checkCommentAuth();
   }, [event.id]);
+
+  useEffect(() => {
+    let alive = true;
+
+    async function fetchPriceHistory() {
+      if (!tokenIds.yes || !tokenIds.no) {
+        if (!alive) return;
+        setPriceHistory([]);
+        setPriceHistoryLoading(false);
+        setPriceHistoryError("No token ids available for charting.");
+        return;
+      }
+
+      setPriceHistoryLoading(true);
+      setPriceHistoryError("");
+
+      try {
+        const params = new URLSearchParams({
+          yesAssetId: tokenIds.yes,
+          noAssetId: tokenIds.no,
+          range: "1W",
+          limit: "300",
+          maxPages: "80",
+        });
+        const res = await fetch(`/api/polymarket/volatility-rating?${params.toString()}`, { cache: "no-store" });
+        const data = (await res.json()) as Partial<PriceHistoryResponse> & { error?: string };
+        if (!res.ok) {
+          throw new Error(data?.error || "Failed to load price history");
+        }
+
+        if (!alive) return;
+        setPriceHistory(Array.isArray(data?.points) ? data.points : []);
+      } catch (err) {
+        if (!alive) return;
+        setPriceHistory([]);
+        setPriceHistoryError(err instanceof Error ? err.message : "Failed to load price history");
+      } finally {
+        if (alive) setPriceHistoryLoading(false);
+      }
+    }
+
+    fetchPriceHistory();
+
+    return () => {
+      alive = false;
+    };
+  }, [event.id, tokenIds.no, tokenIds.yes]);
 
   async function fetchUserBets() {
     try {
@@ -2349,6 +2432,50 @@ export function DetailPage({
 
   const commentsSorted = [...comments].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
   const topLevelComments = commentsSorted.filter((c) => c.parentCommentId == null);
+  const priceChartData = priceHistory.map((point) => ({
+    ...point,
+    yesCents: point.yesPrice == null ? null : Number((point.yesPrice * 100).toFixed(2)),
+    noCents: point.noPrice == null ? null : Number((point.noPrice * 100).toFixed(2)),
+  }));
+  const tradeMarkers = userBets
+    .filter((bet) => bet.type === "BUY" || bet.type === "SELL")
+    .map((bet) => {
+      const historyPoint = findNearestHistoryPoint(priceHistory, Date.parse(bet.createdAt));
+      const yValue = bet.side === "YES" ? historyPoint?.yesPrice ?? Number(bet.price) : historyPoint?.noPrice ?? Number(bet.price);
+      const kind = `${bet.side} ${bet.type}` as const;
+
+      const styleMap: Record<string, { color: string; label: string; radius: number; position: "top" | "bottom"; border: string }> = {
+        "YES BUY": { color: "#34d399", label: "YB", radius: 4.5, position: "bottom", border: "rgba(52,211,153,0.55)" },
+        "YES SELL": { color: "#059669", label: "YS", radius: 5, position: "top", border: "rgba(16,185,129,0.65)" },
+        "NO BUY": { color: "#fbbf24", label: "NB", radius: 4.5, position: "bottom", border: "rgba(251,191,36,0.55)" },
+        "NO SELL": { color: "#f87171", label: "NS", radius: 5, position: "top", border: "rgba(248,113,113,0.65)" },
+      };
+
+      const style = styleMap[kind];
+
+      return {
+        id: bet.id,
+        x: historyPoint?.timeLabel ?? new Date(bet.createdAt).toLocaleString(),
+        y: yValue,
+        type: bet.type,
+        side: bet.side,
+        kind,
+        amount: Number(bet.amount),
+        shares: Number(bet.shares),
+        price: Number(bet.price),
+        createdAt: bet.createdAt,
+        color: style.color,
+        markerLabel: style.label,
+        markerPosition: style.position,
+        markerRadius: style.radius,
+        markerBorder: style.border,
+      };
+    })
+    .filter((marker) => Number.isFinite(marker.y));
+  const yesBuyMarkerCount = tradeMarkers.filter((marker) => marker.kind === "YES BUY").length;
+  const yesSellMarkerCount = tradeMarkers.filter((marker) => marker.kind === "YES SELL").length;
+  const noBuyMarkerCount = tradeMarkers.filter((marker) => marker.kind === "NO BUY").length;
+  const noSellMarkerCount = tradeMarkers.filter((marker) => marker.kind === "NO SELL").length;
 
   function renderCommentThread(comment: EventComment, depth = 0) {
     const replies = commentsSorted.filter((c) => c.parentCommentId === comment.id);
@@ -2669,6 +2796,110 @@ export function DetailPage({
               </div>
             </div>
 
+            <div className="card" style={{ padding: "20px 24px" }}>
+              <SectionTitle icon="📈" text="Price Chart" />
+              <div style={{ marginBottom: 10, fontSize: 12, color: "var(--muted)" }}>
+                7-day YES / NO price history with BUY and SELL entries marked on the timeline.
+              </div>
+
+              <div style={{ width: "100%", height: 300 }}>
+                {priceHistoryLoading ? (
+                  <div style={{ height: "100%", borderRadius: 12, border: "1px dashed rgba(255,255,255,0.14)", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.5)", fontSize: 13 }}>
+                    <span className="spin" /> Loading price chart...
+                  </div>
+                ) : priceHistoryError ? (
+                  <div style={{ height: "100%", borderRadius: 12, border: "1px dashed rgba(255,255,255,0.14)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--muted)", fontSize: 13, textAlign: "center", padding: 16 }}>
+                    {priceHistoryError}
+                  </div>
+                ) : priceChartData.length === 0 ? (
+                  <div style={{ height: "100%", borderRadius: 12, border: "1px dashed rgba(255,255,255,0.14)", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.5)", fontSize: 13 }}>
+                    No historical price points available yet.
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={priceChartData} margin={{ top: 12, right: 18, bottom: 6, left: 0 }}>
+                      <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="4 4" />
+                      <XAxis
+                        dataKey="timeLabel"
+                        tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 11 }}
+                        axisLine={{ stroke: "rgba(255,255,255,0.12)" }}
+                        tickLine={{ stroke: "rgba(255,255,255,0.12)" }}
+                        minTickGap={22}
+                      />
+                      <YAxis
+                        tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 11 }}
+                        axisLine={{ stroke: "rgba(255,255,255,0.12)" }}
+                        tickLine={{ stroke: "rgba(255,255,255,0.12)" }}
+                        domain={[0, 100]}
+                        tickFormatter={(value) => `${Number(value).toFixed(0)}¢`}
+                      />
+                      <Tooltip
+                        contentStyle={{
+                          background: "rgba(18, 10, 4, 0.96)",
+                          border: "1px solid rgba(255,255,255,0.14)",
+                          borderRadius: 10,
+                          color: "var(--text)",
+                        }}
+                        formatter={(value: number | string | undefined, name) => {
+                          const cents = Number(value ?? 0);
+                          const label = name === "yesCents" ? "YES price" : name === "noCents" ? "NO price" : String(name);
+                          return [`${cents.toFixed(2)}¢`, label];
+                        }}
+                        labelFormatter={(label) => label}
+                      />
+                      <Legend
+                        verticalAlign="top"
+                        align="right"
+                        iconType="line"
+                        wrapperStyle={{ color: "rgba(255,255,255,0.68)", fontSize: 11 }}
+                      />
+                      <Line type="monotone" dataKey="yesCents" name="YES" stroke="#34d399" strokeWidth={2.2} dot={false} activeDot={{ r: 3 }} />
+                      <Line type="monotone" dataKey="noCents" name="NO" stroke="#f87171" strokeWidth={2.2} dot={false} activeDot={{ r: 3 }} />
+                      {tradeMarkers.map((marker) => (
+                        <ReferenceDot
+                          key={`${marker.id}-${marker.type}`}
+                          x={marker.x}
+                          y={Number((marker.y * 100).toFixed(2))}
+                          r={0}
+                          fill="transparent"
+                          stroke="transparent"
+                          ifOverflow="visible"
+                          shape={(props: any) => {
+                            const cx = props?.cx ?? props?.x;
+                            const cy = props?.cy ?? props?.y;
+                            return (
+                              <text
+                                x={cx}
+                                y={cy}
+                                textAnchor="middle"
+                                dominantBaseline="central"
+                                fill={marker.color}
+                                stroke={marker.markerBorder}
+                                strokeWidth={0.4}
+                                fontSize={14}
+                                fontWeight={800}
+                              >
+                                ★
+                              </text>
+                            );
+                          }}
+                        />
+                      ))}
+                    </LineChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12, fontSize: 11, color: "var(--muted)" }}>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#34d399" }} /> YES line</span>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#f87171" }} /> NO line</span>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#34d399" }} /> YES BUY: {yesBuyMarkerCount}</span>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#059669" }} /> YES SELL: {yesSellMarkerCount}</span>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#fbbf24" }} /> NO BUY: {noBuyMarkerCount}</span>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#f87171" }} /> NO SELL: {noSellMarkerCount}</span>
+              </div>
+            </div>
+
             {/* Description */}
             {event.description && (
               <div className="card" style={{ padding: "20px 24px" }}>
@@ -2774,11 +3005,12 @@ export function DetailPage({
                   ) : (
                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                       <div style={{
-                        display: "grid", gridTemplateColumns: "60px 1fr 1fr 1fr 1fr",
+                        display: "grid", gridTemplateColumns: "70px 60px 1fr 1fr 1fr 1fr",
                         padding: "8px 14px", fontSize: 10, fontWeight: 700,
                         letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--dim)",
                         borderBottom: "1px solid rgba(255,255,255,0.05)",
                       }}>
+                        <span>Type</span>
                         <span>Side</span>
                         <span style={{ textAlign: "right" }}>Amount</span>
                         <span style={{ textAlign: "right" }}>Shares</span>
@@ -2787,10 +3019,16 @@ export function DetailPage({
                       </div>
                       {userBets.map((b) => (
                         <div key={b.id} style={{
-                          display: "grid", gridTemplateColumns: "60px 1fr 1fr 1fr 1fr",
+                          display: "grid", gridTemplateColumns: "70px 60px 1fr 1fr 1fr 1fr",
                           padding: "8px 14px", fontSize: 12, alignItems: "center",
                           borderBottom: "1px solid rgba(255,255,255,0.03)",
                         }}>
+                          <span style={{
+                            fontSize: 9.5, fontWeight: 800, padding: "2px 7px", borderRadius: 4, width: "fit-content",
+                            background: b.type === "SELL" ? "rgba(248,113,113,0.12)" : "rgba(52,211,153,0.12)",
+                            color: b.type === "SELL" ? "#f87171" : "#34d399",
+                            border: `1px solid ${b.type === "SELL" ? "rgba(248,113,113,0.22)" : "rgba(52,211,153,0.28)"}`,
+                          }}>{b.type}</span>
                           <span style={{
                             fontSize: 9.5, fontWeight: 800, padding: "2px 7px", borderRadius: 4, width: "fit-content",
                             background: b.side === "YES" ? "var(--yes-dim)" : "var(--no-dim)",
