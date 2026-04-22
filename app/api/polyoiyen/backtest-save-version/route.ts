@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { sendBacktestCompletedDiscord } from "@/lib/backtestDiscord";
 
 /**
  * POST /api/polyoiyen/backtest-save-version
@@ -40,6 +41,22 @@ export async function POST(request: Request) {
         diagnosticsJson: JSON.stringify(quality.diagnostics),
         backtestStatus: quality.status,
       },
+    });
+
+    void sendBacktestCompletedDiscord({
+      modelBacktestId: model.id,
+      modelName: model.name,
+      modelVersion: model.version,
+      runId: run.id,
+      totalRuns: run.totalRuns,
+      aggregateWinRate: run.aggregateWinRate,
+      avgReturn: run.avgReturn,
+      avgMaxDrawdown: run.avgMaxDrawdown,
+      backtestStatus: run.backtestStatus,
+      createdAt: run.createdAt,
+      source: "backtest-save-version",
+    }).catch((err) => {
+      console.error("Backtest completion Discord notification failed:", err);
     });
 
     // Update or create strategy variants from this run

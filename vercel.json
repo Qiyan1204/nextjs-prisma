@@ -15,6 +15,10 @@
     {
       "path": "/api/polyoiyen/volume-spike-daily",
       "schedule": "55 23 * * *"
+    },
+    {
+      "path": "/api/polyoiyen/backtest-daily-summary",
+      "schedule": "5 0 * * *"
     }
   ]
 }

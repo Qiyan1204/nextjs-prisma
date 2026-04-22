@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import PolyHeader from "../PolyHeader";
+import { BACKTEST_SCOPE_LABELS } from "../shared/categoryConfig";
 
 const FILTER_STORAGE_KEY = "top-backtest-models-filters-v1";
 
@@ -96,6 +97,8 @@ function ModelCard({ row, tone }: { row: ModelRow; tone: "good" | "bad" }) {
 }
 
 export default function TopBacktestModelsPage() {
+  const scopeText = BACKTEST_SCOPE_LABELS.join(", ");
+
   const [data, setData] = useState<Payload | null>(null);
   const [page, setPage] = useState(1);
   const [minTrades, setMinTrades] = useState<number>(() => {
@@ -218,10 +221,10 @@ export default function TopBacktestModelsPage() {
               Top 20 winners, bottom 20 losers, and a paginated catalog of all backtested models.
             </p>
             <p style={{ marginTop: 6, fontSize: 12, color: "rgba(255,255,255,0.55)", lineHeight: 1.5 }}>
-              Aggregation scope: all users · limited to Movies Box Office, Elon Tweets, Interest Rates, NBA, and NFL markets.
+              Aggregation scope: all users · limited to {scopeText} markets.
             </p>
             <p style={{ marginTop: 6, fontSize: 12, color: "rgba(255,255,255,0.55)", lineHeight: 1.5 }}>
-              Total Return = (realizedValue - invested) ÷ invested x 100% 
+              Total Return = (realized + remainingValue - invested) ÷ invested x 100% (unresolved events use current outcome prices)
             </p>
           </section>
 

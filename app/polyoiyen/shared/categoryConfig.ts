@@ -6,6 +6,7 @@ export type CategoryConfigItem = {
   keywords: string[];
   pageSignals?: string[];
   tagSlugs?: string[];
+  backtestSegments?: string[];
 };
 
 export const CATEGORY_CONFIG: CategoryConfigItem[] = [
@@ -15,6 +16,7 @@ export const CATEGORY_CONFIG: CategoryConfigItem[] = [
     tagSlugs: ["tweets-markets"],
     keywords: ["elon", "musk", "tweet", "twitter", "x.com"],
     pageSignals: ["predictions/elon-tweets", "elon-tweets"],
+    backtestSegments: ["elon tweets", "elon", "tweet", "twitter", "x.com"],
   },
   {
     key: "movieBoxOffice",
@@ -22,6 +24,7 @@ export const CATEGORY_CONFIG: CategoryConfigItem[] = [
     tagSlugs: ["movies"],
     keywords: ["box office", "movie", "opening weekend", "domestic gross", "worldwide gross", "theatrical"],
     pageSignals: ["pop-culture/movies", "pop-culture/movie", "predictions/movie", "movie"],
+    backtestSegments: ["movies box office", "box office", "opening weekend", "domestic gross", "worldwide gross"],
   },
   {
     key: "fedRates",
@@ -29,6 +32,7 @@ export const CATEGORY_CONFIG: CategoryConfigItem[] = [
     tagSlugs: ["economic-policy", "fed-rates"],
     keywords: ["federal reserve", "fed", "fomc", "rate hike", "rate cut", "interest rate", "economic policy"],
     pageSignals: ["predictions/economic-policy", "economic-policy", "federal-interest-rates"],
+    backtestSegments: ["interest rates", "federal reserve", "fed rates", "fomc", "rate cut", "rate hike"],
   },
   {
     key: "nbaGames",
@@ -36,7 +40,30 @@ export const CATEGORY_CONFIG: CategoryConfigItem[] = [
     tagSlugs: ["nba"],
     keywords: ["nba", "basketball", "playoffs", "lakers", "celtics", "warriors"],
     pageSignals: ["predictions/nba", "nba"],
+    backtestSegments: ["nba", "basketball", "playoffs", "finals"],
   },
+];
+
+export const EXTRA_BACKTEST_SEGMENTS = [
+  "nfl",
+  "football",
+  "super bowl",
+  "touchdown",
+  "quarterback",
+  "afc",
+  "nfc",
+  "sports",
+];
+export const EXTRA_BACKTEST_SCOPE_LABELS = ["NFL"];
+
+export const BACKTEST_MARKET_SEGMENTS = [...new Set([
+  ...CATEGORY_CONFIG.flatMap((cfg) => cfg.backtestSegments || []),
+  ...EXTRA_BACKTEST_SEGMENTS,
+])];
+
+export const BACKTEST_SCOPE_LABELS = [
+  ...CATEGORY_CONFIG.map((cfg) => cfg.label),
+  ...EXTRA_BACKTEST_SCOPE_LABELS,
 ];
 
 type EventTag = { label?: string; slug?: string };

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { sendBacktestCompletedDiscord } from "@/lib/backtestDiscord";
 import {
   flipTrade,
   buildInverseEquityCurvePoints,
@@ -114,7 +115,7 @@ export async function POST(request: Request) {
     const inverseEquityCurve = buildInverseEquityCurvePoints(inverseTrades);
 
     // Store inverse backtest run
-    await prisma.backtestVersionRun.create({
+    const run = await prisma.backtestVersionRun.create({
       data: {
         modelBacktestId: inverseModel.id,
         totalRuns: inverseTrades.length,
@@ -153,6 +154,22 @@ export async function POST(request: Request) {
         }),
         backtestStatus: "sufficient",
       },
+    });
+
+    void sendBacktestCompletedDiscord({
+      modelBacktestId: inverseModel.id,
+      modelName: inverseModel.name,
+      modelVersion: inverseModel.version,
+      runId: run.id,
+      totalRuns: run.totalRuns,
+      aggregateWinRate: run.aggregateWinRate,
+      avgReturn: run.avgReturn,
+      avgMaxDrawdown: run.avgMaxDrawdown,
+      backtestStatus: run.backtestStatus,
+      createdAt: run.createdAt,
+      source: "backtest-generate-inverse",
+    }).catch((err) => {
+      console.error("Inverse backtest Discord notification failed:", err);
     });
 
     // Perform edge analysis

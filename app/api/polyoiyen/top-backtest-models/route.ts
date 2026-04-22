@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { BACKTEST_MARKET_SEGMENTS } from "@/app/polyoiyen/shared/categoryConfig";
 
 type RawBetRow = {
   userId: number;
@@ -55,24 +56,16 @@ type ModelSummary = {
 type SortBy = "return" | "winRate" | "tradeCount";
 type SortDir = "asc" | "desc";
 
-const ALLOWED_MARKET_SEGMENTS = [
-  "movies box office",
-  "box office",
-  "elon tweets",
-  "elon",
-  "interest rates",
-  "federal reserve",
-  "fed rates",
-  "nba",
-  "basketball",
-  "nfl",
-  "football",
-  "super bowl",
-] as const;
+type EventMeta = {
+  title: string;
+  winner: "YES" | "NO" | null;
+  yesPrice: number | null;
+  noPrice: number | null;
+};
 
 function isAllowedBacktestMarket(row: Pick<ModelSummary, "marketTitle" | "marketQuestion" | "category">): boolean {
   const haystack = `${row.marketTitle || ""} ${row.marketQuestion || ""} ${row.category || ""}`.toLowerCase();
-  return ALLOWED_MARKET_SEGMENTS.some((segment) => haystack.includes(segment));
+  return BACKTEST_MARKET_SEGMENTS.some((segment) => haystack.includes(segment));
 }
 
 function parseJsonArray<T>(raw: unknown): T[] {
@@ -109,7 +102,28 @@ function inferWinnerSideFromOutcomes(outcomesRaw: unknown, pricesRaw: unknown): 
   return null;
 }
 
-async function fetchEventMetaMap(eventIds: string[]): Promise<Record<string, { title: string; winner: "YES" | "NO" | null }>> {
+function inferYesNoPrices(outcomesRaw: unknown, pricesRaw: unknown): { yesPrice: number | null; noPrice: number | null } {
+  const outcomes = parseJsonArray<string>(outcomesRaw).map((x) => String(x).toUpperCase());
+  const prices = parseJsonArray<number | string>(pricesRaw).map((x) => Number(x));
+  if (outcomes.length < 2 || prices.length < 2) return { yesPrice: null, noPrice: null };
+
+  let yesPrice: number | null = null;
+  let noPrice: number | null = null;
+
+  for (let index = 0; index < outcomes.length; index += 1) {
+    const label = outcomes[index] || "";
+    const price = prices[index];
+    if (!Number.isFinite(price) || price < 0 || price > 1) continue;
+    if (yesPrice == null && label.includes("YES")) yesPrice = price;
+    if (noPrice == null && label.includes("NO")) noPrice = price;
+  }
+
+  if (yesPrice == null && noPrice != null) yesPrice = Math.max(0, Math.min(1, 1 - noPrice));
+  if (noPrice == null && yesPrice != null) noPrice = Math.max(0, Math.min(1, 1 - yesPrice));
+  return { yesPrice, noPrice };
+}
+
+async function fetchEventMetaMap(eventIds: string[]): Promise<Record<string, EventMeta>> {
   const uniqueEventIds = [...new Set(eventIds.filter(Boolean))];
   const entries = await Promise.all(
     uniqueEventIds.map(async (eventId) => {
@@ -118,32 +132,46 @@ async function fetchEventMetaMap(eventIds: string[]): Promise<Record<string, { t
           headers: { Accept: "application/json" },
           cache: "no-store",
         });
-        if (!res.ok) return [eventId, { title: "", winner: null }] as const;
+        if (!res.ok) return [eventId, { title: "", winner: null, yesPrice: null, noPrice: null }] as const;
         const payload = await res.json();
         const markets = Array.isArray(payload?.markets) ? (payload.markets as Array<{ outcomes?: unknown; outcomePrices?: unknown }>) : [];
         const title = typeof payload?.title === "string" ? payload.title : typeof payload?.question === "string" ? payload.question : "";
         const topLevelWinner = inferWinnerSideFromOutcomes(payload?.outcomes, payload?.outcomePrices);
+        let prices = inferYesNoPrices(payload?.outcomes, payload?.outcomePrices);
         let winner: "YES" | "NO" | null = topLevelWinner;
         for (const market of markets) {
           winner = winner || inferWinnerSideFromOutcomes(market?.outcomes, market?.outcomePrices);
+          if (prices.yesPrice == null && prices.noPrice == null) {
+            prices = inferYesNoPrices(market?.outcomes, market?.outcomePrices);
+          }
         }
-        return [eventId, { title, winner }] as const;
+        return [eventId, { title, winner, yesPrice: prices.yesPrice, noPrice: prices.noPrice }] as const;
       } catch {
-        return [eventId, { title: "", winner: null }] as const;
+        return [eventId, { title: "", winner: null, yesPrice: null, noPrice: null }] as const;
       }
     })
   );
 
-  return Object.fromEntries(entries) as Record<string, { title: string; winner: "YES" | "NO" | null }>;
+  return Object.fromEntries(entries) as Record<string, EventMeta>;
 }
 
-function summarizeGroup(group: GroupedModel, winner: "YES" | "NO" | null): ModelSummary | null {
-  if (!winner) return null;
-
+function summarizeGroup(group: GroupedModel, meta: EventMeta | undefined): ModelSummary | null {
+  const winner = meta?.winner ?? null;
   const netYesShares = Math.max(0, group.yesBuyShares - group.yesSellShares);
   const netNoShares = Math.max(0, group.noBuyShares - group.noSellShares);
-  const payoutRemaining = winner === "YES" ? netYesShares : netNoShares;
-  const realizedValue = group.yesSellAmount + group.noSellAmount + group.claimAmount + payoutRemaining;
+  const realizedCash = group.yesSellAmount + group.noSellAmount + group.claimAmount;
+
+  let remainingValue = 0;
+  if (winner) {
+    remainingValue = winner === "YES" ? netYesShares : netNoShares;
+  } else {
+    const yesPrice = meta?.yesPrice;
+    const noPrice = meta?.noPrice;
+    if (yesPrice == null && noPrice == null) return null;
+    remainingValue = netYesShares * Number(yesPrice || 0) + netNoShares * Number(noPrice || 0);
+  }
+
+  const realizedValue = realizedCash + remainingValue;
   const invested = group.yesBuyAmount + group.noBuyAmount;
   if (invested <= 0) return null;
 
@@ -281,7 +309,7 @@ export async function GET(req: NextRequest) {
       .map((group) => {
         const meta = metaMap[group.eventId];
         group.marketTitle = meta?.title || group.marketQuestion;
-        return summarizeGroup(group, meta?.winner ?? null);
+        return summarizeGroup(group, meta);
       })
       .filter((item): item is ModelSummary => item !== null)
       .filter((row) => row.tradeCount >= minTrades)

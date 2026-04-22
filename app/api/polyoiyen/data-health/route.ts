@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { getAuthUser } from "@/lib/auth";
+import { sendBacktestCompletedDiscord } from "@/lib/backtestDiscord";
 import { CATEGORY_CONFIG, TAG_SLUGS_BY_CATEGORY, type CategoryKey } from "@/app/polyoiyen/shared/categoryConfig";
 import { hasCompleteYesNoTokens } from "@/app/polyoiyen/shared/marketAssessmentEngine";
 
@@ -318,7 +319,7 @@ async function persistAutoBacktestRun(args: {
 
     if (shouldSkipByInterval && isSameAsLatest) return;
 
-    await prisma.backtestVersionRun.create({
+    const run = await prisma.backtestVersionRun.create({
       data: {
         modelBacktestId: autoModel.id,
         totalRuns: args.quality.totalRuns,
@@ -332,6 +333,25 @@ async function persistAutoBacktestRun(args: {
         backtestStatus: args.quality.status,
       },
     });
+
+    const notifyAutoBacktest = process.env.BACKTEST_NOTIFY_AUTO === "true";
+    if (notifyAutoBacktest) {
+      void sendBacktestCompletedDiscord({
+        modelBacktestId: autoModel.id,
+        modelName: autoModel.name,
+        modelVersion: autoModel.version,
+        runId: run.id,
+        totalRuns: run.totalRuns,
+        aggregateWinRate: run.aggregateWinRate,
+        avgReturn: run.avgReturn,
+        avgMaxDrawdown: run.avgMaxDrawdown,
+        backtestStatus: run.backtestStatus,
+        createdAt: run.createdAt,
+        source: "data-health-auto",
+      }).catch((err) => {
+        console.error("Auto backtest Discord notification failed:", err);
+      });
+    }
 
     for (const strategy of args.quality.lossAttribution.byStrategy) {
       const existing = await prisma.strategyVariant.findFirst({
