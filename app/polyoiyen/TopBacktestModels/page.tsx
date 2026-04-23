@@ -1,6 +1,5 @@
 "use client";
-
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import PolyHeader from "../PolyHeader";
 import { BACKTEST_SCOPE_LABELS } from "../shared/categoryConfig";
@@ -23,6 +22,12 @@ type ModelRow = {
   firstTradeAt: string;
   lastTradeAt: string;
   hasExited: boolean;
+  trendDirection: "up" | "down" | "flat" | "new";
+  trendDeltaPct: number | null;
+  trendLabel: string;
+  recentTradeCount7d: number;
+  riskLevel: "low" | "medium" | "high";
+  riskReasons: string[];
 };
 
 type Payload = {
@@ -51,10 +56,35 @@ function fmtPct(value: number): string {
   return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
 }
 
-function ModelCard({ row, tone }: { row: ModelRow; tone: "good" | "bad" }) {
+function getTrendStyle(direction: ModelRow["trendDirection"]): { color: string; bg: string; label: string } {
+  if (direction === "up") return { color: "#86efac", bg: "rgba(34,197,94,0.12)", label: "Up" };
+  if (direction === "down") return { color: "#fca5a5", bg: "rgba(239,68,68,0.12)", label: "Down" };
+  if (direction === "new") return { color: "#fde68a", bg: "rgba(245,158,11,0.12)", label: "New" };
+  return { color: "#bfdbfe", bg: "rgba(59,130,246,0.12)", label: "Flat" };
+}
+
+function getRiskStyle(level: ModelRow["riskLevel"]): { color: string; bg: string; label: string } {
+  if (level === "high") return { color: "#fca5a5", bg: "rgba(239,68,68,0.14)", label: "High" };
+  if (level === "medium") return { color: "#fde68a", bg: "rgba(245,158,11,0.14)", label: "Medium" };
+  return { color: "#86efac", bg: "rgba(34,197,94,0.14)", label: "Low" };
+}
+
+function ModelCard({
+  row,
+  tone,
+  selected,
+  onToggleCompare,
+}: {
+  row: ModelRow;
+  tone: "good" | "bad";
+  selected: boolean;
+  onToggleCompare: (row: ModelRow) => void;
+}) {
   const accent = tone === "good" ? "#86efac" : "#fca5a5";
   const bg = tone === "good" ? "rgba(52,211,153,0.08)" : "rgba(248,113,113,0.08)";
   const border = tone === "good" ? "rgba(52,211,153,0.2)" : "rgba(248,113,113,0.2)";
+  const trendStyle = getTrendStyle(row.trendDirection);
+  const riskStyle = getRiskStyle(row.riskLevel);
 
   return (
     <Link
@@ -65,11 +95,36 @@ function ModelCard({ row, tone }: { row: ModelRow; tone: "good" | "bad" }) {
         border: `1px solid ${border}`,
         borderRadius: 14,
         padding: 14,
+        paddingTop: 42,
         background: bg,
         boxShadow: "0 6px 20px rgba(0,0,0,0.22)",
         display: "block",
+        position: "relative",
       }}
     >
+      <button
+        type="button"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onToggleCompare(row);
+        }}
+        style={{
+          position: "absolute",
+          top: 12,
+          right: 12,
+          border: `1px solid ${selected ? "rgba(34,197,94,0.55)" : "rgba(255,255,255,0.15)"}`,
+          background: selected ? "rgba(34,197,94,0.18)" : "rgba(0,0,0,0.22)",
+          color: "#fff",
+          borderRadius: 999,
+          padding: "6px 10px",
+          fontSize: 11,
+          fontWeight: 700,
+          cursor: "pointer",
+        }}
+      >
+        {selected ? "Remove" : "Compare"}
+      </button>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", color: "rgba(255,255,255,0.45)" }}>
@@ -86,11 +141,21 @@ function ModelCard({ row, tone }: { row: ModelRow; tone: "good" | "bad" }) {
           {fmtPct(row.totalReturn)}
         </div>
       </div>
-      <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, fontSize: 11, color: "rgba(255,255,255,0.65)" }}>
+      <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 10, fontWeight: 700, padding: "5px 8px", borderRadius: 999, color: trendStyle.color, background: trendStyle.bg }}>
+          Trend {row.trendLabel}
+        </span>
+        <span style={{ fontSize: 10, fontWeight: 700, padding: "5px 8px", borderRadius: 999, color: riskStyle.color, background: riskStyle.bg }}>
+          Risk {riskStyle.label}
+        </span>
+      </div>
+      <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8, fontSize: 11, color: "rgba(255,255,255,0.65)" }}>
         <div>Invested: <span style={{ color: "#fde68a", fontWeight: 700 }}>{fmtMoney(row.invested)}</span></div>
         <div>Win Rate: <span style={{ color: "#fff", fontWeight: 700 }}>{row.winRate.toFixed(0)}%</span></div>
         <div>Bias: <span style={{ color: row.sideBias === "YES_BIAS" ? "#86efac" : "#fca5a5", fontWeight: 700 }}>{row.sideBias === "YES_BIAS" ? "YES" : "NO"}</span></div>
         <div>Status: <span style={{ color: row.hasExited ? "#86efac" : "#fde68a", fontWeight: 700 }}>{row.hasExited ? "Exited" : "Open"}</span></div>
+        <div>Trend: <span style={{ color: trendStyle.color, fontWeight: 700 }}>{row.trendLabel}</span></div>
+        <div>Risk notes: <span style={{ color: riskStyle.color, fontWeight: 700 }}>{row.riskReasons.length ? row.riskReasons[0] : "None"}</span></div>
       </div>
     </Link>
   );
@@ -101,6 +166,17 @@ export default function TopBacktestModelsPage() {
 
   const [data, setData] = useState<Payload | null>(null);
   const [page, setPage] = useState(1);
+  const [compareIds, setCompareIds] = useState<string[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const raw = localStorage.getItem(`${FILTER_STORAGE_KEY}-compare`);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw) as string[];
+      return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [];
+    } catch {
+      return [];
+    }
+  });
   const [minTrades, setMinTrades] = useState<number>(() => {
     if (typeof window === "undefined") return 3;
     try {
@@ -208,6 +284,34 @@ export default function TopBacktestModelsPage() {
       })
     );
   }, [minTrades, sortBy, sortDir, searchInput, query]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    localStorage.setItem(`${FILTER_STORAGE_KEY}-compare`, JSON.stringify(compareIds));
+  }, [compareIds]);
+
+  const compareRows = useMemo(() => {
+    if (!data) return [] as ModelRow[];
+    const lookup = new Map<string, ModelRow>();
+    [...data.models, ...data.topModels, ...data.bottomModels].forEach((row) => {
+      if (!lookup.has(row.eventId)) lookup.set(row.eventId, row);
+    });
+    return compareIds.map((id) => lookup.get(id)).filter((row): row is ModelRow => Boolean(row));
+  }, [data, compareIds]);
+
+  function toggleCompare(row: ModelRow) {
+    setCompareIds((current) => {
+      if (current.includes(row.eventId)) {
+        return current.filter((id) => id !== row.eventId);
+      }
+      if (current.length >= 3) return current;
+      return [...current, row.eventId];
+    });
+  }
+
+  function clearCompare() {
+    setCompareIds([]);
+  }
 
   return (
     <>
@@ -319,6 +423,66 @@ export default function TopBacktestModelsPage() {
                 </button>
               </section>
 
+              {compareRows.length > 0 && (
+                <section style={{ border: "1px solid rgba(59,130,246,0.2)", borderRadius: 18, background: "rgba(59,130,246,0.06)", padding: 16, marginBottom: 18 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+                    <div>
+                      <h2 style={{ margin: 0, fontSize: 16 }}>One-click Compare</h2>
+                      <div style={{ marginTop: 4, fontSize: 12, color: "rgba(255,255,255,0.6)" }}>
+                        Compare up to 3 models side by side.
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={clearCompare}
+                      style={{
+                        border: "1px solid rgba(255,255,255,0.14)",
+                        background: "rgba(0,0,0,0.18)",
+                        color: "#fff",
+                        borderRadius: 999,
+                        padding: "8px 12px",
+                        fontSize: 12,
+                        fontWeight: 700,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Clear Compare
+                    </button>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(compareRows.length, 3)}, minmax(0, 1fr))`, gap: 12 }}>
+                    {compareRows.map((row) => {
+                      const trendStyle = getTrendStyle(row.trendDirection);
+                      const riskStyle = getRiskStyle(row.riskLevel);
+                      return (
+                        <div key={`compare-${row.eventId}`} style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, background: "rgba(0,0,0,0.16)", padding: 14 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", color: "rgba(255,255,255,0.45)" }}>{row.category}</div>
+                              <div style={{ marginTop: 6, fontSize: 13, fontWeight: 800, lineHeight: 1.35 }}>{row.marketTitle}</div>
+                            </div>
+                            <Link href={`/polyoiyen/${encodeURIComponent(row.eventId)}`} style={{ color: "#fdba74", fontSize: 12, fontWeight: 700, textDecoration: "none" }}>
+                              Open
+                            </Link>
+                          </div>
+                          <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                            <span style={{ fontSize: 10, fontWeight: 700, padding: "5px 8px", borderRadius: 999, color: trendStyle.color, background: trendStyle.bg }}>{row.trendLabel}</span>
+                            <span style={{ fontSize: 10, fontWeight: 700, padding: "5px 8px", borderRadius: 999, color: riskStyle.color, background: riskStyle.bg }}>{riskStyle.label} risk</span>
+                          </div>
+                          <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, fontSize: 11, color: "rgba(255,255,255,0.68)" }}>
+                            <div>Return: <span style={{ color: row.totalReturn >= 0 ? "#86efac" : "#fca5a5", fontWeight: 700 }}>{fmtPct(row.totalReturn)}</span></div>
+                            <div>Win Rate: <span style={{ color: "#fff", fontWeight: 700 }}>{row.winRate.toFixed(0)}%</span></div>
+                            <div>Trades: <span style={{ color: "#bfdbfe", fontWeight: 700 }}>{row.tradeCount}</span></div>
+                            <div>Last 7d: <span style={{ color: "#bfdbfe", fontWeight: 700 }}>{row.recentTradeCount7d}</span></div>
+                            <div>Invested: <span style={{ color: "#fde68a", fontWeight: 700 }}>{fmtMoney(row.invested)}</span></div>
+                            <div>Status: <span style={{ color: row.hasExited ? "#86efac" : "#fde68a", fontWeight: 700 }}>{row.hasExited ? "Exited" : "Open"}</span></div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
+
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
                 <section style={{ border: "1px solid rgba(52,211,153,0.18)", borderRadius: 18, background: "rgba(52,211,153,0.05)", padding: 16 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
@@ -326,7 +490,7 @@ export default function TopBacktestModelsPage() {
                     <span style={{ color: "#86efac", fontSize: 12, fontWeight: 700 }}>Best performers</span>
                   </div>
                   <div style={{ display: "grid", gap: 10 }}>
-                    {data.topModels.map((row) => <ModelCard key={`top-${row.eventId}`} row={row} tone="good" />)}
+                    {data.topModels.map((row) => <ModelCard key={`top-${row.eventId}`} row={row} tone="good" selected={compareIds.includes(row.eventId)} onToggleCompare={toggleCompare} />)}
                   </div>
                 </section>
 
@@ -336,7 +500,7 @@ export default function TopBacktestModelsPage() {
                     <span style={{ color: "#fca5a5", fontSize: 12, fontWeight: 700 }}>Worst performers</span>
                   </div>
                   <div style={{ display: "grid", gap: 10 }}>
-                    {data.bottomModels.map((row) => <ModelCard key={`bottom-${row.eventId}`} row={row} tone="bad" />)}
+                    {data.bottomModels.map((row) => <ModelCard key={`bottom-${row.eventId}`} row={row} tone="bad" selected={compareIds.includes(row.eventId)} onToggleCompare={toggleCompare} />)}
                   </div>
                 </section>
               </div>
@@ -368,7 +532,7 @@ export default function TopBacktestModelsPage() {
                 </div>
 
                 <div style={{ overflowX: "auto" }}>
-                  <table style={{ width: "100%", minWidth: 1100, borderCollapse: "collapse", fontSize: 12 }}>
+                  <table style={{ width: "100%", minWidth: 1240, borderCollapse: "collapse", fontSize: 12 }}>
                     <thead>
                       <tr style={{ textAlign: "left", color: "rgba(255,255,255,0.62)", borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
                         <th style={{ padding: "10px 8px" }}>Market</th>
@@ -379,6 +543,9 @@ export default function TopBacktestModelsPage() {
                         <th style={{ padding: "10px 8px" }}>Invested</th>
                         <th style={{ padding: "10px 8px" }}>Return</th>
                         <th style={{ padding: "10px 8px" }}>Win Rate</th>
+                        <th style={{ padding: "10px 8px" }}>Trend</th>
+                        <th style={{ padding: "10px 8px" }}>Risk</th>
+                        <th style={{ padding: "10px 8px" }}>Compare</th>
                         <th style={{ padding: "10px 8px" }}>Status</th>
                       </tr>
                     </thead>
@@ -400,6 +567,26 @@ export default function TopBacktestModelsPage() {
                           <td style={{ padding: "10px 8px", color: "#fde68a" }}>{fmtMoney(row.invested)}</td>
                           <td style={{ padding: "10px 8px", color: row.totalReturn >= 0 ? "#86efac" : "#fca5a5", fontWeight: 700 }}>{fmtPct(row.totalReturn)}</td>
                           <td style={{ padding: "10px 8px", color: row.winRate >= 50 ? "#86efac" : "#fca5a5" }}>{row.winRate.toFixed(0)}%</td>
+                          <td style={{ padding: "10px 8px", color: getTrendStyle(row.trendDirection).color, fontWeight: 700 }}>{row.trendLabel}</td>
+                          <td style={{ padding: "10px 8px", color: getRiskStyle(row.riskLevel).color, fontWeight: 700 }}>{getRiskStyle(row.riskLevel).label}</td>
+                          <td style={{ padding: "10px 8px" }}>
+                            <button
+                              type="button"
+                              onClick={() => toggleCompare(row)}
+                              style={{
+                                border: `1px solid ${compareIds.includes(row.eventId) ? "rgba(34,197,94,0.5)" : "rgba(255,255,255,0.14)"}`,
+                                background: compareIds.includes(row.eventId) ? "rgba(34,197,94,0.16)" : "rgba(0,0,0,0.18)",
+                                color: "#fff",
+                                borderRadius: 999,
+                                padding: "6px 10px",
+                                fontSize: 11,
+                                fontWeight: 700,
+                                cursor: "pointer",
+                              }}
+                            >
+                              {compareIds.includes(row.eventId) ? "Remove" : "Add"}
+                            </button>
+                          </td>
                           <td style={{ padding: "10px 8px", color: row.hasExited ? "#86efac" : "#fde68a" }}>{row.hasExited ? "Exited" : "Open"}</td>
                         </tr>
                       ))}

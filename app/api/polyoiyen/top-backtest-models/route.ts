@@ -33,7 +33,11 @@ type GroupedModel = {
   tradeCount: number;
   firstTradeAt: Date;
   lastTradeAt: Date;
+  bets: RawBetRow[];
 };
+
+type TrendDirection = "up" | "down" | "flat" | "new";
+type RiskLevel = "low" | "medium" | "high";
 
 type ModelSummary = {
   eventId: string;
@@ -51,6 +55,12 @@ type ModelSummary = {
   firstTradeAt: string;
   lastTradeAt: string;
   hasExited: boolean;
+  trendDirection: TrendDirection;
+  trendDeltaPct: number | null;
+  trendLabel: string;
+  recentTradeCount7d: number;
+  riskLevel: RiskLevel;
+  riskReasons: string[];
 };
 
 type SortBy = "return" | "winRate" | "tradeCount";
@@ -155,11 +165,66 @@ async function fetchEventMetaMap(eventIds: string[]): Promise<Record<string, Eve
   return Object.fromEntries(entries) as Record<string, EventMeta>;
 }
 
-function summarizeGroup(group: GroupedModel, meta: EventMeta | undefined): ModelSummary | null {
+function summarizeGroup(group: GroupedModel, meta: EventMeta | undefined, cutoffMs?: number): ModelSummary | null {
+  const relevantBets = cutoffMs == null
+    ? group.bets
+    : group.bets.filter((bet) => bet.createdAt.getTime() <= cutoffMs);
+
+  if (relevantBets.length === 0) return null;
+
   const winner = meta?.winner ?? null;
-  const netYesShares = Math.max(0, group.yesBuyShares - group.yesSellShares);
-  const netNoShares = Math.max(0, group.noBuyShares - group.noSellShares);
-  const realizedCash = group.yesSellAmount + group.noSellAmount + group.claimAmount;
+  const totals = {
+    yesBuyAmount: 0,
+    yesBuyShares: 0,
+    yesSellAmount: 0,
+    yesSellShares: 0,
+    noBuyAmount: 0,
+    noBuyShares: 0,
+    noSellAmount: 0,
+    noSellShares: 0,
+    claimAmount: 0,
+  };
+
+  const participantUserIds = new Set<number>();
+  let firstTradeAt = relevantBets[0].createdAt;
+  let lastTradeAt = relevantBets[0].createdAt;
+
+  for (const bet of relevantBets) {
+    const side = bet.side === "YES" || bet.side === "NO" ? bet.side : null;
+    if (!side) continue;
+
+    const amount = Number(bet.amount || 0);
+    const shares = Number(bet.shares || 0);
+    const tradeType = bet.type || "BUY";
+
+    participantUserIds.add(bet.userId);
+    if (bet.createdAt < firstTradeAt) firstTradeAt = bet.createdAt;
+    if (bet.createdAt > lastTradeAt) lastTradeAt = bet.createdAt;
+
+    if (tradeType === "BUY") {
+      if (side === "YES") {
+        totals.yesBuyAmount += amount;
+        totals.yesBuyShares += shares;
+      } else {
+        totals.noBuyAmount += amount;
+        totals.noBuyShares += shares;
+      }
+    } else if (tradeType === "SELL") {
+      if (side === "YES") {
+        totals.yesSellAmount += amount;
+        totals.yesSellShares += shares;
+      } else {
+        totals.noSellAmount += amount;
+        totals.noSellShares += shares;
+      }
+    } else if (tradeType === "CLAIM") {
+      totals.claimAmount += amount;
+    }
+  }
+
+  const netYesShares = Math.max(0, totals.yesBuyShares - totals.yesSellShares);
+  const netNoShares = Math.max(0, totals.noBuyShares - totals.noSellShares);
+  const realizedCash = totals.yesSellAmount + totals.noSellAmount + totals.claimAmount;
 
   let remainingValue = 0;
   if (winner) {
@@ -172,34 +237,58 @@ function summarizeGroup(group: GroupedModel, meta: EventMeta | undefined): Model
   }
 
   const realizedValue = realizedCash + remainingValue;
-  const invested = group.yesBuyAmount + group.noBuyAmount;
+  const invested = totals.yesBuyAmount + totals.noBuyAmount;
   if (invested <= 0) return null;
 
-  const isYesBias = group.yesBuyAmount >= group.noBuyAmount;
-  const entryAmount = isYesBias ? group.yesBuyAmount : group.noBuyAmount;
-  const entryShares = isYesBias ? group.yesBuyShares : group.noBuyShares;
-  const exitAmount = isYesBias ? group.yesSellAmount : group.noSellAmount;
-  const exitShares = isYesBias ? group.yesSellShares : group.noSellShares;
+  const isYesBias = totals.yesBuyAmount >= totals.noBuyAmount;
+  const entryAmount = isYesBias ? totals.yesBuyAmount : totals.noBuyAmount;
+  const entryShares = isYesBias ? totals.yesBuyShares : totals.noBuyShares;
+  const exitAmount = isYesBias ? totals.yesSellAmount : totals.noSellAmount;
+  const exitShares = isYesBias ? totals.yesSellShares : totals.noSellShares;
   const entryPrice = entryShares > 0 ? entryAmount / entryShares : null;
   const exitPrice = exitShares > 0 ? exitAmount / exitShares : null;
   const totalReturn = ((realizedValue - invested) / invested) * 100;
+
+  const currentTradeCount = relevantBets.length;
+  const riskReasons: string[] = [];
+  if (!winner && meta?.yesPrice == null && meta?.noPrice == null) riskReasons.push("No clear exit price");
+  if (currentTradeCount < 8) riskReasons.push("Small sample");
+  if (!((totals.yesSellAmount + totals.noSellAmount + totals.claimAmount) > 0 || (netYesShares <= 0.000001 && netNoShares <= 0.000001))) {
+    riskReasons.push("Open position");
+  }
+  if (participantUserIds.size <= 1) riskReasons.push("Single participant");
+  if (Math.abs(totalReturn) >= 100) riskReasons.push("Extreme return swing");
+  if (totalReturn < -20) riskReasons.push("Negative return");
+
+  let riskLevel: RiskLevel = "low";
+  if (riskReasons.length >= 3 || riskReasons.includes("Open position") || riskReasons.includes("Extreme return swing")) {
+    riskLevel = "high";
+  } else if (riskReasons.length >= 1) {
+    riskLevel = "medium";
+  }
 
   return {
     eventId: group.eventId,
     marketQuestion: group.marketQuestion,
     marketTitle: group.marketTitle || group.marketQuestion,
     category: group.category,
-    userCount: group.participantUserIds.size,
+    userCount: participantUserIds.size,
     sideBias: isYesBias ? "YES_BIAS" : "NO_BIAS",
-    tradeCount: group.tradeCount,
+    tradeCount: currentTradeCount,
     invested: Number(invested.toFixed(2)),
     totalReturn: Number(totalReturn.toFixed(2)),
     winRate: totalReturn >= 0 ? 100 : 0,
     entryPrice: entryPrice == null ? null : Number(entryPrice.toFixed(6)),
     exitPrice: exitPrice == null ? null : Number(exitPrice.toFixed(6)),
-    firstTradeAt: group.firstTradeAt.toISOString(),
-    lastTradeAt: group.lastTradeAt.toISOString(),
-    hasExited: (group.yesSellAmount + group.noSellAmount + group.claimAmount) > 0 || (netYesShares <= 0.000001 && netNoShares <= 0.000001),
+    firstTradeAt: firstTradeAt.toISOString(),
+    lastTradeAt: lastTradeAt.toISOString(),
+    hasExited: (totals.yesSellAmount + totals.noSellAmount + totals.claimAmount) > 0 || (netYesShares <= 0.000001 && netNoShares <= 0.000001),
+    trendDirection: "flat",
+    trendDeltaPct: null,
+    trendLabel: "New",
+    recentTradeCount7d: 0,
+    riskLevel,
+    riskReasons,
   };
 }
 
@@ -268,6 +357,7 @@ export async function GET(req: NextRequest) {
         tradeCount: 0,
         firstTradeAt: bet.createdAt,
         lastTradeAt: bet.createdAt,
+        bets: [],
       };
 
       const amount = Number(bet.amount || 0);
@@ -275,6 +365,7 @@ export async function GET(req: NextRequest) {
       const tradeType = bet.type || "BUY";
 
       current.tradeCount += 1;
+      current.bets.push(bet);
       current.participantUserIds.add(bet.userId);
       if (bet.createdAt < current.firstTradeAt) current.firstTradeAt = bet.createdAt;
       if (bet.createdAt > current.lastTradeAt) current.lastTradeAt = bet.createdAt;
@@ -305,11 +396,41 @@ export async function GET(req: NextRequest) {
     }
 
     const metaMap = await fetchEventMetaMap([...grouped.keys()]);
+    const trendCutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
     const summaries = Array.from(grouped.values())
       .map((group) => {
         const meta = metaMap[group.eventId];
         group.marketTitle = meta?.title || group.marketQuestion;
-        return summarizeGroup(group, meta);
+        const current = summarizeGroup(group, meta);
+        if (!current) return null;
+        const previous = summarizeGroup(group, meta, trendCutoff);
+        const trendDeltaPct = previous ? Number((current.totalReturn - previous.totalReturn).toFixed(2)) : null;
+        const recentTradeCount7d = previous ? Math.max(0, current.tradeCount - previous.tradeCount) : current.tradeCount;
+        const trendDirection: TrendDirection = !previous
+          ? "new"
+          : trendDeltaPct == null
+            ? "flat"
+            : trendDeltaPct > 1
+              ? "up"
+              : trendDeltaPct < -1
+                ? "down"
+                : "flat";
+
+        const trendLabel = trendDirection === "new"
+          ? "New"
+          : trendDirection === "up"
+            ? `↑ ${Math.abs(trendDeltaPct || 0).toFixed(2)}% vs 7d`
+            : trendDirection === "down"
+              ? `↓ ${Math.abs(trendDeltaPct || 0).toFixed(2)}% vs 7d`
+              : `→ ${Math.abs(trendDeltaPct || 0).toFixed(2)}% vs 7d`;
+
+        return {
+          ...current,
+          trendDirection,
+          trendDeltaPct,
+          trendLabel,
+          recentTradeCount7d,
+        };
       })
       .filter((item): item is ModelSummary => item !== null)
       .filter((row) => row.tradeCount >= minTrades)

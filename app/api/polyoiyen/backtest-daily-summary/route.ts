@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { recordPull } from "@/lib/pullMetrics";
-import { sendBacktestDailySummaryDiscord } from "@/lib/backtestDiscord";
+import { sendBacktestCompletedDiscord } from "@/lib/backtestDiscord";
 
 function toDateKeyInTimeZone(date: Date, timeZone: string): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -98,14 +98,21 @@ export async function GET(req: NextRequest) {
         backtestStatus: run.backtestStatus,
       }));
 
-    await sendBacktestDailySummaryDiscord({
-      periodLabel: `Last 24h · ${timeZone}`,
-      totalCompleted: runs.length,
-      avgReturn: average(runs.map((run) => run.avgReturn)),
-      avgWinRate: average(runs.map((run) => run.aggregateWinRate)),
-      statusCounts,
-      topRuns,
-    });
+    for (const run of runs) {
+      await sendBacktestCompletedDiscord({
+        modelBacktestId: run.modelBacktest.id,
+        modelName: run.modelBacktest.name,
+        modelVersion: run.modelBacktest.version,
+        runId: run.id,
+        totalRuns: run.totalRuns,
+        aggregateWinRate: run.aggregateWinRate,
+        avgReturn: run.avgReturn,
+        avgMaxDrawdown: run.avgMaxDrawdown,
+        backtestStatus: run.backtestStatus,
+        createdAt: run.createdAt,
+        source: "backtest-daily-summary",
+      });
+    }
 
     await prisma.pullMetric.create({
       data: {

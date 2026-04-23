@@ -46,8 +46,8 @@ function getAppBaseUrl(): string {
   return (process.env.POLYOIYEN_BASE_URL || "https://oiyen.quadrawebs.com").replace(/\/$/, "");
 }
 
-function getModelUrl(modelBacktestId: number): string {
-  return `${getAppBaseUrl()}/polyoiyen/backtest-details?modelId=${modelBacktestId}`;
+function getBacktestDetailsUrl(): string {
+  return `${getAppBaseUrl()}/polyoiyen/TopBacktestModels`;
 }
 
 async function postDiscord(payload: unknown): Promise<void> {
@@ -79,7 +79,7 @@ export async function sendBacktestCompletedDiscord(input: CompletionNotification
           `**Win Rate:** ${formatPct(input.aggregateWinRate)}`,
           `**Max Drawdown:** ${formatPct(input.avgMaxDrawdown)}`,
           input.source ? `**Source:** ${input.source}` : null,
-          `[Open Model](${getModelUrl(input.modelBacktestId)})`,
+          `[View Top Backtest Models](${getBacktestDetailsUrl()})`,
         ]
           .filter(Boolean)
           .join("\n"),
