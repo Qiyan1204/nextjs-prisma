@@ -44,17 +44,28 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ id
       return NextResponse.json({ error: "Backtest not found" }, { status: 404 });
     }
 
-    // Parse JSON fields
+    // Parse JSON fields with safe fallbacks
+    const safeJsonParse = (json: any) => {
+      if (!json) return null;
+      if (typeof json === "object") return json; // Already parsed
+      try {
+        return JSON.parse(json);
+      } catch (e) {
+        console.warn("Failed to parse JSON:", json, e);
+        return null;
+      }
+    };
+
     const enriched = {
       ...backtest,
       runs: backtest.runs.map((run) => ({
         ...run,
-        equityCurve: JSON.parse(run.equityCurveJson),
-        lossAttribution: JSON.parse(run.lossAttributionJson),
-        worstEvents: JSON.parse(run.worstEventsJson),
-        diagnostics: JSON.parse(run.diagnosticsJson),
+        equityCurve: safeJsonParse(run.equityCurveJson),
+        lossAttribution: safeJsonParse(run.lossAttributionJson),
+        worstEvents: safeJsonParse(run.worstEventsJson),
+        diagnostics: safeJsonParse(run.diagnosticsJson),
       })),
-      parameters: JSON.parse(backtest.parameters),
+      parameters: safeJsonParse(backtest.parameters),
     };
 
     return NextResponse.json(enriched);

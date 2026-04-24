@@ -303,6 +303,7 @@ export async function GET(req: NextRequest) {
     const searchQuery = (searchParams.get("q") || "").trim().toLowerCase();
     const sortBy: SortBy = sortByRaw === "winRate" || sortByRaw === "tradeCount" ? sortByRaw : "return";
     const sortDir: SortDir = sortDirRaw === "asc" ? "asc" : "desc";
+    const includeAll = searchParams.get("includeAll") === "1" || searchParams.get("includeAll") === "true";
 
     const rawBets = await prisma.polyBet.findMany({
       select: {
@@ -434,7 +435,7 @@ export async function GET(req: NextRequest) {
       })
       .filter((item): item is ModelSummary => item !== null)
       .filter((row) => row.tradeCount >= minTrades)
-      .filter((row) => isAllowedBacktestMarket(row));
+      .filter((row) => includeAll || isAllowedBacktestMarket(row));
 
     const searched = searchQuery
       ? summaries.filter((row) => {

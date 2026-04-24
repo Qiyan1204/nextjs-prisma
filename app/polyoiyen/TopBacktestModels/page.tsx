@@ -69,6 +69,10 @@ function getRiskStyle(level: ModelRow["riskLevel"]): { color: string; bg: string
   return { color: "#86efac", bg: "rgba(34,197,94,0.14)", label: "Low" };
 }
 
+function getEventBacktestHref(eventId: string): string {
+  return `/polyoiyen/backtest-event/${encodeURIComponent(eventId)}`;
+}
+
 function ModelCard({
   row,
   tone,
@@ -88,7 +92,7 @@ function ModelCard({
 
   return (
     <Link
-      href={`/polyoiyen/${encodeURIComponent(row.eventId)}`}
+      href={getEventBacktestHref(row.eventId)}
       style={{
         textDecoration: "none",
         color: "inherit",
@@ -460,7 +464,7 @@ export default function TopBacktestModelsPage() {
                               <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", color: "rgba(255,255,255,0.45)" }}>{row.category}</div>
                               <div style={{ marginTop: 6, fontSize: 13, fontWeight: 800, lineHeight: 1.35 }}>{row.marketTitle}</div>
                             </div>
-                            <Link href={`/polyoiyen/${encodeURIComponent(row.eventId)}`} style={{ color: "#fdba74", fontSize: 12, fontWeight: 700, textDecoration: "none" }}>
+                            <Link href={getEventBacktestHref(row.eventId)} style={{ color: "#fdba74", fontSize: 12, fontWeight: 700, textDecoration: "none" }}>
                               Open
                             </Link>
                           </div>
@@ -553,7 +557,7 @@ export default function TopBacktestModelsPage() {
                       {data.models.map((row) => (
                         <tr key={row.eventId} style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
                           <td style={{ padding: "10px 8px", minWidth: 320 }}>
-                            <Link href={`/polyoiyen/${encodeURIComponent(row.eventId)}`} style={{ color: "#fdba74", textDecoration: "none", fontWeight: 700 }}>
+                            <Link href={getEventBacktestHref(row.eventId)} style={{ color: "#fdba74", textDecoration: "none", fontWeight: 700 }}>
                               {row.marketTitle}
                             </Link>
                             <div style={{ marginTop: 4, color: "rgba(255,255,255,0.48)", fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>

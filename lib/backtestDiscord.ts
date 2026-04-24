@@ -32,6 +32,18 @@ type DailySummaryInput = {
   topRuns: SummaryTopRun[];
 };
 
+type BacktestEventItem = {
+  eventId?: string | number;
+  eventTitle?: string;
+  marketQuestion?: string;
+  totalReturn?: number | null;
+};
+
+type BacktestEventLinks = {
+  winners: string[];
+  losers: string[];
+};
+
 function formatPct(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return "N/A";
   const sign = value > 0 ? "+" : "";
@@ -46,8 +58,101 @@ function getAppBaseUrl(): string {
   return (process.env.POLYOIYEN_BASE_URL || "https://oiyen.quadrawebs.com").replace(/\/$/, "");
 }
 
-function getBacktestDetailsUrl(): string {
+function getEventDetailsUrl(eventId: string | number): string {
+  return `${getAppBaseUrl()}/polyoiyen/${eventId}`;
+}
+
+function getTopBacktestModelsUrl(): string {
   return `${getAppBaseUrl()}/polyoiyen/TopBacktestModels`;
+}
+
+function isValidBacktestId(modelBacktestId: number): boolean {
+  return Number.isInteger(modelBacktestId) && modelBacktestId > 0;
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function trimTitle(value: string | undefined, maxLen = 52): string {
+  if (!value) return "Unknown Event";
+  const text = value.trim();
+  if (text.length <= maxLen) return text;
+  return `${text.slice(0, maxLen - 3)}...`;
+}
+
+async function resolveEventLinks(modelBacktestId: number): Promise<BacktestEventLinks> {
+  const enabled = process.env.BACKTEST_INCLUDE_EVENT_LINKS !== "false";
+  if (!enabled || !isValidBacktestId(modelBacktestId)) {
+    return { winners: [], losers: [] };
+  }
+
+  const controller = new AbortController();
+  const timeoutMs = Number(process.env.BACKTEST_EVENT_LINK_TIMEOUT_MS || "2500");
+  const timeout = setTimeout(() => controller.abort(), Number.isFinite(timeoutMs) ? timeoutMs : 2500);
+
+  try {
+    const url = `${getAppBaseUrl()}/api/polyoiyen/backtest-versions/${modelBacktestId}`;
+    const res = await fetch(url, {
+      method: "GET",
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (!res.ok) return { winners: [], losers: [] };
+
+    const payload = await res.json();
+    const rawEvents = payload?.runs?.[0]?.worstEvents;
+    if (!Array.isArray(rawEvents) || rawEvents.length === 0) {
+      return { winners: [], losers: [] };
+    }
+
+    const normalized = rawEvents
+      .map((row: BacktestEventItem) => {
+        const eventId = row?.eventId != null ? String(row.eventId).trim() : "";
+        const totalReturn = toFiniteNumber(row?.totalReturn);
+        const title = trimTitle(row?.eventTitle || row?.marketQuestion);
+        if (!eventId || totalReturn == null) return null;
+        return { eventId, totalReturn, title };
+      })
+      .filter((row): row is { eventId: string; totalReturn: number; title: string } => Boolean(row));
+
+    if (normalized.length === 0) return { winners: [], losers: [] };
+
+    const byLoss = [...normalized].sort((a, b) => a.totalReturn - b.totalReturn);
+    const byWin = [...normalized].sort((a, b) => b.totalReturn - a.totalReturn);
+
+    const losers = byLoss.slice(0, 3).map((evt) => {
+      const ret = `${evt.totalReturn >= 0 ? "+" : ""}${evt.totalReturn.toFixed(2)}%`;
+      return `[LOSS ${ret} • ${evt.title}](${getEventDetailsUrl(evt.eventId)})`;
+    });
+
+    const winnerSeen = new Set(losers.map((line) => line.match(/\/polyoiyen\/(\d+)/)?.[1]).filter(Boolean));
+    const winners = byWin
+      .filter((evt) => !winnerSeen.has(evt.eventId))
+      .slice(0, 3)
+      .map((evt) => {
+        const ret = `${evt.totalReturn >= 0 ? "+" : ""}${evt.totalReturn.toFixed(2)}%`;
+        return `[WIN ${ret} • ${evt.title}](${getEventDetailsUrl(evt.eventId)})`;
+      });
+
+    return { winners, losers };
+  } catch {
+    return { winners: [], losers: [] };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function resolveBacktestLink(modelBacktestId: number): Promise<{ label: string; url: string }> {
+  return {
+    label: "View Top Backtest Models",
+    url: getTopBacktestModelsUrl(),
+  };
 }
 
 async function postDiscord(payload: unknown): Promise<void> {
@@ -67,6 +172,21 @@ async function postDiscord(payload: unknown): Promise<void> {
 }
 
 export async function sendBacktestCompletedDiscord(input: CompletionNotificationInput): Promise<void> {
+  const eventLinks = await resolveEventLinks(input.modelBacktestId);
+
+  const primaryLink = eventLinks.winners[0] || eventLinks.losers[0] || null;
+  const fallbackBacktestLink = primaryLink ? null : await resolveBacktestLink(input.modelBacktestId);
+
+  const eventSection =
+    eventLinks.winners.length || eventLinks.losers.length
+      ? [
+          "",
+          "**Event Details (Direct Links)**",
+          ...eventLinks.winners.map((line, i) => `${i + 1}. ${line}`),
+          ...eventLinks.losers.map((line, i) => `${eventLinks.winners.length + i + 1}. ${line}`),
+        ]
+      : [];
+
   const payload = {
     embeds: [
       {
@@ -79,7 +199,8 @@ export async function sendBacktestCompletedDiscord(input: CompletionNotification
           `**Win Rate:** ${formatPct(input.aggregateWinRate)}`,
           `**Max Drawdown:** ${formatPct(input.avgMaxDrawdown)}`,
           input.source ? `**Source:** ${input.source}` : null,
-          `[View Top Backtest Models](${getBacktestDetailsUrl()})`,
+          fallbackBacktestLink ? `[${fallbackBacktestLink.label}](${fallbackBacktestLink.url})` : null,
+          ...eventSection,
         ]
           .filter(Boolean)
           .join("\n"),
@@ -99,13 +220,20 @@ export async function sendBacktestDailySummaryDiscord(input: DailySummaryInput):
     .map(([key, count]) => `${formatStatus(key)}: ${count}`)
     .join(" | ");
 
-  const topRunLines = input.topRuns.length
-    ? input.topRuns
-        .map((row, idx) => {
+  const topRunsWithLinks = await Promise.all(
+    input.topRuns.map(async (row) => ({
+      row,
+      link: await resolveBacktestLink(row.modelBacktestId),
+    }))
+  );
+
+  const topRunLines = topRunsWithLinks.length
+    ? topRunsWithLinks
+        .map(({ row, link }, idx) => {
           const position = idx + 1;
           const ret = formatPct(row.avgReturn);
           const wr = formatPct(row.aggregateWinRate);
-          return `${position}. ${row.modelName} (${row.modelVersion}) | Return ${ret} | WR ${wr} | Runs ${row.totalRuns}`;
+          return `${position}. [${row.modelName} (${row.modelVersion})](${link.url}) | Return ${ret} | WR ${wr} | Runs ${row.totalRuns}`;
         })
         .join("\n")
     : "No completed backtests in this window.";
@@ -123,6 +251,8 @@ export async function sendBacktestDailySummaryDiscord(input: DailySummaryInput):
           "",
           "**Top Runs**",
           topRunLines,
+          "",
+          `[View Top Backtest Models](${getTopBacktestModelsUrl()})`,
         ]
           .filter((line) => line !== null)
           .join("\n"),
