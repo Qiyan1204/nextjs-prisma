@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { CartesianGrid, Legend, Line, LineChart, ReferenceDot, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import PolyHeader from "./PolyHeader";
@@ -485,6 +485,33 @@ function findNearestHistoryPoint(points: PriceHistoryPoint[], tsMs: number): Pri
   }
 
   return nearest;
+}
+
+function getPriceHistoryWindow(bets: UserBet[], eventEndDate: string): { startTime: string; endTime: string } | null {
+  const buyTimes = bets
+    .filter((bet) => bet.type === "BUY")
+    .map((bet) => Date.parse(bet.createdAt))
+    .filter((ts) => Number.isFinite(ts));
+
+  if (buyTimes.length === 0) return null;
+
+  const sellTimes = bets
+    .filter((bet) => bet.type === "SELL")
+    .map((bet) => Date.parse(bet.createdAt))
+    .filter((ts) => Number.isFinite(ts));
+
+  const eventEndMs = Date.parse(eventEndDate);
+  const nowMs = Date.now();
+  const fallbackEndMs = Number.isFinite(eventEndMs) ? Math.min(eventEndMs, nowMs) : nowMs;
+  const startMs = Math.min(...buyTimes) - 24 * 60 * 60 * 1000;
+  const endMs = sellTimes.length > 0 ? Math.max(...sellTimes) : fallbackEndMs;
+
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || startMs >= endMs) return null;
+
+  return {
+    startTime: new Date(startMs).toISOString(),
+    endTime: new Date(endMs).toISOString(),
+  };
 }
 
 export function getModelBacktestHref(event: PolyEvent): string {
@@ -2192,6 +2219,7 @@ export function DetailPage({
   const [editingCommentId, setEditingCommentId] = useState<number | null>(null);
   const [editCommentInput, setEditCommentInput] = useState("");
   const [selectedMarketIndex, setSelectedMarketIndex] = useState(() => getDefaultMarketIndex(event.markets));
+  const priceHistoryWindow = useMemo(() => getPriceHistoryWindow(userBets, event.endDate), [userBets, event.endDate]);
 
   useEffect(() => {
     setSelectedMarketIndex(getDefaultMarketIndex(event.markets));
@@ -2241,10 +2269,17 @@ export function DetailPage({
         const params = new URLSearchParams({
           yesAssetId: tokenIds.yes,
           noAssetId: tokenIds.no,
-          range: "1W",
           limit: "300",
           maxPages: "80",
         });
+
+        if (priceHistoryWindow) {
+          params.set("startTime", priceHistoryWindow.startTime);
+          params.set("endTime", priceHistoryWindow.endTime);
+        } else {
+          params.set("range", "1W");
+        }
+
         const res = await fetch(`/api/polymarket/volatility-rating?${params.toString()}`, { cache: "no-store" });
         const data = (await res.json()) as Partial<PriceHistoryResponse> & { error?: string };
         if (!res.ok) {
@@ -2267,7 +2302,7 @@ export function DetailPage({
     return () => {
       alive = false;
     };
-  }, [event.id, tokenIds.no, tokenIds.yes]);
+  }, [event.id, priceHistoryWindow, tokenIds.no, tokenIds.yes]);
 
   async function fetchUserBets() {
     try {
@@ -2437,6 +2472,14 @@ export function DetailPage({
     yesCents: point.yesPrice == null ? null : Number((point.yesPrice * 100).toFixed(2)),
     noCents: point.noPrice == null ? null : Number((point.noPrice * 100).toFixed(2)),
   }));
+  const priceChartTicks = priceChartData.reduce<string[]>((ticks, point, index) => {
+    const currentDay = new Date(point.ts * 1000).toISOString().slice(0, 10);
+    const previousDay = index > 0 ? new Date(priceChartData[index - 1].ts * 1000).toISOString().slice(0, 10) : null;
+    if (index === 0 || currentDay !== previousDay) {
+      ticks.push(point.timeLabel);
+    }
+    return ticks;
+  }, []);
   const tradeMarkers = userBets
     .filter((bet) => bet.type === "BUY" || bet.type === "SELL")
     .map((bet) => {
@@ -2799,7 +2842,7 @@ export function DetailPage({
             <div className="card" style={{ padding: "20px 24px" }}>
               <SectionTitle icon="📈" text="Price Chart" />
               <div style={{ marginBottom: 10, fontSize: 12, color: "var(--muted)" }}>
-                7-day YES / NO price history with BUY and SELL entries marked on the timeline.
+                YES / NO price history from 24 hours before your first BUY through your latest SELL, or the event end if you never sold.
               </div>
 
               <div style={{ width: "100%", height: 300 }}>
@@ -2821,10 +2864,12 @@ export function DetailPage({
                       <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="4 4" />
                       <XAxis
                         dataKey="timeLabel"
+                        ticks={priceChartTicks}
+                        interval={0}
                         tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 11 }}
                         axisLine={{ stroke: "rgba(255,255,255,0.12)" }}
                         tickLine={{ stroke: "rgba(255,255,255,0.12)" }}
-                        minTickGap={22}
+                        tickFormatter={(value) => String(value).slice(0, 5)}
                       />
                       <YAxis
                         tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 11 }}
