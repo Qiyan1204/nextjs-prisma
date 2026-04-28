@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { recordPull } from "@/lib/pullMetrics";
-import { sendBacktestCompletedDiscord } from "@/lib/backtestDiscord";
+import { sendBacktestDailySummaryDiscord } from "@/lib/backtestDiscord";
 
 function toDateKeyInTimeZone(date: Date, timeZone: string): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -39,6 +39,7 @@ export async function GET(req: NextRequest) {
   const timeZone = process.env.POLYOIYEN_NOTIFY_TZ || "Asia/Kuala_Lumpur";
   const dateKey = toDateKeyInTimeZone(new Date(), timeZone);
   const markerKind = `backtest_daily_summary:${dateKey}`;
+  const shouldNotify = process.env.BACKTEST_NOTIFY_DAILY_SUMMARY !== "false";
 
   try {
     if (!force) {
@@ -98,19 +99,14 @@ export async function GET(req: NextRequest) {
         backtestStatus: run.backtestStatus,
       }));
 
-    for (const run of runs) {
-      await sendBacktestCompletedDiscord({
-        modelBacktestId: run.modelBacktest.id,
-        modelName: run.modelBacktest.name,
-        modelVersion: run.modelBacktest.version,
-        runId: run.id,
-        totalRuns: run.totalRuns,
-        aggregateWinRate: run.aggregateWinRate,
-        avgReturn: run.avgReturn,
-        avgMaxDrawdown: run.avgMaxDrawdown,
-        backtestStatus: run.backtestStatus,
-        createdAt: run.createdAt,
-        source: "backtest-daily-summary",
+    if (shouldNotify) {
+      await sendBacktestDailySummaryDiscord({
+        periodLabel: `Last 24h (${timeZone})`,
+        totalCompleted: runs.length,
+        avgReturn: average(runs.map((r) => r.avgReturn)),
+        avgWinRate: average(runs.map((r) => r.aggregateWinRate)),
+        statusCounts,
+        topRuns,
       });
     }
 
@@ -123,6 +119,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       ok: true,
       sent: true,
+      notificationsEnabled: shouldNotify,
       markerKind,
       timeZone,
       totalCompleted: runs.length,

@@ -76,7 +76,7 @@ export async function GET(req: NextRequest) {
     if (positions) {
       const eventTitleMap = await fetchEventTitleMap(bets.map((b) => b.eventId));
 
-      // Group by eventId+side → compute net position
+      // Group by eventId+marketQuestion+side → compute net position
       const grouped: Record<string, {
         eventId: string;
         marketQuestion: string;
@@ -91,7 +91,7 @@ export async function GET(req: NextRequest) {
       }> = {};
 
       for (const b of bets) {
-        const key = `${b.eventId}::${b.side}`;
+        const key = `${b.eventId}::${b.marketQuestion}::${b.side}`;
         if (!grouped[key]) {
           grouped[key] = {
             eventId: b.eventId,
@@ -194,6 +194,28 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Values must be positive" }, { status: 400 });
     }
 
+    // Validate and auto-correct amount if it doesn't match shares * price
+    const sharesNum = Number(shares);
+    const priceNum = Number(price);
+    const expectedAmount = sharesNum * priceNum;
+    let amountNum = Number(amount);
+    const tolerance = Math.max(expectedAmount * 0.02, 0.01); // 2% or at least $0.01
+    
+    if (Math.abs(amountNum - expectedAmount) > tolerance) {
+      // If the difference is very large (>10x), likely a data entry error
+      if (Math.abs(amountNum - expectedAmount) > Math.max(expectedAmount * 0.1, 0.1)) {
+        console.warn(
+          `Large amount/shares/price mismatch detected: submitted amount=${amountNum}, shares=${sharesNum}, price=${priceNum}, calculated=${expectedAmount}. Auto-correcting to calculated value.`
+        );
+        // Auto-correct to the calculated amount to prevent data integrity issues
+        amountNum = expectedAmount;
+      } else {
+        console.warn(
+          `Minor amount/shares/price mismatch: amount=${amountNum}, shares=${sharesNum}, price=${priceNum}, expected=${expectedAmount}`
+        );
+      }
+    }
+
     // For SELL: ensure user has enough shares
     if (betType === "SELL") {
       const userBets = await prisma.polyBet.findMany({
@@ -209,7 +231,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const amountNumber = Number(amount);
+    // Use the (potentially corrected) amountNum value
 
     const bet = await prisma.$transaction(async (tx) => {
       const currentUser = await tx.user.findUnique({
@@ -224,10 +246,10 @@ export async function POST(req: NextRequest) {
       const currentBalance = Number(currentUser.walletBalance);
       let balanceDelta = 0;
       if (betType === "BUY") {
-        balanceDelta = -amountNumber;
+        balanceDelta = -amountNum;
       } else {
         // SELL / CLAIM increase wallet cash.
-        balanceDelta = amountNumber;
+        balanceDelta = amountNum;
       }
 
       const newBalance = currentBalance + balanceDelta;
@@ -251,7 +273,7 @@ export async function POST(req: NextRequest) {
           marketQuestion: String(marketQuestion),
           side: String(side),
           type: betType,
-          amount: amountNumber,
+          amount: amountNum,
           shares: Number(shares),
           price: Number(price),
           category: category ? String(category) : "Other",

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
-import { sendBacktestCompletedDiscord } from "@/lib/backtestDiscord";
+import { sendEventBacktestDetailsDiscord } from "@/lib/backtestDiscord";
 
 type TopModelRow = {
   eventId: string;
@@ -31,6 +31,16 @@ function toDateKeyInTimeZone(date: Date, timeZone: string): string {
   const month = parts.find((p) => p.type === "month")?.value || "01";
   const day = parts.find((p) => p.type === "day")?.value || "01";
   return `${year}-${month}-${day}`;
+}
+
+function toHourKeyInTimeZone(date: Date, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    hour: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+
+  return parts.find((p) => p.type === "hour")?.value || "00";
 }
 
 function clampInt(value: number, min: number, max: number): number {
@@ -69,8 +79,10 @@ export async function GET(req: NextRequest) {
   const reqUrl = new URL(req.url);
   const baseUrl = reqUrl.origin;
   const timeZone = process.env.POLYOIYEN_NOTIFY_TZ || "Asia/Kuala_Lumpur";
-  const dateKey = toDateKeyInTimeZone(new Date(), timeZone);
-  const markerKind = `backtest_daily_queue:${dateKey}`;
+  const now = new Date();
+  const dateKey = toDateKeyInTimeZone(now, timeZone);
+  const hourKey = toHourKeyInTimeZone(now, timeZone);
+  const markerKind = `backtest_daily_queue:${dateKey}:${hourKey}`;
 
   const targetRaw = Number(reqUrl.searchParams.get("target") || process.env.BACKTEST_DAILY_QUEUE_TARGET || "12");
   const minTradesRaw = Number(reqUrl.searchParams.get("minTrades") || process.env.BACKTEST_DAILY_QUEUE_MIN_TRADES || "3");
@@ -134,6 +146,8 @@ export async function GET(req: NextRequest) {
           eventId: row.eventId,
           category: row.category,
           title: row.marketTitle || row.marketQuestion,
+          scheduledDateKey: dateKey,
+          scheduledHourKey: hourKey,
         });
 
         const existing = await prisma.modelBacktest.findFirst({
@@ -151,7 +165,7 @@ export async function GET(req: NextRequest) {
                 name: modelName,
                 version: dateKey,
                 description: row.marketTitle || row.marketQuestion,
-                notes: `Auto queued daily backtest for event ${row.eventId}`,
+                notes: `Auto queued daily backtest for event ${row.eventId} (${dateKey} ${hourKey}:00 ${timeZone})`,
                 status: "active",
                 parameters: parameterJson,
               },
@@ -162,7 +176,7 @@ export async function GET(req: NextRequest) {
                 name: modelName,
                 version: dateKey,
                 description: row.marketTitle || row.marketQuestion,
-                notes: `Auto queued daily backtest for event ${row.eventId}`,
+                notes: `Auto queued daily backtest for event ${row.eventId} (${dateKey} ${hourKey}:00 ${timeZone})`,
                 modelType: "PolyOiyenDailyQueue",
                 status: "active",
                 parameters: parameterJson,
@@ -193,17 +207,14 @@ export async function GET(req: NextRequest) {
         });
 
         if (shouldNotify) {
-          await sendBacktestCompletedDiscord({
-            modelBacktestId: model.id,
-            modelName: model.name,
-            modelVersion: model.version,
-            runId: run.id,
-            totalRuns: run.totalRuns,
-            aggregateWinRate: run.aggregateWinRate,
-            avgReturn: run.avgReturn,
-            avgMaxDrawdown: run.avgMaxDrawdown,
-            backtestStatus: run.backtestStatus,
+          await sendEventBacktestDetailsDiscord({
+            eventId: row.eventId,
+            totalReturn: row.totalReturn,
+            winRate: row.winRate,
+            trades: row.tradeCount,
+            statusLabel: row.hasExited ? "Exited" : "Active",
             createdAt: run.createdAt,
+            timeZone,
             source: "backtest-daily-queue",
           });
         }

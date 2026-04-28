@@ -32,6 +32,17 @@ type DailySummaryInput = {
   topRuns: SummaryTopRun[];
 };
 
+type EventBacktestDetailsInput = {
+  eventId: string | number;
+  totalReturn: number | null;
+  winRate: number | null;
+  trades: number | null;
+  statusLabel: string;
+  createdAt: Date;
+  timeZone?: string;
+  source?: string;
+};
+
 type BacktestEventItem = {
   eventId?: string | number;
   eventTitle?: string;
@@ -66,6 +77,10 @@ function getTopBacktestModelsUrl(): string {
   return `${getAppBaseUrl()}/polyoiyen/TopBacktestModels`;
 }
 
+function getBacktestEventDetailsUrl(eventId: string | number): string {
+  return `${getAppBaseUrl()}/polyoiyen/backtest-event/${eventId}`;
+}
+
 function isValidBacktestId(modelBacktestId: number): boolean {
   return Number.isInteger(modelBacktestId) && modelBacktestId > 0;
 }
@@ -84,6 +99,22 @@ function trimTitle(value: string | undefined, maxLen = 52): string {
   const text = value.trim();
   if (text.length <= maxLen) return text;
   return `${text.slice(0, maxLen - 3)}...`;
+}
+
+function formatBacktestDateTime(date: Date, timeZone: string): string {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(date);
+  } catch {
+    return date.toISOString();
+  }
 }
 
 async function resolveEventLinks(modelBacktestId: number): Promise<BacktestEventLinks> {
@@ -259,6 +290,45 @@ export async function sendBacktestDailySummaryDiscord(input: DailySummaryInput):
         color: 0x3b82f6,
         footer: { text: "PolyOiyen Backtest Daily" },
         timestamp: new Date().toISOString(),
+      },
+    ],
+  };
+
+  await postDiscord(payload);
+}
+
+export async function sendEventBacktestDetailsDiscord(input: EventBacktestDetailsInput): Promise<void> {
+  const timeZone = input.timeZone || process.env.POLYOIYEN_NOTIFY_TZ || "Asia/Kuala_Lumpur";
+  const detailsUrl = getBacktestEventDetailsUrl(input.eventId);
+  const footerTimestamp = formatBacktestDateTime(input.createdAt, timeZone);
+
+  const payload = {
+    embeds: [
+      {
+        title: "Event Backtest Details",
+        url: detailsUrl,
+        description: [
+          "Click title to open details page",
+          "",
+          "Event ID",
+          String(input.eventId),
+          "Total Return",
+          formatPct(input.totalReturn),
+          "Win Rate",
+          formatPct(input.winRate),
+          "Trades",
+          input.trades != null && Number.isFinite(input.trades) ? Number(input.trades).toLocaleString() : "N/A",
+          "Status",
+          input.statusLabel || "Unknown",
+          "Link",
+          detailsUrl,
+          input.source ? `Source: ${input.source}` : null,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+        color: 0xf97316,
+        footer: { text: `PolyOiyen Backtest • ${footerTimestamp}` },
+        timestamp: input.createdAt.toISOString(),
       },
     ],
   };

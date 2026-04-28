@@ -37,6 +37,9 @@ type Payload = {
 
 type PolyMarket = {
   clobTokenIds?: string;
+  question?: string;
+  title?: string;
+  slug?: string;
   active?: boolean;
   closed?: boolean;
 };
@@ -61,11 +64,12 @@ type PriceHistoryResponse = {
 type UserBet = {
   id: number;
   eventId: string;
+  marketQuestion?: string;
   side: "YES" | "NO";
   type: "BUY" | "SELL" | string;
-  amount: string;
-  shares: string;
-  price: string;
+  amount: string | number;
+  shares: string | number;
+  price: string | number;
   createdAt: string;
 };
 
@@ -98,6 +102,23 @@ function parseTokenIds(market: PolyMarket | null): { yes: string; no: string } {
   } catch {
     return { yes: "", no: "" };
   }
+}
+
+function normalizeText(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function getMarketForQuestion(event: PolyEvent | null, marketQuestion: string): PolyMarket | null {
+  if (!event?.markets?.length) return null;
+  const target = normalizeText(marketQuestion || "");
+  if (target) {
+    const match = event.markets.find((market) => {
+      const candidates = [market.question, market.title, market.slug].filter((v): v is string => typeof v === "string");
+      return candidates.some((candidate) => normalizeText(candidate) === target);
+    });
+    if (match) return match;
+  }
+  return getPrimaryMarket(event);
 }
 
 function getPrimaryMarket(event: PolyEvent | null): PolyMarket | null {
@@ -230,23 +251,32 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
           ? (eventPayload.events[0] as PolyEvent | undefined)
           : (eventPayload as PolyEvent | undefined);
 
-        const primaryMarket = getPrimaryMarket(event || null);
-        const tokenIds = parseTokenIds(primaryMarket);
-
-        if (!tokenIds.yes || !tokenIds.no) {
-          throw new Error("No token ids available for charting");
-        }
-
         let eventBets: UserBet[] = [];
         try {
-          const betsRes = await fetch("/api/polybets", { cache: "no-store" });
+          const betsRes = await fetch("/api/polybets?positions=true", { cache: "no-store" });
           if (betsRes.ok) {
             const betsPayload = await betsRes.json();
             const allBets = Array.isArray(betsPayload?.bets) ? (betsPayload.bets as UserBet[]) : [];
-            eventBets = allBets.filter((bet) => String(bet.eventId) === String(currentRow.eventId));
+            const wantedQuestion = normalizeText(currentRow.marketQuestion || "");
+            eventBets = allBets.filter((bet) => {
+              if (String(bet.eventId) !== String(currentRow.eventId)) return false;
+              if (!wantedQuestion) return true;
+              return normalizeText(String(bet.marketQuestion || "")) === wantedQuestion;
+            });
           }
         } catch {
           eventBets = [];
+        }
+
+        const marketQuestionForChart =
+          currentRow.marketQuestion ||
+          (eventBets.length > 0 ? String(eventBets[0].marketQuestion || "") : "");
+
+        const selectedMarket = getMarketForQuestion(event || null, marketQuestionForChart);
+        const tokenIds = parseTokenIds(selectedMarket);
+
+        if (!tokenIds.yes || !tokenIds.no) {
+          throw new Error("No token ids available for charting");
         }
 
         const historyWindow = getPriceHistoryWindow(eventBets, event?.endDate || "");
@@ -291,26 +321,125 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
     };
   }, [row]);
 
-  const priceChartData = priceHistory.map((point) => ({
-    ...point,
-    yesCents: point.yesPrice == null ? null : Number((point.yesPrice * 100).toFixed(2)),
-    noCents: point.noPrice == null ? null : Number((point.noPrice * 100).toFixed(2)),
-  }));
+  const timelineRows = [...userBets].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
 
-  const priceChartTicks = priceChartData.reduce<string[]>((ticks, point, index) => {
+  const positionChartData = timelineRows.reduce<
+    Array<{
+      ts: number;
+      timeLabel: string;
+      yesShares: number;
+      noShares: number;
+      netShares: number;
+    }>
+  >((points, bet) => {
+    const previous = points.length > 0 ? points[points.length - 1] : { yesShares: 0, noShares: 0, netShares: 0 };
+    const shares = Number(bet.shares) || 0;
+    const nextPoint = {
+      ts: Date.parse(bet.createdAt) / 1000,
+      timeLabel: new Date(bet.createdAt).toLocaleString(),
+      yesShares: previous.yesShares,
+      noShares: previous.noShares,
+      netShares: previous.netShares,
+    };
+
+    if (bet.type === "BUY") {
+      if (bet.side === "YES") nextPoint.yesShares += shares;
+      if (bet.side === "NO") nextPoint.noShares += shares;
+    } else if (bet.type === "SELL") {
+      if (bet.side === "YES") nextPoint.yesShares = Math.max(0, nextPoint.yesShares - shares);
+      if (bet.side === "NO") nextPoint.noShares = Math.max(0, nextPoint.noShares - shares);
+    }
+
+    nextPoint.netShares = nextPoint.yesShares - nextPoint.noShares;
+    points.push(nextPoint);
+    return points;
+  }, []);
+
+  const positionChartTicks = positionChartData.reduce<string[]>((ticks, point, index) => {
     const currentDay = new Date(point.ts * 1000).toISOString().slice(0, 10);
-    const previousDay = index > 0 ? new Date(priceChartData[index - 1].ts * 1000).toISOString().slice(0, 10) : null;
+    const previousDay = index > 0 ? new Date(positionChartData[index - 1].ts * 1000).toISOString().slice(0, 10) : null;
     if (index === 0 || currentDay !== previousDay) {
       ticks.push(point.timeLabel);
     }
     return ticks;
   }, []);
 
-  const tradeMarkers = userBets
+  const basePriceChartData = priceHistory.map((point) => ({
+    ...point,
+    yesCents: point.yesPrice == null ? null : Number((point.yesPrice * 100).toFixed(2)),
+    noCents: point.noPrice == null ? null : Number((point.noPrice * 100).toFixed(2)),
+  }));
+
+  const priceChartTicks = basePriceChartData.reduce<string[]>((ticks, point, index) => {
+    const currentDay = new Date(point.ts * 1000).toISOString().slice(0, 10);
+    const previousDay = index > 0 ? new Date(basePriceChartData[index - 1].ts * 1000).toISOString().slice(0, 10) : null;
+    if (index === 0 || currentDay !== previousDay) {
+      ticks.push(point.timeLabel);
+    }
+    return ticks;
+  }, []);
+
+  const priceChartData = (() => {
+    let yesOpen = 0;
+    let noOpen = 0;
+    let yesAvg = 0;
+    let noAvg = 0;
+
+    const sortedBets = timelineRows;
+    let betIndex = 0;
+
+    return basePriceChartData.map((point) => {
+      const pointMs = point.ts * 1000;
+
+      while (betIndex < sortedBets.length) {
+        const bet = sortedBets[betIndex];
+        const betMs = Date.parse(bet.createdAt);
+        if (!Number.isFinite(betMs) || betMs > pointMs) break;
+
+        const amount = Number(bet.amount) || 0;
+        const shares = Number(bet.shares) || 0;
+        const impliedPrice = shares > 0 ? amount / shares : Number(bet.price) || 0;
+
+        if (bet.type === "BUY") {
+          if (bet.side === "YES" && shares > 0) {
+            const nextCost = yesAvg * yesOpen + amount;
+            yesOpen += shares;
+            yesAvg = yesOpen > 0 ? nextCost / yesOpen : 0;
+          }
+          if (bet.side === "NO" && shares > 0) {
+            const nextCost = noAvg * noOpen + amount;
+            noOpen += shares;
+            noAvg = noOpen > 0 ? nextCost / noOpen : 0;
+          }
+        } else if (bet.type === "SELL") {
+          if (bet.side === "YES" && shares > 0) {
+            yesOpen = Math.max(0, yesOpen - shares);
+            if (yesOpen === 0) yesAvg = 0;
+          }
+          if (bet.side === "NO" && shares > 0) {
+            noOpen = Math.max(0, noOpen - shares);
+            if (noOpen === 0) noAvg = 0;
+          }
+          void impliedPrice;
+        }
+
+        betIndex += 1;
+      }
+
+      return {
+        ...point,
+        yesCostCents: yesOpen > 0 ? Number((yesAvg * 100).toFixed(2)) : null,
+        noCostCents: noOpen > 0 ? Number((noAvg * 100).toFixed(2)) : null,
+      };
+    });
+  })();
+
+  const tradeMarkers = timelineRows
     .filter((bet) => bet.type === "BUY" || bet.type === "SELL")
     .map((bet) => {
       const historyPoint = findNearestHistoryPoint(priceHistory, Date.parse(bet.createdAt));
-      const yValue = bet.side === "YES" ? historyPoint?.yesPrice ?? Number(bet.price) : historyPoint?.noPrice ?? Number(bet.price);
+      const executionPrice = Number(bet.price);
+      const yValue = Number.isFinite(executionPrice) && executionPrice > 0 ? executionPrice : bet.side === "YES" ? historyPoint?.yesPrice ?? 0 : historyPoint?.noPrice ?? 0;
       const kind = `${bet.side} ${bet.type}` as const;
 
       const styleMap: Record<string, { color: string; label: string; border: string }> = {
@@ -325,7 +454,7 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
       return {
         id: bet.id,
         x: historyPoint?.timeLabel ?? new Date(bet.createdAt).toLocaleString(),
-        y: yValue,
+        yCents: Number((yValue * 100).toFixed(2)),
         type: bet.type,
         side: bet.side,
         kind,
@@ -334,14 +463,12 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
         markerBorder: style?.border || "rgba(156,163,175,0.55)",
       };
     })
-    .filter((marker) => Number.isFinite(marker.y));
+    .filter((marker) => Number.isFinite(marker.yCents));
 
   const yesBuyMarkerCount = tradeMarkers.filter((marker) => marker.kind === "YES BUY").length;
   const yesSellMarkerCount = tradeMarkers.filter((marker) => marker.kind === "YES SELL").length;
   const noBuyMarkerCount = tradeMarkers.filter((marker) => marker.kind === "NO BUY").length;
   const noSellMarkerCount = tradeMarkers.filter((marker) => marker.kind === "NO SELL").length;
-
-  const timelineRows = [...userBets].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
 
   let investedAmount = 0;
   let realizedCash = 0;
@@ -661,7 +788,7 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                   padding: 16,
                 }}
               >
-                <h2 style={{ margin: 0, fontSize: 16 }}>Price Chart</h2>
+                <h2 style={{ margin: 0, fontSize: 16 }}>Market Price Chart</h2>
                 <div style={{ marginTop: 8, fontSize: 12, color: "rgba(255,255,255,0.65)" }}>
                   YES / NO price history from 24 hours before your first BUY through your latest SELL, or the event end if you never sold.
                 </div>
@@ -708,7 +835,16 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                           }}
                           formatter={(value: number | string | undefined, name) => {
                             const cents = Number(value ?? 0);
-                            const label = name === "yesCents" ? "YES price" : name === "noCents" ? "NO price" : String(name);
+                            const label =
+                              name === "yesCents"
+                                ? "YES price"
+                                : name === "noCents"
+                                  ? "NO price"
+                                  : name === "yesCostCents"
+                                    ? "YES avg entry"
+                                    : name === "noCostCents"
+                                      ? "NO avg entry"
+                                      : String(name);
                             return [`${cents.toFixed(2)}¢`, label];
                           }}
                           labelFormatter={(label) => label}
@@ -716,11 +852,13 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                         <Legend verticalAlign="top" align="right" iconType="line" wrapperStyle={{ color: "rgba(255,255,255,0.68)", fontSize: 11 }} />
                         <Line type="monotone" dataKey="yesCents" name="YES" stroke="#34d399" strokeWidth={2.1} dot={false} activeDot={{ r: 3 }} />
                         <Line type="monotone" dataKey="noCents" name="NO" stroke="#f87171" strokeWidth={2.1} dot={false} activeDot={{ r: 3 }} />
+                        <Line type="stepAfter" dataKey="yesCostCents" name="YES avg entry" stroke="rgba(52,211,153,0.55)" strokeWidth={1.8} dot={false} activeDot={{ r: 3 }} strokeDasharray="6 5" />
+                        <Line type="stepAfter" dataKey="noCostCents" name="NO avg entry" stroke="rgba(248,113,113,0.55)" strokeWidth={1.8} dot={false} activeDot={{ r: 3 }} strokeDasharray="6 5" />
                         {tradeMarkers.map((marker) => (
                           <ReferenceDot
                             key={`${marker.id}-${marker.kind}`}
                             x={marker.x}
-                            y={Number((Number(marker.y) * 100).toFixed(2))}
+                            y={marker.yCents}
                             r={0}
                             fill="transparent"
                             stroke="transparent"
@@ -756,6 +894,8 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                 <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12, fontSize: 11, color: "rgba(255,255,255,0.58)" }}>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#34d399" }} /> YES line</span>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#f87171" }} /> NO line</span>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 12, height: 0, borderTop: "2px dashed rgba(52,211,153,0.55)" }} /> YES avg entry</span>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 12, height: 0, borderTop: "2px dashed rgba(248,113,113,0.55)" }} /> NO avg entry</span>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#34d399" }} /> YES BUY: {yesBuyMarkerCount}</span>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#059669" }} /> YES SELL: {yesSellMarkerCount}</span>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#fbbf24" }} /> NO BUY: {noBuyMarkerCount}</span>
@@ -764,6 +904,79 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                     <span style={{ width: 8, height: 8, borderRadius: 999, border: "1px solid rgba(255,255,255,0.75)", background: "rgba(255,255,255,0.25)" }} />
                     Selected trade highlight
                   </span>
+                </div>
+              </section>
+
+              <section
+                style={{
+                  marginTop: 16,
+                  border: "1px solid rgba(255,255,255,0.12)",
+                  borderRadius: 14,
+                  background: "rgba(255,255,255,0.03)",
+                  padding: 16,
+                }}
+              >
+                <h2 style={{ margin: 0, fontSize: 16 }}>Position / Cumulative Shares Chart</h2>
+                <div style={{ marginTop: 8, fontSize: 12, color: "rgba(255,255,255,0.65)" }}>
+                  This starts from 0 and shows how many YES / NO shares were accumulated over time.
+                </div>
+
+                <div style={{ width: "100%", height: 260, marginTop: 12 }}>
+                  {timelineRows.length === 0 ? (
+                    <div style={{ height: "100%", borderRadius: 12, border: "1px dashed rgba(255,255,255,0.14)", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.5)", fontSize: 13 }}>
+                      No transaction records available yet.
+                    </div>
+                  ) : positionChartData.length === 0 ? (
+                    <div style={{ height: "100%", borderRadius: 12, border: "1px dashed rgba(255,255,255,0.14)", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.5)", fontSize: 13 }}>
+                      No cumulative position data available yet.
+                    </div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={positionChartData} margin={{ top: 10, right: 14, bottom: 8, left: 0 }}>
+                        <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="4 4" />
+                        <XAxis
+                          dataKey="timeLabel"
+                          ticks={positionChartTicks}
+                          interval={0}
+                          tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 11 }}
+                          axisLine={{ stroke: "rgba(255,255,255,0.12)" }}
+                          tickLine={{ stroke: "rgba(255,255,255,0.12)" }}
+                          tickFormatter={(value) => String(value).slice(0, 5)}
+                        />
+                        <YAxis
+                          tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 11 }}
+                          axisLine={{ stroke: "rgba(255,255,255,0.12)" }}
+                          tickLine={{ stroke: "rgba(255,255,255,0.12)" }}
+                          domain={[0, "dataMax"]}
+                          tickFormatter={(value) => `${Number(value).toFixed(2)}`}
+                        />
+                        <Tooltip
+                          contentStyle={{
+                            background: "rgba(18, 10, 4, 0.96)",
+                            border: "1px solid rgba(255,255,255,0.14)",
+                            borderRadius: 10,
+                            color: "#fff",
+                          }}
+                          formatter={(value: number | string | undefined, name) => {
+                            const shares = Number(value ?? 0);
+                            const label = name === "yesShares" ? "YES cumulative shares" : name === "noShares" ? "NO cumulative shares" : "Net shares";
+                            return [`${shares.toFixed(2)}`, label];
+                          }}
+                          labelFormatter={(label) => label}
+                        />
+                        <Legend verticalAlign="top" align="right" iconType="line" wrapperStyle={{ color: "rgba(255,255,255,0.68)", fontSize: 11 }} />
+                        <Line type="monotone" dataKey="yesShares" name="YES cumulative" stroke="#34d399" strokeWidth={2.1} dot={false} activeDot={{ r: 3 }} />
+                        <Line type="monotone" dataKey="noShares" name="NO cumulative" stroke="#f87171" strokeWidth={2.1} dot={false} activeDot={{ r: 3 }} />
+                        <Line type="monotone" dataKey="netShares" name="Net position" stroke="#93c5fd" strokeWidth={1.8} dot={false} activeDot={{ r: 3 }} strokeDasharray="5 5" />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  )}
+                </div>
+
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12, fontSize: 11, color: "rgba(255,255,255,0.58)" }}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#34d399" }} /> YES cumulative shares</span>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#f87171" }} /> NO cumulative shares</span>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#93c5fd" }} /> Net position</span>
                 </div>
               </section>
 
@@ -793,40 +1006,60 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                           <th style={{ padding: "8px 10px", textAlign: "right" }}>Amount</th>
                           <th style={{ padding: "8px 10px", textAlign: "right" }}>Shares</th>
                           <th style={{ padding: "8px 10px", textAlign: "right" }}>Price</th>
+                          <th style={{ padding: "8px 10px" }}>Consistency</th>
                           <th style={{ padding: "8px 10px" }}>Time</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {timelineRows.map((bet) => (
-                          <tr
-                            key={bet.id}
-                            onClick={() => setSelectedTradeId((prev) => (prev === bet.id ? null : bet.id))}
-                            style={{
-                              borderBottom: "1px solid rgba(255,255,255,0.06)",
-                              cursor: "pointer",
-                              background: selectedTradeId === bet.id ? "rgba(59,130,246,0.16)" : "transparent",
-                            }}
-                            title={selectedTradeId === bet.id ? "Click to unselect" : "Click to highlight this trade on chart"}
-                          >
-                            <td style={{ padding: "8px 10px" }}>
-                              <span style={{
-                                fontSize: 10,
-                                fontWeight: 800,
-                                padding: "2px 8px",
-                                borderRadius: 999,
-                                border: `1px solid ${bet.type === "SELL" ? "rgba(248,113,113,0.4)" : bet.type === "BUY" ? "rgba(52,211,153,0.4)" : "rgba(191,219,254,0.4)"}`,
-                                color: bet.type === "SELL" ? "#fca5a5" : bet.type === "BUY" ? "#86efac" : "#bfdbfe",
-                              }}>
-                                {bet.type}
-                              </span>
-                            </td>
-                            <td style={{ padding: "8px 10px", color: bet.side === "YES" ? "#86efac" : "#fca5a5", fontWeight: 700 }}>{bet.side}</td>
-                            <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{fmtMoney(Number(bet.amount) || 0)}</td>
-                            <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: "rgba(255,255,255,0.75)" }}>{(Number(bet.shares) || 0).toFixed(2)}</td>
-                            <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: "rgba(255,255,255,0.75)" }}>{((Number(bet.price) || 0) * 100).toFixed(2)}¢</td>
-                            <td style={{ padding: "8px 10px", color: "rgba(255,255,255,0.72)" }}>{new Date(bet.createdAt).toLocaleString()}</td>
-                          </tr>
-                        ))}
+                        {timelineRows.map((bet) => {
+                          const betAmount = Number(bet.amount) || 0;
+                          const betShares = Number(bet.shares) || 0;
+                          const betPrice = Number(bet.price) || 0;
+                          const expectedAmount = betShares * betPrice;
+                          const amountMismatch = Math.abs(betAmount - expectedAmount);
+                          const tolerance = Math.max(expectedAmount * 0.02, 0.01);
+                          const isConsistent = amountMismatch <= tolerance;
+
+                          return (
+                            <tr
+                              key={bet.id}
+                              onClick={() => setSelectedTradeId((prev) => (prev === bet.id ? null : bet.id))}
+                              style={{
+                                borderBottom: "1px solid rgba(255,255,255,0.06)",
+                                cursor: "pointer",
+                                background: selectedTradeId === bet.id ? "rgba(59,130,246,0.16)" : "transparent",
+                              }}
+                              title={selectedTradeId === bet.id ? "Click to unselect" : "Click to highlight this trade on chart"}
+                            >
+                              <td style={{ padding: "8px 10px" }}>
+                                <span
+                                  style={{
+                                    fontSize: 10,
+                                    fontWeight: 800,
+                                    padding: "2px 8px",
+                                    borderRadius: 999,
+                                    border: `1px solid ${bet.type === "SELL" ? "rgba(248,113,113,0.4)" : bet.type === "BUY" ? "rgba(52,211,153,0.4)" : "rgba(191,219,254,0.4)"}`,
+                                    color: bet.type === "SELL" ? "#fca5a5" : bet.type === "BUY" ? "#86efac" : "#bfdbfe",
+                                  }}
+                                >
+                                  {bet.type}
+                                </span>
+                              </td>
+                              <td style={{ padding: "8px 10px", color: bet.side === "YES" ? "#86efac" : "#fca5a5", fontWeight: 700 }}>{bet.side}</td>
+                              <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{fmtMoney(betAmount)}</td>
+                              <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: "rgba(255,255,255,0.75)" }}>{betShares.toFixed(2)}</td>
+                              <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: "rgba(255,255,255,0.75)" }}>{(betPrice * 100).toFixed(2)}¢</td>
+                              <td style={{ padding: "8px 10px", fontSize: 11, fontWeight: 700 }} title={`Amount: ${betAmount}, Expected: ${expectedAmount.toFixed(4)}`}>
+                                {isConsistent ? (
+                                  <span style={{ color: "#86efac" }}>✓</span>
+                                ) : (
+                                  <span style={{ color: "#fca5a5" }}>⚠ {fmtMoney(Math.abs(amountMismatch))}</span>
+                                )}
+                              </td>
+                              <td style={{ padding: "8px 10px", color: "rgba(255,255,255,0.72)" }}>{new Date(bet.createdAt).toLocaleString()}</td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -835,7 +1068,7 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
 
               <div style={{ marginTop: 18, display: "flex", gap: 10, flexWrap: "wrap" }}>
                 <Link
-                  href={`/polyoiyen/${encodeURIComponent(row.eventId)}`}
+                  href={`/polyoiyen/${encodeURIComponent(row!.eventId)}`}
                   style={{
                     textDecoration: "none",
                     border: "1px solid rgba(59,130,246,0.4)",

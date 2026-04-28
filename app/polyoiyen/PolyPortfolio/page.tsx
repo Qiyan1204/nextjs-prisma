@@ -256,6 +256,15 @@ function TradeModal({ position, currentPrice, mode, onClose, onTrade }: TradeMod
             <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginBottom: 16 }}>
               ≈ {sharesCalc.toFixed(3)} shares
             </div>
+            {amtNum > 0 && currentPrice > 0 && sharesCalc < 0.01 && (
+              <div style={{
+                fontSize: 11, padding: "10px 12px", borderRadius: 8,
+                background: "rgba(251,191,36,0.15)", border: "1px solid rgba(251,191,36,0.3)",
+                color: "#fbbf24", marginBottom: 16,
+              }}>
+                ⚠️ Very small position: Your amount seems low for the current price. Double-check you meant to buy {sharesCalc.toFixed(4)} shares.
+              </div>
+            )}
           </>
         ) : (
           <>
@@ -316,6 +325,10 @@ export default function PolyPortfolioPage() {
   const [tradeTarget, setTradeTarget] = useState<{ pos: Position; mode: "BUY" | "SELL" } | null>(null);
   const [historyFilter, setHistoryFilter] = useState<"ALL" | "BUY" | "SELL" >("ALL");
 
+  function priceKey(pos: Position): string {
+    return `${pos.eventId}::${pos.marketQuestion}`;
+  }
+
   // Fetch positions + bets
   const fetchData = useCallback(async () => {
     try {
@@ -335,6 +348,25 @@ export default function PolyPortfolioPage() {
   const fetchPrices = useCallback(async (posList: Position[]) => {
     const eventIds = [...new Set(posList.filter((p) => p.netShares > 0).map((p) => p.eventId))];
     const results: Record<string, PriceInfo> = {};
+
+    function normalizeText(value: string): string {
+      return value.trim().toLowerCase();
+    }
+
+    function pickMarketForPosition(ev: any, pos: Position): any {
+      const markets: any[] = Array.isArray(ev?.markets) ? ev.markets : [];
+      if (markets.length === 0) return null;
+      const target = normalizeText(String(pos.marketQuestion || ""));
+      if (target) {
+        const match = markets.find((m) => {
+          const candidates = [m?.question, m?.title, m?.slug].filter((v) => typeof v === "string");
+          return candidates.some((c) => normalizeText(String(c)) === target);
+        });
+        if (match) return match;
+      }
+      return markets.find((m) => !m?.closed) ?? markets[0];
+    }
+
     await Promise.all(
       eventIds.map(async (id) => {
         try {
@@ -344,11 +376,15 @@ export default function PolyPortfolioPage() {
           const events = data.events ?? (Array.isArray(data) ? data : []);
           const ev = events.find((e: { id: string }) => String(e.id) === String(id));
           if (!ev?.markets) return;
-          const mkt = ev.markets.find((m: { closed?: boolean }) => !m.closed) ?? ev.markets[0];
-          if (!mkt?.outcomePrices) return;
-          const parsed: number[] = JSON.parse(mkt.outcomePrices).map(Number);
-          if (parsed.length >= 2 && !isNaN(parsed[0]) && !isNaN(parsed[1])) {
-            results[id] = { yesPrice: parsed[0], noPrice: parsed[1] };
+
+          // Multiple positions can exist per eventId (different marketQuestion), so compute per position.
+          for (const pos of posList.filter((p) => String(p.eventId) === String(id) && p.netShares > 0)) {
+            const mkt = pickMarketForPosition(ev, pos);
+            if (!mkt?.outcomePrices) continue;
+            const parsed: number[] = JSON.parse(mkt.outcomePrices).map(Number);
+            if (parsed.length >= 2 && !isNaN(parsed[0]) && !isNaN(parsed[1])) {
+              results[`${id}::${pos.marketQuestion}`] = { yesPrice: parsed[0], noPrice: parsed[1] };
+            }
           }
         } catch { /* ignore */ }
       })
@@ -369,7 +405,7 @@ export default function PolyPortfolioPage() {
 
   const totalUnrealizedPL = useMemo(() => {
     return activePositions.reduce((sum, p) => {
-      const info = prices[p.eventId];
+      const info = prices[`${p.eventId}::${p.marketQuestion}`];
       if (!info) return sum;
       const cp = p.side === "YES" ? info.yesPrice : info.noPrice;
       return sum + (cp - p.avgPrice) * p.netShares;
@@ -586,7 +622,7 @@ export default function PolyPortfolioPage() {
                       <span>P&L</span><span>Actions</span>
                     </div>
                     {activePositions.map((p) => {
-                      const info = prices[p.eventId];
+                      const info = prices[`${p.eventId}::${p.marketQuestion}`];
                       const currentPrice = info ? (p.side === "YES" ? info.yesPrice : info.noPrice) : null;
                       const unrealizedPL = currentPrice !== null ? (currentPrice - p.avgPrice) * p.netShares : 0;
                       const plColor = unrealizedPL >= 0 ? "#34d399" : "#f87171";
@@ -594,7 +630,7 @@ export default function PolyPortfolioPage() {
                         ? (currentPrice - p.avgPrice) / p.avgPrice : 0;
 
                       return (
-                        <div key={`${p.eventId}-${p.side}`} className="pp-table-row">
+                        <div key={`${p.eventId}-${p.marketQuestion}-${p.side}`} className="pp-table-row">
                           <a href={`/polyoiyen/${encodeURIComponent(p.eventId)}`} style={{
                             fontSize: 13, fontWeight: 600, color: "white",
                             textDecoration: "none", overflow: "hidden",
@@ -755,13 +791,13 @@ export default function PolyPortfolioPage() {
         </div>
 
         {/* Trade Modal */}
-        {tradeTarget && prices[tradeTarget.pos.eventId] && (
+        {tradeTarget && prices[priceKey(tradeTarget.pos)] && (
           <TradeModal
             position={tradeTarget.pos}
             currentPrice={
               tradeTarget.pos.side === "YES"
-                ? prices[tradeTarget.pos.eventId].yesPrice
-                : prices[tradeTarget.pos.eventId].noPrice
+                ? prices[priceKey(tradeTarget.pos)].yesPrice
+                : prices[priceKey(tradeTarget.pos)].noPrice
             }
             mode={tradeTarget.mode}
             onClose={() => setTradeTarget(null)}

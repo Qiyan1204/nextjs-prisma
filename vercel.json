@@ -18,11 +18,47 @@
     },
     {
       "path": "/api/polyoiyen/backtest-daily-summary",
-      "schedule": "5 0 * * *"
+      "schedule": "50 11 * * *"
     },
     {
       "path": "/api/polyoiyen/backtest-daily-queue",
-      "schedule": "20 0 * * *"
+      "schedule": "20 2 * * *"
+    },
+    {
+      "path": "/api/polyoiyen/backtest-daily-queue",
+      "schedule": "20 3 * * *"
+    },
+    {
+      "path": "/api/polyoiyen/backtest-daily-queue",
+      "schedule": "20 4 * * *"
+    },
+    {
+      "path": "/api/polyoiyen/backtest-daily-queue",
+      "schedule": "20 5 * * *"
+    },
+    {
+      "path": "/api/polyoiyen/backtest-daily-queue",
+      "schedule": "20 6 * * *"
+    },
+    {
+      "path": "/api/polyoiyen/backtest-daily-queue",
+      "schedule": "20 7 * * *"
+    },
+    {
+      "path": "/api/polyoiyen/backtest-daily-queue",
+      "schedule": "20 8 * * *"
+    },
+    {
+      "path": "/api/polyoiyen/backtest-daily-queue",
+      "schedule": "20 9 * * *"
+    },
+    {
+      "path": "/api/polyoiyen/backtest-daily-queue",
+      "schedule": "20 10 * * *"
+    },
+    {
+      "path": "/api/polyoiyen/backtest-daily-queue",
+      "schedule": "20 11 * * *"
     }
   ]
 }
