@@ -238,10 +238,10 @@ function buildForwardFilledChartData(seriesList: MarketSeries[]): MarketChartPoi
 }
 
 function getChartWindowLabel(windowKey: string): string {
-  if (windowKey === "1h") return "1小时";
-  if (windowKey === "6h") return "6小时";
-  if (windowKey === "1d") return "1天";
-  return "全部";
+  if (windowKey === "1h") return "1H";
+  if (windowKey === "6h") return "6H";
+  if (windowKey === "1d") return "1D";
+  return "All";
 }
 
 async function fetchHistoryByTokens(
