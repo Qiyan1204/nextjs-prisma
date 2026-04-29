@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { use, useEffect, useState } from "react";
+import { use, useEffect, useMemo, useState } from "react";
 import { CartesianGrid, Legend, Line, LineChart, ReferenceDot, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import PolyHeader from "../../PolyHeader";
 
@@ -40,6 +40,7 @@ type PolyMarket = {
   question?: string;
   title?: string;
   slug?: string;
+  outcomePrices?: string | number[];
   active?: boolean;
   closed?: boolean;
 };
@@ -59,6 +60,25 @@ type PriceHistoryPoint = {
 
 type PriceHistoryResponse = {
   points?: PriceHistoryPoint[];
+};
+
+type MarketCandidate = {
+  market: PolyMarket;
+  tokenIds: { yes: string; no: string };
+};
+
+type MarketSeries = {
+  key: string;
+  label: string;
+  color: string;
+  points: PriceHistoryPoint[];
+  latestPriceCents: number | null;
+};
+
+type MarketChartPoint = {
+  ts: number;
+  timeLabel: string;
+  [seriesKey: string]: number | string | null;
 };
 
 type UserBet = {
@@ -108,6 +128,149 @@ function normalizeText(value: string): string {
   return value.trim().toLowerCase();
 }
 
+function normalizeLooseText(value?: string): string {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function scoreMarketQuestionMatch(market: PolyMarket, bets: UserBet[]): number {
+  const marketText = normalizeLooseText(`${market.title || ""} ${market.question || ""} ${market.slug || ""}`);
+  const betQuestions = [...new Set(bets.map((bet) => normalizeLooseText(bet.marketQuestion)).filter(Boolean))];
+  if (!marketText || betQuestions.length === 0) return 0.25;
+
+  let bestScore = 1;
+  for (const question of betQuestions) {
+    if (marketText === question) {
+      bestScore = Math.min(bestScore, 0);
+      continue;
+    }
+    if (marketText.includes(question) || question.includes(marketText)) {
+      bestScore = Math.min(bestScore, 0.1);
+      continue;
+    }
+
+    const marketWords = marketText.split(" ").filter(Boolean);
+    const questionWords = question.split(" ").filter(Boolean);
+    const overlap = marketWords.filter((word) => questionWords.includes(word)).length;
+    const ratio = marketWords.length > 0 ? overlap / marketWords.length : 0;
+    bestScore = Math.min(bestScore, 1 - ratio);
+  }
+
+  return bestScore;
+}
+
+function scoreHistoryAgainstBets(points: PriceHistoryPoint[], bets: UserBet[]): number {
+  let score = 0;
+  let matched = 0;
+
+  for (const bet of bets) {
+    if (bet.type !== "BUY" && bet.type !== "SELL") continue;
+    const betPrice = Number(bet.price);
+    if (!Number.isFinite(betPrice)) continue;
+
+    const nearest = findNearestHistoryPoint(points, Date.parse(bet.createdAt));
+    const observed = bet.side === "YES" ? nearest?.yesPrice : nearest?.noPrice;
+    if (!Number.isFinite(observed)) continue;
+
+    score += Math.abs(Number(observed) - betPrice);
+    matched += 1;
+  }
+
+  if (matched === 0) return Number.POSITIVE_INFINITY;
+  return score / matched;
+}
+
+function getMarketDisplayName(market: PolyMarket, fallbackLabel: string): string {
+  return (market.title || market.question || market.slug || fallbackLabel).trim();
+}
+
+function getFallbackYesPriceFromMarket(market: PolyMarket): number | null {
+  const raw = market.outcomePrices;
+  if (raw == null) return null;
+
+  let parsed: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  if (!Array.isArray(parsed) || parsed.length === 0) return null;
+  const yes = Number(parsed[0]);
+  if (!Number.isFinite(yes)) return null;
+  if (yes < 0 || yes > 1) return null;
+  return yes;
+}
+
+function buildForwardFilledChartData(seriesList: MarketSeries[]): MarketChartPoint[] {
+  const allTimestamps = [...new Set(seriesList.flatMap((series) => series.points.map((point) => point.ts)))].sort((a, b) => a - b);
+  const cursorBySeries = new Map<string, { index: number; lastValue: number | null }>();
+
+  for (const series of seriesList) {
+    cursorBySeries.set(series.key, { index: 0, lastValue: null });
+  }
+
+  return allTimestamps.map((ts) => {
+    const row: MarketChartPoint = {
+      ts,
+      timeLabel: new Date(ts * 1000).toLocaleString(),
+    };
+
+    for (const series of seriesList) {
+      const cursor = cursorBySeries.get(series.key);
+      if (!cursor) continue;
+
+      while (cursor.index < series.points.length && series.points[cursor.index].ts <= ts) {
+        const point = series.points[cursor.index];
+        cursor.lastValue = point.yesPrice;
+        cursor.index += 1;
+      }
+
+      row[series.key] = cursor.lastValue == null ? null : Number((cursor.lastValue * 100).toFixed(2));
+    }
+
+    return row;
+  });
+}
+
+function getChartWindowLabel(windowKey: string): string {
+  if (windowKey === "1h") return "1小时";
+  if (windowKey === "6h") return "6小时";
+  if (windowKey === "1d") return "1天";
+  return "全部";
+}
+
+async function fetchHistoryByTokens(
+  tokenIds: { yes: string; no: string },
+  historyWindow: { startTime: string; endTime: string } | null
+): Promise<PriceHistoryResponse> {
+  const params = new URLSearchParams({
+    yesAssetId: tokenIds.yes,
+    noAssetId: tokenIds.no,
+    limit: "300",
+    maxPages: "120",
+  });
+
+  if (historyWindow) {
+    params.set("startTime", historyWindow.startTime);
+    params.set("endTime", historyWindow.endTime);
+  } else {
+    params.set("range", "1W");
+  }
+
+  const historyRes = await fetch(`/api/polymarket/volatility-rating?${params.toString()}`, { cache: "no-store" });
+  const historyData = (await historyRes.json()) as PriceHistoryResponse & { error?: string };
+  if (!historyRes.ok) {
+    throw new Error(historyData?.error || "Failed to load price history");
+  }
+
+  return historyData;
+}
+
 function getMarketForQuestion(event: PolyEvent | null, marketQuestion: string): PolyMarket | null {
   if (!event?.markets?.length) return null;
   const target = normalizeText(marketQuestion || "");
@@ -135,6 +298,22 @@ function findNearestHistoryPoint(points: PriceHistoryPoint[], tsMs: number): Pri
     const delta = Math.abs(points[index].ts * 1000 - tsMs);
     if (delta < nearestDelta) {
       nearest = points[index];
+      nearestDelta = delta;
+    }
+  }
+
+  return nearest;
+}
+
+function findNearestChartDataPoint(points: MarketChartPoint[], tsMs: number): MarketChartPoint | null {
+  if (!points.length || !Number.isFinite(tsMs)) return null;
+  let nearest = points[0];
+  let nearestDelta = Math.abs(points[0].ts * 1000 - tsMs);
+
+  for (let i = 1; i < points.length; i += 1) {
+    const delta = Math.abs(points[i].ts * 1000 - tsMs);
+    if (delta < nearestDelta) {
+      nearest = points[i];
       nearestDelta = delta;
     }
   }
@@ -175,8 +354,12 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [priceHistory, setPriceHistory] = useState<PriceHistoryPoint[]>([]);
+  const [marketSeries, setMarketSeries] = useState<MarketSeries[]>([]);
+  const [selectedSeriesKey, setSelectedSeriesKey] = useState<string | null>(null);
   const [priceHistoryLoading, setPriceHistoryLoading] = useState(false);
   const [priceHistoryError, setPriceHistoryError] = useState<string | null>(null);
+  const [selectedMarketInfo, setSelectedMarketInfo] = useState<{ title: string; question: string; candidates: number } | null>(null);
+  const [chartWindow, setChartWindow] = useState<"1h" | "6h" | "1d" | "all">("all");
   const [userBets, setUserBets] = useState<UserBet[]>([]);
   const [selectedTradeId, setSelectedTradeId] = useState<number | null>(null);
 
@@ -239,6 +422,7 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
       setPriceHistoryLoading(true);
       setPriceHistoryError(null);
       setPriceHistory([]);
+      setSelectedMarketInfo(null);
       setUserBets([]);
       setSelectedTradeId(null);
 
@@ -251,63 +435,96 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
           ? (eventPayload.events[0] as PolyEvent | undefined)
           : (eventPayload as PolyEvent | undefined);
 
+        const allMarkets = Array.isArray(event?.markets) ? event.markets : [];
+        const marketCandidates: MarketCandidate[] = allMarkets
+          .map((market) => ({ market, tokenIds: parseTokenIds(market) }))
+          .filter((candidate) => Boolean(candidate.tokenIds.yes) && Boolean(candidate.tokenIds.no));
+
+        if (marketCandidates.length === 0) {
+          throw new Error("This event does not contain a binary YES/NO market that can be charted.");
+        }
+
         let eventBets: UserBet[] = [];
         try {
           const betsRes = await fetch("/api/polybets?positions=true", { cache: "no-store" });
           if (betsRes.ok) {
             const betsPayload = await betsRes.json();
             const allBets = Array.isArray(betsPayload?.bets) ? (betsPayload.bets as UserBet[]) : [];
-            const wantedQuestion = normalizeText(currentRow.marketQuestion || "");
+            const wantedQuestion = normalizeLooseText(currentRow.marketQuestion || "");
             eventBets = allBets.filter((bet) => {
               if (String(bet.eventId) !== String(currentRow.eventId)) return false;
               if (!wantedQuestion) return true;
-              return normalizeText(String(bet.marketQuestion || "")) === wantedQuestion;
+              return normalizeLooseText(String(bet.marketQuestion || "")) === wantedQuestion;
             });
           }
         } catch {
           eventBets = [];
         }
 
-        const marketQuestionForChart =
-          currentRow.marketQuestion ||
-          (eventBets.length > 0 ? String(eventBets[0].marketQuestion || "") : "");
-
-        const selectedMarket = getMarketForQuestion(event || null, marketQuestionForChart);
-        const tokenIds = parseTokenIds(selectedMarket);
-
-        if (!tokenIds.yes || !tokenIds.no) {
-          throw new Error("No token ids available for charting");
-        }
-
         const historyWindow = getPriceHistoryWindow(eventBets, event?.endDate || "");
 
-        const params = new URLSearchParams({
-          yesAssetId: tokenIds.yes,
-          noAssetId: tokenIds.no,
-          limit: "300",
-          maxPages: "120",
+        const candidateHistories = await Promise.all(
+          marketCandidates.map(async (candidate) => {
+            try {
+              const historyData = await fetchHistoryByTokens(candidate.tokenIds, historyWindow);
+              const points = Array.isArray(historyData?.points) ? historyData.points : [];
+              const questionScore = scoreMarketQuestionMatch(candidate.market, eventBets);
+              const priceScore = scoreHistoryAgainstBets(points, eventBets);
+              return {
+                candidate,
+                historyData,
+                points,
+                score: questionScore * 0.35 + priceScore,
+              };
+            } catch {
+              return null;
+            }
+          })
+        );
+
+        const viable = candidateHistories.filter((item): item is NonNullable<typeof item> => Boolean(item));
+        if (viable.length === 0) {
+          throw new Error("Failed to load price history for any binary market in this event.");
+        }
+
+        const best = viable.sort((a, b) => a.score - b.score)[0];
+        const palette = ["#60a5fa", "#34d399", "#f59e0b", "#f472b6", "#a78bfa", "#22d3ee", "#fb7185", "#84cc16"];
+        const sorted = viable.slice().sort((a, b) => a.score - b.score);
+        const referenceTs = sorted[0]?.points?.length ? sorted[0].points[sorted[0].points.length - 1].ts : Math.floor(Date.now() / 1000);
+        const nextSeries = sorted.map((item, index) => {
+          const latestObservedYes = [...item.points].reverse().find((point) => point.yesPrice != null)?.yesPrice ?? null;
+          const fallbackYes = getFallbackYesPriceFromMarket(item.candidate.market);
+          const finalYes = latestObservedYes ?? fallbackYes ?? 0;
+
+          const points = Array.isArray(item.points) && item.points.length > 0
+            ? item.points
+            : [{ ts: referenceTs, timeLabel: new Date(referenceTs * 1000).toLocaleString(), yesPrice: finalYes, noPrice: finalYes == null ? null : Number((1 - finalYes).toFixed(4)) }];
+
+          return {
+            key: `series-${index}`,
+            label: getMarketDisplayName(item.candidate.market, `Market ${index + 1}`),
+            color: palette[index % palette.length],
+            points,
+            latestPriceCents: Number((finalYes * 100).toFixed(2)),
+          };
         });
-
-        if (historyWindow) {
-          params.set("startTime", historyWindow.startTime);
-          params.set("endTime", historyWindow.endTime);
-        } else {
-          params.set("range", "1W");
-        }
-
-        const historyRes = await fetch(`/api/polymarket/volatility-rating?${params.toString()}`, { cache: "no-store" });
-        const historyData = (await historyRes.json()) as PriceHistoryResponse & { error?: string };
-        if (!historyRes.ok) {
-          throw new Error(historyData?.error || "Failed to load price history");
-        }
 
         if (!alive) return;
         setUserBets(eventBets);
-        setPriceHistory(Array.isArray(historyData?.points) ? historyData.points : []);
+        setPriceHistory(best.points);
+        setMarketSeries(nextSeries);
+        setSelectedSeriesKey(nextSeries[0]?.key ?? null);
+        setSelectedMarketInfo({
+          title: best.candidate.market.title || best.candidate.market.question || "Unnamed market",
+          question: best.candidate.market.question || "",
+          candidates: marketCandidates.length,
+        });
       } catch (e) {
         if (!alive) return;
         setUserBets([]);
         setPriceHistory([]);
+        setMarketSeries([]);
+        setSelectedMarketInfo(null);
         setPriceHistoryError(e instanceof Error ? e.message : "Failed to load price chart");
       } finally {
         if (alive) setPriceHistoryLoading(false);
@@ -434,12 +651,44 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
     });
   })();
 
+  const chartSeries = useMemo(() => marketSeries.slice(0, 8), [marketSeries]);
+  const chartSeriesData = useMemo(() => buildForwardFilledChartData(chartSeries), [chartSeries]);
+  const chartCutoffMs = useMemo(() => {
+    if (chartSeriesData.length === 0) return null;
+    const latestTs = chartSeriesData[chartSeriesData.length - 1].ts * 1000;
+    if (chartWindow === "1h") return latestTs - 60 * 60 * 1000;
+    if (chartWindow === "6h") return latestTs - 6 * 60 * 60 * 1000;
+    if (chartWindow === "1d") return latestTs - 24 * 60 * 60 * 1000;
+    return null;
+  }, [chartSeriesData, chartWindow]);
+  const officialChartData = useMemo(() => {
+    if (chartCutoffMs == null) return chartSeriesData;
+    return chartSeriesData.filter((point) => point.ts * 1000 >= chartCutoffMs);
+  }, [chartSeriesData, chartCutoffMs]);
+  const officialChartTicks = useMemo(() => {
+    return officialChartData.reduce<string[]>((ticks, point, index) => {
+      const currentDay = new Date(point.ts * 1000).toISOString().slice(0, 10);
+      const previousDay = index > 0 ? new Date(officialChartData[index - 1].ts * 1000).toISOString().slice(0, 10) : null;
+      if (index === 0 || currentDay !== previousDay) {
+        ticks.push(point.timeLabel);
+      }
+      return ticks;
+    }, []);
+  }, [officialChartData]);
+
+  const activeSeriesKey = selectedSeriesKey && chartSeries.some((series) => series.key === selectedSeriesKey)
+    ? selectedSeriesKey
+    : chartSeries[0]?.key ?? null;
+
   const tradeMarkers = timelineRows
     .filter((bet) => bet.type === "BUY" || bet.type === "SELL")
     .map((bet) => {
-      const historyPoint = findNearestHistoryPoint(priceHistory, Date.parse(bet.createdAt));
+      const ts = Date.parse(bet.createdAt);
+      const nearest = findNearestChartDataPoint(chartSeriesData, ts);
+      const seriesKey = activeSeriesKey;
+      const rawY = nearest && seriesKey ? (nearest as any)[seriesKey] : null;
       const executionPrice = Number(bet.price);
-      const yValue = Number.isFinite(executionPrice) && executionPrice > 0 ? executionPrice : bet.side === "YES" ? historyPoint?.yesPrice ?? 0 : historyPoint?.noPrice ?? 0;
+      const yValue = Number.isFinite(executionPrice) && executionPrice > 0 ? executionPrice * 100 : rawY ?? null;
       const kind = `${bet.side} ${bet.type}` as const;
 
       const styleMap: Record<string, { color: string; label: string; border: string }> = {
@@ -453,8 +702,8 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
 
       return {
         id: bet.id,
-        x: historyPoint?.timeLabel ?? new Date(bet.createdAt).toLocaleString(),
-        yCents: Number((yValue * 100).toFixed(2)),
+        x: nearest?.timeLabel ?? new Date(bet.createdAt).toLocaleString(),
+        yCents: Number.isFinite(Number(yValue)) ? Number(Number(yValue).toFixed(2)) : NaN,
         type: bet.type,
         side: bet.side,
         kind,
@@ -464,6 +713,42 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
       };
     })
     .filter((marker) => Number.isFinite(marker.yCents));
+
+  const groupedTradeMarkers = useMemo(() => {
+    const groups = new Map<string, {
+      x: string;
+      yCents: number;
+      count: number;
+      color: string;
+      markerBorder: string;
+      markerLabel: string;
+    }>();
+
+    for (const marker of tradeMarkers) {
+      const key = `${marker.x}__${marker.yCents.toFixed(2)}`;
+      const existing = groups.get(key);
+      if (!existing) {
+        groups.set(key, {
+          x: marker.x,
+          yCents: marker.yCents,
+          count: 1,
+          color: marker.color,
+          markerBorder: marker.markerBorder,
+          markerLabel: marker.markerLabel,
+        });
+        continue;
+      }
+
+      existing.count += 1;
+      existing.markerLabel = `x${existing.count}`;
+      if (existing.color !== marker.color) {
+        existing.color = "#fbbf24";
+        existing.markerBorder = "rgba(251,191,36,0.75)";
+      }
+    }
+
+    return [...groups.values()];
+  }, [tradeMarkers]);
 
   const yesBuyMarkerCount = tradeMarkers.filter((marker) => marker.kind === "YES BUY").length;
   const yesSellMarkerCount = tradeMarkers.filter((marker) => marker.kind === "YES SELL").length;
@@ -788,12 +1073,79 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                   padding: 16,
                 }}
               >
-                <h2 style={{ margin: 0, fontSize: 16 }}>Market Price Chart</h2>
-                <div style={{ marginTop: 8, fontSize: 12, color: "rgba(255,255,255,0.65)" }}>
-                  YES / NO price history from 24 hours before your first BUY through your latest SELL, or the event end if you never sold.
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                  <div>
+                    <h2 style={{ margin: 0, fontSize: 16 }}>Price Chart</h2>
+                    <div style={{ marginTop: 6, fontSize: 12, color: "rgba(255,255,255,0.66)" }}>
+                      Multi-outcome chart for this event, styled closer to the Polymarket event page.
+                    </div>
+                  </div>
+                  {selectedMarketInfo && (
+                    <div style={{ fontSize: 12, color: "rgba(255,255,255,0.55)" }}>
+                      Backtest market: <span style={{ color: "#fde68a", fontWeight: 700 }}>{selectedMarketInfo.title}</span>
+                    </div>
+                  )}
                 </div>
 
-                <div style={{ width: "100%", height: 290, marginTop: 12 }}>
+                <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 10 }}>
+                  {chartSeries.map((series) => {
+                    const isActive = activeSeriesKey === series.key;
+                    return (
+                      <button
+                        key={series.key}
+                        type="button"
+                        onClick={() => setSelectedSeriesKey(series.key)}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 8,
+                          padding: "6px 10px",
+                          borderRadius: 999,
+                          border: `1px solid ${isActive ? series.color : `${series.color}33`}`,
+                          background: isActive ? `${series.color}2B` : `${series.color}12`,
+                          boxShadow: isActive ? `0 0 0 1px ${series.color}33 inset` : "none",
+                          fontSize: 12,
+                          color: "rgba(255,255,255,0.88)",
+                          cursor: "pointer",
+                        }}
+                        title="Click to set active series for trade markers"
+                      >
+                        <span style={{ width: 8, height: 8, borderRadius: 999, background: series.color, flexShrink: 0 }} />
+                        <span style={{ maxWidth: 220, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{series.label}</span>
+                        <span style={{ color: "rgba(255,255,255,0.58)" }}>{series.latestPriceCents == null ? "N/A" : `${series.latestPriceCents.toFixed(0)}¢`}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div style={{ marginTop: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                  <div style={{ display: "inline-flex", gap: 8, padding: 4, borderRadius: 999, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}>
+                    {(["1h", "6h", "1d", "all"] as const).map((windowKey) => (
+                      <button
+                        key={windowKey}
+                        type="button"
+                        onClick={() => setChartWindow(windowKey)}
+                        style={{
+                          border: 0,
+                          borderRadius: 999,
+                          padding: "7px 12px",
+                          background: chartWindow === windowKey ? "rgba(17,24,39,0.98)" : "transparent",
+                          color: chartWindow === windowKey ? "#fff" : "rgba(255,255,255,0.66)",
+                          fontSize: 12,
+                          fontWeight: 700,
+                          cursor: "pointer",
+                        }}
+                      >
+                        {getChartWindowLabel(windowKey)}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>
+                    {chartSeriesData.length > 0 ? new Date(chartSeriesData[chartSeriesData.length - 1].ts * 1000).toLocaleString() : "No data"}
+                  </div>
+                </div>
+
+                <div style={{ width: "100%", height: 340, marginTop: 14 }}>
                   {priceHistoryLoading ? (
                     <div style={{ height: "100%", borderRadius: 12, border: "1px dashed rgba(255,255,255,0.14)", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.5)", fontSize: 13 }}>
                       Loading price chart...
@@ -802,17 +1154,17 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                     <div style={{ height: "100%", borderRadius: 12, border: "1px dashed rgba(255,255,255,0.14)", display: "flex", alignItems: "center", justifyContent: "center", color: "#fca5a5", fontSize: 13, textAlign: "center", padding: 16 }}>
                       {priceHistoryError}
                     </div>
-                  ) : priceChartData.length === 0 ? (
+                  ) : officialChartData.length === 0 ? (
                     <div style={{ height: "100%", borderRadius: 12, border: "1px dashed rgba(255,255,255,0.14)", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.5)", fontSize: 13 }}>
                       No historical price points available yet.
                     </div>
                   ) : (
                     <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={priceChartData} margin={{ top: 10, right: 14, bottom: 8, left: 0 }}>
+                      <LineChart data={officialChartData} margin={{ top: 12, right: 18, bottom: 8, left: 4 }}>
                         <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="4 4" />
                         <XAxis
                           dataKey="timeLabel"
-                          ticks={priceChartTicks}
+                          ticks={officialChartTicks}
                           interval={0}
                           tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 11 }}
                           axisLine={{ stroke: "rgba(255,255,255,0.12)" }}
@@ -833,57 +1185,32 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                             borderRadius: 10,
                             color: "#fff",
                           }}
-                          formatter={(value: number | string | undefined, name) => {
-                            const cents = Number(value ?? 0);
-                            const label =
-                              name === "yesCents"
-                                ? "YES price"
-                                : name === "noCents"
-                                  ? "NO price"
-                                  : name === "yesCostCents"
-                                    ? "YES avg entry"
-                                    : name === "noCostCents"
-                                      ? "NO avg entry"
-                                      : String(name);
-                            return [`${cents.toFixed(2)}¢`, label];
-                          }}
+                          formatter={(value: number | string | undefined, name) => [`${Number(value ?? 0).toFixed(2)}¢`, String(name)]}
                           labelFormatter={(label) => label}
                         />
-                        <Legend verticalAlign="top" align="right" iconType="line" wrapperStyle={{ color: "rgba(255,255,255,0.68)", fontSize: 11 }} />
-                        <Line type="monotone" dataKey="yesCents" name="YES" stroke="#34d399" strokeWidth={2.1} dot={false} activeDot={{ r: 3 }} />
-                        <Line type="monotone" dataKey="noCents" name="NO" stroke="#f87171" strokeWidth={2.1} dot={false} activeDot={{ r: 3 }} />
-                        <Line type="stepAfter" dataKey="yesCostCents" name="YES avg entry" stroke="rgba(52,211,153,0.55)" strokeWidth={1.8} dot={false} activeDot={{ r: 3 }} strokeDasharray="6 5" />
-                        <Line type="stepAfter" dataKey="noCostCents" name="NO avg entry" stroke="rgba(248,113,113,0.55)" strokeWidth={1.8} dot={false} activeDot={{ r: 3 }} strokeDasharray="6 5" />
-                        {tradeMarkers.map((marker) => (
+                        {chartSeries.map((series) => (
+                          <Line
+                            key={series.key}
+                            type="monotone"
+                            dataKey={series.key}
+                            name={series.label}
+                            stroke={series.color}
+                            strokeWidth={activeSeriesKey === series.key ? 3.1 : 1.7}
+                            strokeOpacity={activeSeriesKey === series.key ? 1 : 0.45}
+                            dot={false}
+                            activeDot={{ r: 3 }}
+                          />
+                        ))}
+                        {groupedTradeMarkers.map((marker, index) => (
                           <ReferenceDot
-                            key={`${marker.id}-${marker.kind}`}
+                            key={`marker-group-${index}`}
                             x={marker.x}
                             y={marker.yCents}
-                            r={0}
-                            fill="transparent"
-                            stroke="transparent"
-                            ifOverflow="visible"
-                            shape={(props: any) => {
-                              const cx = props?.cx ?? props?.x;
-                              const cy = props?.cy ?? props?.y;
-                              const isSelected = selectedTradeId === marker.id;
-                              return (
-                                <text
-                                  x={cx}
-                                  y={cy}
-                                  textAnchor="middle"
-                                  dominantBaseline="central"
-                                  fill={marker.color}
-                                  stroke={isSelected ? "#ffffff" : marker.markerBorder}
-                                  strokeWidth={isSelected ? 0.9 : 0.4}
-                                  fontSize={isSelected ? 17 : 14}
-                                  fontWeight={isSelected ? 900 : 800}
-                                  style={{ filter: isSelected ? "drop-shadow(0 0 4px rgba(255,255,255,0.6))" : "none" }}
-                                >
-                                  ★
-                                </text>
-                              );
-                            }}
+                            r={Math.min(10, 5 + Math.max(0, marker.count - 1))}
+                            fill={marker.color}
+                            stroke={marker.markerBorder}
+                            strokeWidth={1.5}
+                            label={{ position: "top", value: marker.markerLabel, fill: "#fff", fontSize: 10 }}
                           />
                         ))}
                       </LineChart>
@@ -892,18 +1219,9 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                 </div>
 
                 <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12, fontSize: 11, color: "rgba(255,255,255,0.58)" }}>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#34d399" }} /> YES line</span>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#f87171" }} /> NO line</span>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 12, height: 0, borderTop: "2px dashed rgba(52,211,153,0.55)" }} /> YES avg entry</span>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 12, height: 0, borderTop: "2px dashed rgba(248,113,113,0.55)" }} /> NO avg entry</span>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#34d399" }} /> YES BUY: {yesBuyMarkerCount}</span>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#059669" }} /> YES SELL: {yesSellMarkerCount}</span>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#fbbf24" }} /> NO BUY: {noBuyMarkerCount}</span>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#f87171" }} /> NO SELL: {noSellMarkerCount}</span>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "rgba(255,255,255,0.78)" }}>
-                    <span style={{ width: 8, height: 8, borderRadius: 999, border: "1px solid rgba(255,255,255,0.75)", background: "rgba(255,255,255,0.25)" }} />
-                    Selected trade highlight
-                  </span>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#60a5fa" }} /> Outcome series</span>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#34d399" }} /> Active backtest market</span>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#fbbf24" }} /> Trade counts: {yesBuyMarkerCount + yesSellMarkerCount + noBuyMarkerCount + noSellMarkerCount}</span>
                 </div>
               </section>
 
