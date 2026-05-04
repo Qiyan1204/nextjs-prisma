@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
-import { BACKTEST_MARKET_SEGMENTS } from "@/app/polyoiyen/shared/categoryConfig";
+import { BACKTEST_MARKET_SEGMENTS, eventMatchesCategory, CATEGORY_CONFIG } from "@/app/polyoiyen/shared/categoryConfig";
 
 type RawBetRow = {
   userId: number;
@@ -74,6 +74,27 @@ type EventMeta = {
 };
 
 function isAllowedBacktestMarket(row: Pick<ModelSummary, "marketTitle" | "marketQuestion" | "category">): boolean {
+  // Align with market page category matching logic.
+  // Build minimal event-like object used by `eventMatchesCategory`.
+  const eventLike = {
+    title: row.marketTitle || "",
+    description: row.marketQuestion || "",
+    // typed as any to satisfy eventMatchesCategory signature
+    tags: [] as any,
+    slug: "",
+    category: row.category || "",
+  };
+
+  // If any configured category matches, allow this market.
+  for (const cfg of CATEGORY_CONFIG) {
+    try {
+      if (eventMatchesCategory(eventLike, cfg.key)) return true;
+    } catch {
+      // ignore
+    }
+  }
+
+  // Fallback: keep old heuristic using BACKTEST_MARKET_SEGMENTS
   const haystack = `${row.marketTitle || ""} ${row.marketQuestion || ""} ${row.category || ""}`.toLowerCase();
   return BACKTEST_MARKET_SEGMENTS.some((segment) => haystack.includes(segment));
 }

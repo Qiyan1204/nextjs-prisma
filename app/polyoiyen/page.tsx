@@ -2219,12 +2219,21 @@ export function DetailPage({
   const [editingCommentId, setEditingCommentId] = useState<number | null>(null);
   const [editCommentInput, setEditCommentInput] = useState("");
   const [selectedMarketIndex, setSelectedMarketIndex] = useState(() => getDefaultMarketIndex(event.markets));
+  const priceHistoryWindowRef = useRef<{ startTime: string; endTime: string } | null>(null);
   const priceHistoryWindow = useMemo(() => getPriceHistoryWindow(userBets, event.endDate), [userBets, event.endDate]);
 
   useEffect(() => {
     setSelectedMarketIndex(getDefaultMarketIndex(event.markets));
     setSide("YES");
   }, [event.id]);
+
+  // Initialize price history window once at mount
+  useEffect(() => {
+    // Only set the ref once on mount - don't update it when userBets changes
+    if (priceHistoryWindowRef.current === null) {
+      priceHistoryWindowRef.current = priceHistoryWindow;
+    }
+  }, []);
 
   const market =
     (event.markets && event.markets[selectedMarketIndex]) ||
@@ -2273,9 +2282,9 @@ export function DetailPage({
           maxPages: "80",
         });
 
-        if (priceHistoryWindow) {
-          params.set("startTime", priceHistoryWindow.startTime);
-          params.set("endTime", priceHistoryWindow.endTime);
+        if (priceHistoryWindowRef.current) {
+          params.set("startTime", priceHistoryWindowRef.current.startTime);
+          params.set("endTime", priceHistoryWindowRef.current.endTime);
         } else {
           params.set("range", "1W");
         }
@@ -2302,7 +2311,7 @@ export function DetailPage({
     return () => {
       alive = false;
     };
-  }, [event.id, priceHistoryWindow, tokenIds.no, tokenIds.yes]);
+  }, [event.id, tokenIds.no, tokenIds.yes]);
 
   async function fetchUserBets() {
     try {

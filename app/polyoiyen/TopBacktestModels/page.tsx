@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import PolyHeader from "../PolyHeader";
 import { BACKTEST_SCOPE_LABELS } from "../shared/categoryConfig";
+import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 const FILTER_STORAGE_KEY = "top-backtest-models-filters-v1";
 
@@ -67,6 +68,18 @@ function getRiskStyle(level: ModelRow["riskLevel"]): { color: string; bg: string
   if (level === "high") return { color: "#fca5a5", bg: "rgba(239,68,68,0.14)", label: "High" };
   if (level === "medium") return { color: "#fde68a", bg: "rgba(245,158,11,0.14)", label: "Medium" };
   return { color: "#86efac", bg: "rgba(34,197,94,0.14)", label: "Low" };
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function formatRangeLabel(start: number, end: number): string {
+  return `${start.toFixed(0)}% to ${end.toFixed(0)}%`;
+}
+
+function getWeekdayLabel(dayIndex: number): string {
+  return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][dayIndex] || "";
 }
 
 function getEventBacktestHref(eventId: string): string {
@@ -170,6 +183,7 @@ export default function TopBacktestModelsPage() {
 
   const [data, setData] = useState<Payload | null>(null);
   const [page, setPage] = useState(1);
+  const [distributionMode, setDistributionMode] = useState<"weekday" | "hour">("weekday");
   const [compareIds, setCompareIds] = useState<string[]>(() => {
     if (typeof window === "undefined") return [];
     try {
@@ -302,6 +316,128 @@ export default function TopBacktestModelsPage() {
     });
     return compareIds.map((id) => lookup.get(id)).filter((row): row is ModelRow => Boolean(row));
   }, [data, compareIds]);
+
+  const allRows = useMemo(() => {
+    if (!data) return [] as ModelRow[];
+    const lookup = new Map<string, ModelRow>();
+    [...data.models, ...data.topModels, ...data.bottomModels].forEach((row) => {
+      if (!lookup.has(row.eventId)) lookup.set(row.eventId, row);
+    });
+    return [...lookup.values()];
+  }, [data]);
+
+  const distributionStats = useMemo(() => {
+    const rows = allRows;
+    if (rows.length === 0) {
+      return {
+        histogram: [] as Array<{ rangeLabel: string; count: number; winRate: number; start: number; end: number }>,
+        weekday: [] as Array<{ label: string; count: number; winRate: number; avgReturn: number }>,
+        hour: [] as Array<{ label: string; count: number; winRate: number; avgReturn: number }>,
+        total: 0,
+        profitableCount: 0,
+        bestWeekday: null as { label: string; winRate: number; count: number } | null,
+        worstWeekday: null as { label: string; winRate: number; count: number } | null,
+        bestHour: null as { label: string; winRate: number; count: number } | null,
+        worstHour: null as { label: string; winRate: number; count: number } | null,
+      };
+    }
+
+    const returns = rows.map((row) => Number(row.totalReturn) || 0);
+    let min = Math.min(...returns);
+    let max = Math.max(...returns);
+    if (min === max) {
+      min -= 1;
+      max += 1;
+    }
+
+    const binCount = 10;
+    const step = (max - min) / binCount;
+    const bins = Array.from({ length: binCount }, (_, index) => {
+      const start = min + index * step;
+      const end = index === binCount - 1 ? max : start + step;
+      return { rangeLabel: formatRangeLabel(start, end), count: 0, wins: 0, start, end };
+    });
+
+    for (const row of rows) {
+      const value = Number(row.totalReturn) || 0;
+      const index = clampNumber(Math.floor((value - min) / step), 0, binCount - 1);
+      const bucket = bins[index];
+      bucket.count += 1;
+      if (value >= 0) bucket.wins += 1;
+    }
+
+    const histogram = bins.map((bucket) => ({
+      rangeLabel: bucket.rangeLabel,
+      count: bucket.count,
+      winRate: bucket.count > 0 ? Number(((bucket.wins / bucket.count) * 100).toFixed(1)) : 0,
+      start: bucket.start,
+      end: bucket.end,
+    }));
+
+    const weekdayBuckets = Array.from({ length: 7 }, (_, index) => ({ label: getWeekdayLabel(index), count: 0, wins: 0, returnSum: 0 }));
+    const hourBuckets = Array.from({ length: 24 }, (_, index) => ({ label: `${String(index).padStart(2, "0")}:00`, count: 0, wins: 0, returnSum: 0 }));
+
+    for (const row of rows) {
+      const tradeTime = new Date(row.firstTradeAt);
+      const weekdayIndex = tradeTime.getDay();
+      const hourIndex = tradeTime.getHours();
+      const totalReturn = Number(row.totalReturn) || 0;
+      const isWin = totalReturn >= 0 ? 1 : 0;
+
+      weekdayBuckets[weekdayIndex].count += 1;
+      weekdayBuckets[weekdayIndex].wins += isWin;
+      weekdayBuckets[weekdayIndex].returnSum += totalReturn;
+
+      hourBuckets[hourIndex].count += 1;
+      hourBuckets[hourIndex].wins += isWin;
+      hourBuckets[hourIndex].returnSum += totalReturn;
+    }
+
+    const weekday = weekdayBuckets.map((bucket) => ({
+      label: bucket.label,
+      count: bucket.count,
+      winRate: bucket.count > 0 ? Number(((bucket.wins / bucket.count) * 100).toFixed(1)) : 0,
+      avgReturn: bucket.count > 0 ? Number((bucket.returnSum / bucket.count).toFixed(2)) : 0,
+    }));
+
+    const hour = hourBuckets.map((bucket) => ({
+      label: bucket.label,
+      count: bucket.count,
+      winRate: bucket.count > 0 ? Number(((bucket.wins / bucket.count) * 100).toFixed(1)) : 0,
+      avgReturn: bucket.count > 0 ? Number((bucket.returnSum / bucket.count).toFixed(2)) : 0,
+    }));
+
+    const bestWeekday = weekday
+      .filter((bucket) => bucket.count > 0)
+      .sort((a, b) => b.winRate - a.winRate)[0] || null;
+    const worstWeekday = weekday
+      .filter((bucket) => bucket.count > 0)
+      .sort((a, b) => a.winRate - b.winRate)[0] || null;
+    const bestHour = hour
+      .filter((bucket) => bucket.count > 0)
+      .sort((a, b) => b.winRate - a.winRate)[0] || null;
+    const worstHour = hour
+      .filter((bucket) => bucket.count > 0)
+      .sort((a, b) => a.winRate - b.winRate)[0] || null;
+
+    return {
+      histogram,
+      weekday,
+      hour,
+      total: rows.length,
+      profitableCount: rows.filter((row) => (Number(row.totalReturn) || 0) >= 0).length,
+      bestWeekday,
+      worstWeekday,
+      bestHour,
+      worstHour,
+    };
+  }, [allRows]);
+
+  const currentEfficiencySeries = distributionMode === "weekday" ? distributionStats.weekday : distributionStats.hour;
+  const bestEfficiencyBucket =
+    (distributionMode === "weekday" ? distributionStats.bestWeekday : distributionStats.bestHour) || null;
+  const worstEfficiencyBucket =
+    (distributionMode === "weekday" ? distributionStats.worstWeekday : distributionStats.worstHour) || null;
 
   function toggleCompare(row: ModelRow) {
     setCompareIds((current) => {
@@ -486,6 +622,160 @@ export default function TopBacktestModelsPage() {
                   </div>
                 </section>
               )}
+
+              <section style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 18, background: "rgba(255,255,255,0.03)", padding: 16, marginBottom: 18 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                  <div>
+                    <h2 style={{ margin: 0, fontSize: 16 }}>Statistical Distribution</h2>
+                    <div style={{ marginTop: 4, fontSize: 12, color: "rgba(255,255,255,0.55)" }}>
+                      Analyze whether returns cluster around small gains/losses or depend on a few large outliers, then compare win rates by time bucket.
+                    </div>
+                  </div>
+                  <div style={{ display: "inline-flex", gap: 6, padding: 4, borderRadius: 999, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}>
+                    {(["weekday", "hour"] as const).map((mode) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => setDistributionMode(mode)}
+                        style={{
+                          border: 0,
+                          borderRadius: 999,
+                          padding: "7px 12px",
+                          background: distributionMode === mode ? "rgba(17,24,39,0.98)" : "transparent",
+                          color: distributionMode === mode ? "#fff" : "rgba(255,255,255,0.66)",
+                          fontSize: 12,
+                          fontWeight: 700,
+                          cursor: "pointer",
+                        }}
+                      >
+                        {mode === "weekday" ? "By Weekday" : "By Hour"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }}>
+                  <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, background: "rgba(0,0,0,0.14)", padding: 12 }}>
+                    <div style={{ fontSize: 11, color: "rgba(255,255,255,0.58)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Sample Size</div>
+                    <div style={{ marginTop: 6, fontSize: 22, fontWeight: 800, color: "#bfdbfe" }}>{distributionStats.total}</div>
+                  </div>
+                  <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, background: "rgba(0,0,0,0.14)", padding: 12 }}>
+                    <div style={{ fontSize: 11, color: "rgba(255,255,255,0.58)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Profitable Share</div>
+                    <div style={{ marginTop: 6, fontSize: 22, fontWeight: 800, color: distributionStats.total > 0 ? "#86efac" : "#fff" }}>
+                      {distributionStats.total > 0 ? `${((distributionStats.profitableCount / distributionStats.total) * 100).toFixed(1)}%` : "N/A"}
+                    </div>
+                  </div>
+                  <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, background: "rgba(0,0,0,0.14)", padding: 12 }}>
+                    <div style={{ fontSize: 11, color: "rgba(255,255,255,0.58)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Best Time Bucket</div>
+                    <div style={{ marginTop: 6, fontSize: 22, fontWeight: 800, color: "#fde68a" }}>
+                      {bestEfficiencyBucket ? `${bestEfficiencyBucket.label} · ${bestEfficiencyBucket.winRate.toFixed(1)}%` : "N/A"}
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 14 }}>
+                  <div style={{ border: "1px solid rgba(255,255,255,0.1)", borderRadius: 14, background: "rgba(0,0,0,0.16)", padding: 14 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline", marginBottom: 8 }}>
+                      <div>
+                        <h3 style={{ margin: 0, fontSize: 14 }}>Profit and Loss Distribution</h3>
+                        <div style={{ marginTop: 3, fontSize: 11, color: "rgba(255,255,255,0.55)" }}>
+                          Histogram of total return. A tall middle cluster means the strategy is mostly small wins/losses.
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)" }}>
+                        Range: {distributionStats.histogram[0]?.start.toFixed(0) || 0}% to {distributionStats.histogram[distributionStats.histogram.length - 1]?.end.toFixed(0) || 0}%
+                      </div>
+                    </div>
+                    <div style={{ width: "100%", height: 290 }}>
+                      {distributionStats.histogram.length === 0 ? (
+                        <div style={{ height: "100%", borderRadius: 12, border: "1px dashed rgba(255,255,255,0.14)", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.5)", fontSize: 13 }}>
+                          No distribution data available yet.
+                        </div>
+                      ) : (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={distributionStats.histogram} margin={{ top: 8, right: 14, bottom: 24, left: 0 }}>
+                            <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="4 4" />
+                            <XAxis dataKey="rangeLabel" interval={0} tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 10 }} angle={-28} textAnchor="end" height={52} />
+                            <YAxis tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 11 }} axisLine={{ stroke: "rgba(255,255,255,0.12)" }} tickLine={{ stroke: "rgba(255,255,255,0.12)" }} />
+                            <Tooltip
+                              contentStyle={{
+                                background: "rgba(18, 10, 4, 0.96)",
+                                border: "1px solid rgba(255,255,255,0.14)",
+                                borderRadius: 10,
+                                color: "#fff",
+                              }}
+                              formatter={(value: number | string | undefined, name) => {
+                                if (name === "winRate") return [`${Number(value ?? 0).toFixed(1)}%`, "Win Rate"];
+                                return [String(value ?? 0), String(name)];
+                              }}
+                            />
+                            <Bar dataKey="count" name="Models" radius={[8, 8, 0, 0]}>
+                              {distributionStats.histogram.map((bucket) => {
+                                const fill = bucket.end < 0 ? "#f87171" : bucket.start >= 0 ? "#34d399" : "#fde68a";
+                                return <Cell key={bucket.rangeLabel} fill={fill} />;
+                              })}
+                            </Bar>
+                          </BarChart>
+                        </ResponsiveContainer>
+                      )}
+                    </div>
+                  </div>
+
+                  <div style={{ border: "1px solid rgba(255,255,255,0.1)", borderRadius: 14, background: "rgba(0,0,0,0.16)", padding: 14 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline", marginBottom: 8 }}>
+                      <div>
+                        <h3 style={{ margin: 0, fontSize: 14 }}>{distributionMode === "weekday" ? "Daily Win Rate Statistics" : "Win Rate by Hour"}</h3>
+                        <div style={{ marginTop: 3, fontSize: 11, color: "rgba(255,255,255,0.55)" }}>
+                          {distributionMode === "weekday"
+                            ? "Find the strongest and weakest day-of-week behavior."
+                            : "Find the strongest and weakest intraday behavior."}
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)" }}>
+                        Worst: {worstEfficiencyBucket ? `${worstEfficiencyBucket.label} · ${worstEfficiencyBucket.winRate.toFixed(1)}%` : "N/A"}
+                      </div>
+                    </div>
+                    <div style={{ width: "100%", height: 290 }}>
+                      {currentEfficiencySeries.length === 0 ? (
+                        <div style={{ height: "100%", borderRadius: 12, border: "1px dashed rgba(255,255,255,0.14)", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.5)", fontSize: 13 }}>
+                          No timing data available yet.
+                        </div>
+                      ) : (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={currentEfficiencySeries} margin={{ top: 8, right: 14, bottom: 0, left: 0 }}>
+                            <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="4 4" />
+                            <XAxis dataKey="label" tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 11 }} />
+                            <YAxis domain={[0, 100]} tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 11 }} axisLine={{ stroke: "rgba(255,255,255,0.12)" }} tickLine={{ stroke: "rgba(255,255,255,0.12)" }} tickFormatter={(value) => `${Number(value).toFixed(0)}%`} />
+                            <Tooltip
+                              contentStyle={{
+                                background: "rgba(18, 10, 4, 0.96)",
+                                border: "1px solid rgba(255,255,255,0.14)",
+                                borderRadius: 10,
+                                color: "#fff",
+                              }}
+                              formatter={(value: number | string | undefined, name) => {
+                                if (name === "winRate") return [`${Number(value ?? 0).toFixed(1)}%`, "Win Rate"];
+                                if (name === "avgReturn") return [`${Number(value ?? 0).toFixed(2)}%`, "Avg Return"];
+                                return [String(value ?? 0), String(name)];
+                              }}
+                            />
+                            <Bar dataKey="winRate" name="Win Rate" radius={[8, 8, 0, 0]}>
+                              {currentEfficiencySeries.map((bucket) => {
+                                const fill = bucket.winRate >= 60 ? "#34d399" : bucket.winRate >= 50 ? "#fde68a" : "#f87171";
+                                return <Cell key={bucket.label} fill={fill} />;
+                              })}
+                            </Bar>
+                          </BarChart>
+                        </ResponsiveContainer>
+                      )}
+                    </div>
+                    <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, fontSize: 11, color: "rgba(255,255,255,0.68)" }}>
+                      <div>Best: <span style={{ color: "#86efac", fontWeight: 700 }}>{bestEfficiencyBucket ? `${bestEfficiencyBucket.label} (${bestEfficiencyBucket.winRate.toFixed(1)}%)` : "N/A"}</span></div>
+                      <div>Worst: <span style={{ color: "#fca5a5", fontWeight: 700 }}>{worstEfficiencyBucket ? `${worstEfficiencyBucket.label} (${worstEfficiencyBucket.winRate.toFixed(1)}%)` : "N/A"}</span></div>
+                    </div>
+                  </div>
+                </div>
+              </section>
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
                 <section style={{ border: "1px solid rgba(52,211,153,0.18)", borderRadius: 18, background: "rgba(52,211,153,0.05)", padding: 16 }}>

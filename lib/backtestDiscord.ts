@@ -81,6 +81,46 @@ function getBacktestEventDetailsUrl(eventId: string | number): string {
   return `${getAppBaseUrl()}/polyoiyen/backtest-event/${eventId}`;
 }
 
+async function resolveDailyTopRunLink(modelBacktestId: number): Promise<{ label: string; url: string }> {
+  const enabled = process.env.BACKTEST_INCLUDE_EVENT_LINKS !== "false";
+  if (!enabled || !isValidBacktestId(modelBacktestId)) {
+    return {
+      label: "View Top Backtest Models",
+      url: getTopBacktestModelsUrl(),
+    };
+  }
+
+  try {
+    const url = `${getAppBaseUrl()}/api/polyoiyen/backtest-versions/${modelBacktestId}`;
+    const res = await fetch(url, { method: "GET", cache: "no-store" });
+    if (!res.ok) {
+      return {
+        label: "View Top Backtest Models",
+        url: getTopBacktestModelsUrl(),
+      };
+    }
+
+    const payload = await res.json();
+    const eventId = payload?.runs?.[0]?.worstEvents?.[0]?.eventId;
+    if (eventId == null || String(eventId).trim() === "") {
+      return {
+        label: "View Top Backtest Models",
+        url: getTopBacktestModelsUrl(),
+      };
+    }
+
+    return {
+      label: "View Backtest Event Details",
+      url: getBacktestEventDetailsUrl(eventId),
+    };
+  } catch {
+    return {
+      label: "View Top Backtest Models",
+      url: getTopBacktestModelsUrl(),
+    };
+  }
+}
+
 function isValidBacktestId(modelBacktestId: number): boolean {
   return Number.isInteger(modelBacktestId) && modelBacktestId > 0;
 }
@@ -254,7 +294,7 @@ export async function sendBacktestDailySummaryDiscord(input: DailySummaryInput):
   const topRunsWithLinks = await Promise.all(
     input.topRuns.map(async (row) => ({
       row,
-      link: await resolveBacktestLink(row.modelBacktestId),
+      link: await resolveDailyTopRunLink(row.modelBacktestId),
     }))
   );
 

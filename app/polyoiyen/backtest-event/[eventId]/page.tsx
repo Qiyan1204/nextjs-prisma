@@ -1206,10 +1206,29 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                             key={`marker-group-${index}`}
                             x={marker.x}
                             y={marker.yCents}
-                            r={Math.min(10, 5 + Math.max(0, marker.count - 1))}
-                            fill={marker.color}
-                            stroke={marker.markerBorder}
-                            strokeWidth={1.5}
+                            r={0}
+                            fill="transparent"
+                            stroke="transparent"
+                            ifOverflow="visible"
+                            shape={(props: any) => {
+                              const cx = props?.cx ?? props?.x;
+                              const cy = props?.cy ?? props?.y;
+                              return (
+                                <text
+                                  x={cx}
+                                  y={cy}
+                                  textAnchor="middle"
+                                  dominantBaseline="central"
+                                  fill={marker.color}
+                                  stroke={marker.markerBorder}
+                                  strokeWidth={0.4}
+                                  fontSize={14}
+                                  fontWeight={800}
+                                >
+                                  ★
+                                </text>
+                              );
+                            }}
                             label={{ position: "top", value: marker.markerLabel, fill: "#fff", fontSize: 10 }}
                           />
                         ))}
