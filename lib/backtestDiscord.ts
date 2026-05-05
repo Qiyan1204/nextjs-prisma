@@ -10,6 +10,11 @@ type CompletionNotificationInput = {
   backtestStatus: string;
   createdAt: Date;
   source?: string;
+  eventBacktestLinks?: Array<{
+    eventId: string | number;
+    label?: string;
+    totalReturn?: number | null;
+  }>;
 };
 
 type SummaryTopRun = {
@@ -55,6 +60,10 @@ type BacktestEventLinks = {
   losers: string[];
 };
 
+type BacktestEventBacktestLinks = {
+  lines: string[];
+};
+
 function formatPct(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return "N/A";
   const sign = value > 0 ? "+" : "";
@@ -79,6 +88,16 @@ function getTopBacktestModelsUrl(): string {
 
 function getBacktestEventDetailsUrl(eventId: string | number): string {
   return `${getAppBaseUrl()}/polyoiyen/backtest-event/${eventId}`;
+}
+
+function formatEventBacktestLine(
+  idx: number,
+  input: { eventId: string | number; label?: string; totalReturn?: number | null }
+): string {
+  const title = trimTitle(input.label, 64);
+  const totalReturn = toFiniteNumber(input.totalReturn);
+  const prefix = totalReturn == null ? "" : `Return ${formatPct(totalReturn)} • `;
+  return `${idx}. [${prefix}${title}](${getBacktestEventDetailsUrl(input.eventId)})`;
 }
 
 async function resolveDailyTopRunLink(modelBacktestId: number): Promise<{ label: string; url: string }> {
@@ -219,6 +238,62 @@ async function resolveEventLinks(modelBacktestId: number): Promise<BacktestEvent
   }
 }
 
+async function resolveEventBacktestLinks(modelBacktestId: number, limit = 10): Promise<BacktestEventBacktestLinks> {
+  const enabled = process.env.BACKTEST_INCLUDE_EVENT_LINKS !== "false";
+  if (!enabled || !isValidBacktestId(modelBacktestId)) {
+    return { lines: [] };
+  }
+
+  const controller = new AbortController();
+  const timeoutMs = Number(process.env.BACKTEST_EVENT_LINK_TIMEOUT_MS || "2500");
+  const timeout = setTimeout(() => controller.abort(), Number.isFinite(timeoutMs) ? timeoutMs : 2500);
+
+  try {
+    const url = `${getAppBaseUrl()}/api/polyoiyen/backtest-versions/${modelBacktestId}`;
+    const res = await fetch(url, {
+      method: "GET",
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (!res.ok) return { lines: [] };
+
+    const payload = await res.json();
+    const rawEvents = payload?.runs?.[0]?.worstEvents;
+    if (!Array.isArray(rawEvents) || rawEvents.length === 0) {
+      return { lines: [] };
+    }
+
+    const normalized = rawEvents
+      .map((row: BacktestEventItem) => {
+        const eventId = row?.eventId != null ? String(row.eventId).trim() : "";
+        const totalReturn = toFiniteNumber(row?.totalReturn);
+        const label = trimTitle(row?.eventTitle || row?.marketQuestion, 64);
+        if (!eventId) return null;
+        return { eventId, totalReturn, label };
+      })
+      .filter((row): row is { eventId: string; totalReturn: number | null; label: string } => Boolean(row));
+
+    if (normalized.length === 0) return { lines: [] };
+
+    const sorted = [...normalized].sort((a, b) => (a.totalReturn ?? 0) - (b.totalReturn ?? 0));
+    const limited = sorted.slice(0, Math.max(1, limit));
+
+    return {
+      lines: limited.map((evt, idx) =>
+        formatEventBacktestLine(idx + 1, {
+          eventId: evt.eventId,
+          label: evt.label,
+          totalReturn: evt.totalReturn,
+        })
+      ),
+    };
+  } catch {
+    return { lines: [] };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function resolveBacktestLink(modelBacktestId: number): Promise<{ label: string; url: string }> {
   return {
     label: "View Top Backtest Models",
@@ -243,20 +318,17 @@ async function postDiscord(payload: unknown): Promise<void> {
 }
 
 export async function sendBacktestCompletedDiscord(input: CompletionNotificationInput): Promise<void> {
-  const eventLinks = await resolveEventLinks(input.modelBacktestId);
+  const resolvedEventLinks = input.eventBacktestLinks?.length
+    ? {
+        lines: input.eventBacktestLinks
+          .slice(0, 10)
+          .map((evt, idx) => formatEventBacktestLine(idx + 1, evt)),
+      }
+    : await resolveEventBacktestLinks(input.modelBacktestId, 10);
 
-  const primaryLink = eventLinks.winners[0] || eventLinks.losers[0] || null;
-  const fallbackBacktestLink = primaryLink ? null : await resolveBacktestLink(input.modelBacktestId);
-
-  const eventSection =
-    eventLinks.winners.length || eventLinks.losers.length
-      ? [
-          "",
-          "**Event Details (Direct Links)**",
-          ...eventLinks.winners.map((line, i) => `${i + 1}. ${line}`),
-          ...eventLinks.losers.map((line, i) => `${eventLinks.winners.length + i + 1}. ${line}`),
-        ]
-      : [];
+  const eventSection = resolvedEventLinks.lines.length
+    ? ["", "**Event Backtest Details (Top 10)**", ...resolvedEventLinks.lines]
+    : [];
 
   const payload = {
     embeds: [
@@ -270,8 +342,9 @@ export async function sendBacktestCompletedDiscord(input: CompletionNotification
           `**Win Rate:** ${formatPct(input.aggregateWinRate)}`,
           `**Max Drawdown:** ${formatPct(input.avgMaxDrawdown)}`,
           input.source ? `**Source:** ${input.source}` : null,
-          fallbackBacktestLink ? `[${fallbackBacktestLink.label}](${fallbackBacktestLink.url})` : null,
           ...eventSection,
+          "",
+          `[View Top Backtest Models](${getTopBacktestModelsUrl()})`,
         ]
           .filter(Boolean)
           .join("\n"),

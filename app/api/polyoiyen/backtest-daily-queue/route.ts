@@ -16,7 +16,9 @@ type TopModelRow = {
 
 type TopModelsPayload = {
   generatedAt: string;
+  models?: TopModelRow[];
   topModels: TopModelRow[];
+  bottomModels?: TopModelRow[];
 };
 
 function toDateKeyInTimeZone(date: Date, timeZone: string): string {
@@ -65,6 +67,36 @@ function buildDiagnostics(row: TopModelRow) {
   };
 }
 
+function buildCandidatePool(payload: TopModelsPayload): TopModelRow[] {
+  const seen = new Set<string>();
+  const pool: TopModelRow[] = [];
+
+  for (const row of [...(payload.topModels || []), ...(payload.models || []), ...(payload.bottomModels || [])]) {
+    if (!row?.eventId || seen.has(row.eventId)) continue;
+    seen.add(row.eventId);
+    pool.push(row);
+  }
+
+  return pool;
+}
+
+function pickStrategyVariant(slotIndex: number): string {
+  const variants = [
+    "core",
+    "contrarian",
+    "momentum",
+    "mean-reversion",
+    "liquidity-aware",
+    "risk-balanced",
+    "aggressive",
+    "defensive",
+    "late-session",
+    "early-session",
+  ];
+
+  return variants[slotIndex % variants.length] || `variant-${slotIndex + 1}`;
+}
+
 export async function GET(req: NextRequest) {
   const cronSecret = process.env.CRON_SECRET;
   const auth = req.headers.get("authorization") || "";
@@ -84,7 +116,8 @@ export async function GET(req: NextRequest) {
   const hourKey = toHourKeyInTimeZone(now, timeZone);
   const markerKind = `backtest_daily_queue:${dateKey}:${hourKey}`;
 
-  const targetRaw = Number(reqUrl.searchParams.get("target") || process.env.BACKTEST_DAILY_QUEUE_TARGET || "12");
+  const targetParam = reqUrl.searchParams.get("target");
+  const targetRaw = Number(targetParam || process.env.BACKTEST_DAILY_QUEUE_TARGET || "1");
   const minTradesRaw = Number(reqUrl.searchParams.get("minTrades") || process.env.BACKTEST_DAILY_QUEUE_MIN_TRADES || "3");
   const target = clampInt(targetRaw, 1, 40);
   const minTrades = clampInt(minTradesRaw, 1, 20);
@@ -110,7 +143,7 @@ export async function GET(req: NextRequest) {
     }
 
     const topModelsRes = await fetch(
-      `${baseUrl}/api/polyoiyen/top-backtest-models?page=1&pageSize=100&minTrades=${minTrades}&sortBy=return&sortDir=desc`,
+      `${baseUrl}/api/polyoiyen/top-backtest-models?page=1&pageSize=100&minTrades=0&sortBy=return&sortDir=desc&includeAll=1`,
       { cache: "no-store" }
     );
 
@@ -119,7 +152,8 @@ export async function GET(req: NextRequest) {
     }
 
     const payload = (await topModelsRes.json()) as TopModelsPayload;
-    const candidates = Array.isArray(payload.topModels) ? payload.topModels.slice(0, target) : [];
+    const candidatePool = buildCandidatePool(payload);
+    const candidates = candidatePool.length > 0 ? candidatePool : [];
 
     if (candidates.length === 0) {
       await prisma.pullMetric.create({ data: { kind: markerKind } });
@@ -135,17 +169,31 @@ export async function GET(req: NextRequest) {
       });
     }
 
+    const hourSeed = Number.parseInt(hourKey, 10);
+    const safeSeed = Number.isFinite(hourSeed) ? hourSeed : 0;
+    const rotatedCandidates = Array.from({ length: target }, (_, slotIndex) => {
+      const candidate = candidates[(safeSeed + slotIndex) % candidates.length];
+      return {
+        candidate,
+        strategyVariant: pickStrategyVariant(safeSeed + slotIndex),
+        queueSlot: slotIndex + 1,
+      };
+    });
+
     const queued: Array<{ eventId: string; modelBacktestId: number; runId: number }> = [];
     const failed: Array<{ eventId: string; reason: string }> = [];
 
-    for (const row of candidates) {
+    for (const plan of rotatedCandidates) {
+      const row = plan.candidate;
       try {
-        const modelName = toModelName(row);
+        const modelName = `${toModelName(row)} [${plan.strategyVariant}]`;
         const parameterJson = JSON.stringify({
           source: "backtest-daily-queue",
           eventId: row.eventId,
           category: row.category,
           title: row.marketTitle || row.marketQuestion,
+          strategyVariant: plan.strategyVariant,
+          queueSlot: plan.queueSlot,
           scheduledDateKey: dateKey,
           scheduledHourKey: hourKey,
         });
@@ -153,7 +201,10 @@ export async function GET(req: NextRequest) {
         const existing = await prisma.modelBacktest.findFirst({
           where: {
             modelType: "PolyOiyenDailyQueue",
-            parameters: { contains: `\"eventId\":\"${row.eventId}\"` },
+            parameters: {
+              contains: `\"eventId\":\"${row.eventId}\"`,
+            },
+            AND: [{ parameters: { contains: `\"strategyVariant\":\"${plan.strategyVariant}\"` } }],
           },
           select: { id: true, version: true, name: true },
         });
@@ -163,9 +214,9 @@ export async function GET(req: NextRequest) {
               where: { id: existing.id },
               data: {
                 name: modelName,
-                version: dateKey,
+                version: `${dateKey}-${hourKey}-${String(plan.queueSlot).padStart(2, "0")}`,
                 description: row.marketTitle || row.marketQuestion,
-                notes: `Auto queued daily backtest for event ${row.eventId} (${dateKey} ${hourKey}:00 ${timeZone})`,
+                notes: `Auto queued daily backtest for event ${row.eventId} [${plan.strategyVariant}] (${dateKey} ${hourKey}:00 ${timeZone})`,
                 status: "active",
                 parameters: parameterJson,
               },
@@ -174,9 +225,9 @@ export async function GET(req: NextRequest) {
           : await prisma.modelBacktest.create({
               data: {
                 name: modelName,
-                version: dateKey,
+                version: `${dateKey}-${hourKey}-${String(plan.queueSlot).padStart(2, "0")}`,
                 description: row.marketTitle || row.marketQuestion,
-                notes: `Auto queued daily backtest for event ${row.eventId} (${dateKey} ${hourKey}:00 ${timeZone})`,
+                notes: `Auto queued daily backtest for event ${row.eventId} [${plan.strategyVariant}] (${dateKey} ${hourKey}:00 ${timeZone})`,
                 modelType: "PolyOiyenDailyQueue",
                 status: "active",
                 parameters: parameterJson,
@@ -215,7 +266,7 @@ export async function GET(req: NextRequest) {
             statusLabel: row.hasExited ? "Exited" : "Active",
             createdAt: run.createdAt,
             timeZone,
-            source: "backtest-daily-queue",
+            source: `backtest-daily-queue:${plan.strategyVariant}`,
           });
         }
 
