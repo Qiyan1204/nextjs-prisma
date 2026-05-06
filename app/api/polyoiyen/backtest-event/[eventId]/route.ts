@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 
 type BetRow = {
+  id: number;
   userId: number;
   eventId: string;
   marketQuestion: string;
@@ -9,12 +10,27 @@ type BetRow = {
   type: string;
   amount: number;
   shares: number;
+  price: number;
   category: string;
   createdAt: Date;
 };
 
 type EventMeta = {
   title: string;
+  winner: "YES" | "NO" | null;
+  yesPrice: number | null;
+  noPrice: number | null;
+};
+
+type ReturnDetails = {
+  invested: number;
+  realizedCash: number;
+  remainingValue: number;
+  realizedValue: number;
+  totalReturnPct: number;
+  netYesShares: number;
+  netNoShares: number;
+  valuationMethod: "winner" | "mark";
   winner: "YES" | "NO" | null;
   yesPrice: number | null;
   noPrice: number | null;
@@ -115,6 +131,7 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ ev
     const rawBets = await prisma.polyBet.findMany({
       where: { eventId: decodedEventId },
       select: {
+        id: true,
         userId: true,
         eventId: true,
         marketQuestion: true,
@@ -122,6 +139,7 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ ev
         type: true,
         amount: true,
         shares: true,
+        price: true,
         category: true,
         createdAt: true,
       },
@@ -133,6 +151,7 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ ev
     }
 
     const bets: BetRow[] = rawBets.map((bet) => ({
+      id: bet.id,
       userId: bet.userId,
       eventId: bet.eventId,
       marketQuestion: bet.marketQuestion,
@@ -140,6 +159,7 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ ev
       type: bet.type,
       amount: Number(bet.amount),
       shares: Number(bet.shares),
+      price: Number(bet.price),
       category: bet.category,
       createdAt: bet.createdAt,
     }));
@@ -210,6 +230,20 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ ev
     const realizedValue = realizedCash + remainingValue;
     const totalReturn = ((realizedValue - invested) / invested) * 100;
 
+    const returnDetails: ReturnDetails = {
+      invested: Number(invested.toFixed(6)),
+      realizedCash: Number(realizedCash.toFixed(6)),
+      remainingValue: Number(remainingValue.toFixed(6)),
+      realizedValue: Number(realizedValue.toFixed(6)),
+      totalReturnPct: Number(totalReturn.toFixed(6)),
+      netYesShares: Number(netYesShares.toFixed(6)),
+      netNoShares: Number(netNoShares.toFixed(6)),
+      valuationMethod: meta.winner ? "winner" : "mark",
+      winner: meta.winner,
+      yesPrice: meta.yesPrice,
+      noPrice: meta.noPrice,
+    };
+
     const isYesBias = yesBuyAmount >= noBuyAmount;
     const entryAmount = isYesBias ? yesBuyAmount : noBuyAmount;
     const entryShares = isYesBias ? yesBuyShares : noBuyShares;
@@ -256,6 +290,20 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ ev
       recentTradeCount7d: 0,
       riskLevel,
       riskReasons,
+      returnDetails,
+      bets: bets.map((bet) => ({
+        id: bet.id,
+        userId: bet.userId,
+        eventId: bet.eventId,
+        marketQuestion: bet.marketQuestion,
+        side: bet.side,
+        type: bet.type,
+        amount: bet.amount,
+        shares: bet.shares,
+        price: bet.price,
+        category: bet.category,
+        createdAt: bet.createdAt.toISOString(),
+      })),
     };
 
     return NextResponse.json(payload);

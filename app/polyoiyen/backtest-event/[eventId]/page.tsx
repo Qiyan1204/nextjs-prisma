@@ -83,14 +83,35 @@ type MarketChartPoint = {
 
 type UserBet = {
   id: number;
+  userId?: number;
   eventId: string;
   marketQuestion?: string;
+  category?: string;
   side: "YES" | "NO";
   type: "BUY" | "SELL" | string;
   amount: string | number;
   shares: string | number;
   price: string | number;
   createdAt: string;
+};
+
+type DirectEventResponse = ModelRow & {
+  bets?: UserBet[];
+  returnDetails?: ReturnDetails;
+};
+
+type ReturnDetails = {
+  invested: number;
+  realizedCash: number;
+  remainingValue: number;
+  realizedValue: number;
+  totalReturnPct: number;
+  netYesShares: number;
+  netNoShares: number;
+  valuationMethod: "winner" | "mark";
+  winner: "YES" | "NO" | null;
+  yesPrice: number | null;
+  noPrice: number | null;
 };
 
 function fmtMoney(value: number): string {
@@ -351,6 +372,7 @@ function getPriceHistoryWindow(bets: UserBet[], eventEndDate: string): { startTi
 export default function EventBacktestDetailsPage({ params }: { params: Promise<{ eventId: string }> }) {
   const { eventId } = use(params);
   const [row, setRow] = useState<ModelRow | null>(null);
+  const [returnDetails, setReturnDetails] = useState<ReturnDetails | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [priceHistory, setPriceHistory] = useState<PriceHistoryPoint[]>([]);
@@ -360,7 +382,7 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
   const [priceHistoryError, setPriceHistoryError] = useState<string | null>(null);
   const [selectedMarketInfo, setSelectedMarketInfo] = useState<{ title: string; question: string; candidates: number } | null>(null);
   const [chartWindow, setChartWindow] = useState<"1h" | "6h" | "1d" | "all">("all");
-  const [userBets, setUserBets] = useState<UserBet[]>([]);
+  const [eventBets, setEventBets] = useState<UserBet[]>([]);
   const [selectedTradeId, setSelectedTradeId] = useState<number | null>(null);
 
   useEffect(() => {
@@ -373,8 +395,10 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
         });
 
         if (directRes.ok) {
-          const directData = (await directRes.json()) as ModelRow;
+          const directData = (await directRes.json()) as DirectEventResponse;
           setRow(directData);
+          setEventBets(Array.isArray(directData?.bets) ? directData.bets : []);
+          setReturnDetails(directData?.returnDetails ?? null);
           return;
         }
 
@@ -401,9 +425,13 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
           return;
         }
         setRow(matched);
+        setEventBets([]);
+        setReturnDetails(null);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to load event backtest details.");
         setRow(null);
+        setEventBets([]);
+        setReturnDetails(null);
       } finally {
         setLoading(false);
       }
@@ -423,7 +451,6 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
       setPriceHistoryError(null);
       setPriceHistory([]);
       setSelectedMarketInfo(null);
-      setUserBets([]);
       setSelectedTradeId(null);
 
       try {
@@ -444,32 +471,23 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
           throw new Error("This event does not contain a binary YES/NO market that can be charted.");
         }
 
-        let eventBets: UserBet[] = [];
-        try {
-          const betsRes = await fetch("/api/polybets?positions=true", { cache: "no-store" });
-          if (betsRes.ok) {
-            const betsPayload = await betsRes.json();
-            const allBets = Array.isArray(betsPayload?.bets) ? (betsPayload.bets as UserBet[]) : [];
-            const wantedQuestion = normalizeLooseText(currentRow.marketQuestion || "");
-            eventBets = allBets.filter((bet) => {
-              if (String(bet.eventId) !== String(currentRow.eventId)) return false;
-              if (!wantedQuestion) return true;
-              return normalizeLooseText(String(bet.marketQuestion || "")) === wantedQuestion;
-            });
-          }
-        } catch {
-          eventBets = [];
-        }
+        const wantedQuestion = normalizeLooseText(currentRow.marketQuestion || "");
+        const normalizedBets = Array.isArray(eventBets) ? eventBets : [];
+        const filteredBets = normalizedBets.filter((bet) => {
+          if (String(bet.eventId) !== String(currentRow.eventId)) return false;
+          if (!wantedQuestion) return true;
+          return normalizeLooseText(String(bet.marketQuestion || "")) === wantedQuestion;
+        });
 
-        const historyWindow = getPriceHistoryWindow(eventBets, event?.endDate || "");
+        const historyWindow = getPriceHistoryWindow(filteredBets, event?.endDate || "");
 
         const candidateHistories = await Promise.all(
           marketCandidates.map(async (candidate) => {
             try {
               const historyData = await fetchHistoryByTokens(candidate.tokenIds, historyWindow);
               const points = Array.isArray(historyData?.points) ? historyData.points : [];
-              const questionScore = scoreMarketQuestionMatch(candidate.market, eventBets);
-              const priceScore = scoreHistoryAgainstBets(points, eventBets);
+              const questionScore = scoreMarketQuestionMatch(candidate.market, filteredBets);
+              const priceScore = scoreHistoryAgainstBets(points, filteredBets);
               return {
                 candidate,
                 historyData,
@@ -510,7 +528,6 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
         });
 
         if (!alive) return;
-        setUserBets(eventBets);
         setPriceHistory(best.points);
         setMarketSeries(nextSeries);
         setSelectedSeriesKey(nextSeries[0]?.key ?? null);
@@ -521,7 +538,6 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
         });
       } catch (e) {
         if (!alive) return;
-        setUserBets([]);
         setPriceHistory([]);
         setMarketSeries([]);
         setSelectedMarketInfo(null);
@@ -536,9 +552,9 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
     return () => {
       alive = false;
     };
-  }, [row]);
+  }, [row, eventBets]);
 
-  const timelineRows = [...userBets].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+  const timelineRows = [...eventBets].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
 
   const positionChartData = timelineRows.reduce<
     Array<{
@@ -686,7 +702,8 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
       const ts = Date.parse(bet.createdAt);
       const nearest = findNearestChartDataPoint(chartSeriesData, ts);
       const seriesKey = activeSeriesKey;
-      const rawY = nearest && seriesKey ? (nearest as any)[seriesKey] : null;
+      const rawCandidate = nearest && seriesKey ? nearest[seriesKey] : null;
+      const rawY = typeof rawCandidate === "number" ? rawCandidate : null;
       const executionPrice = Number(bet.price);
       const yValue = Number.isFinite(executionPrice) && executionPrice > 0 ? executionPrice * 100 : rawY ?? null;
       const kind = `${bet.side} ${bet.type}` as const;
@@ -906,6 +923,389 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
               <section
                 style={{
                   marginTop: 16,
+                  border: "1px solid rgba(255,255,255,0.12)",
+                  borderRadius: 14,
+                  background: "rgba(255,255,255,0.03)",
+                  padding: 16,
+                }}
+              >
+                <h2 style={{ margin: 0, fontSize: 16 }}>Transactions / Trades</h2>
+                <div style={{ marginTop: 8, fontSize: 12, color: "rgba(255,255,255,0.65)" }}>
+                  Every transaction used to compute the backtest return (BUY / SELL / CLAIM).
+                </div>
+
+                <div
+                  style={{
+                    marginTop: 12,
+                    borderRadius: 12,
+                    border: "1px solid rgba(255,255,255,0.10)",
+                    background: "rgba(255,255,255,0.03)",
+                    padding: 12,
+                  }}
+                >
+                  <div style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "rgba(255,255,255,0.55)" }}>
+                    Return breakdown
+                  </div>
+                  {returnDetails ? (
+                    <>
+                      <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 10 }}>
+                        <span style={{ borderRadius: 999, padding: "6px 10px", background: "rgba(255,255,255,0.08)", fontSize: 12 }}>
+                          Invested: <span style={{ fontFamily: "'DM Mono', monospace" }}>{fmtMoney(returnDetails.invested)}</span>
+                        </span>
+                        <span style={{ borderRadius: 999, padding: "6px 10px", background: "rgba(255,255,255,0.08)", fontSize: 12 }}>
+                          Realized cash: <span style={{ fontFamily: "'DM Mono', monospace" }}>{fmtMoney(returnDetails.realizedCash)}</span>
+                        </span>
+                        <span style={{ borderRadius: 999, padding: "6px 10px", background: "rgba(255,255,255,0.08)", fontSize: 12 }}>
+                          Remaining value: <span style={{ fontFamily: "'DM Mono', monospace" }}>{fmtMoney(returnDetails.remainingValue)}</span>
+                        </span>
+                        <span style={{ borderRadius: 999, padding: "6px 10px", background: "rgba(255,255,255,0.08)", fontSize: 12 }}>
+                          Total value: <span style={{ fontFamily: "'DM Mono', monospace" }}>{fmtMoney(returnDetails.realizedValue)}</span>
+                        </span>
+                        <span style={{ borderRadius: 999, padding: "6px 10px", background: "rgba(249,115,22,0.16)", fontSize: 12, fontWeight: 800 }}>
+                          Return: <span style={{ fontFamily: "'DM Mono', monospace" }}>{fmtPct(returnDetails.totalReturnPct)}</span>
+                        </span>
+                      </div>
+
+                      <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 10, fontSize: 12, color: "rgba(255,255,255,0.65)" }}>
+                        <span style={{ borderRadius: 999, padding: "6px 10px", background: "rgba(255,255,255,0.06)" }}>
+                          Net YES shares: <span style={{ fontFamily: "'DM Mono', monospace" }}>{returnDetails.netYesShares.toFixed(4)}</span>
+                        </span>
+                        <span style={{ borderRadius: 999, padding: "6px 10px", background: "rgba(255,255,255,0.06)" }}>
+                          Net NO shares: <span style={{ fontFamily: "'DM Mono', monospace" }}>{returnDetails.netNoShares.toFixed(4)}</span>
+                        </span>
+                        <span style={{ borderRadius: 999, padding: "6px 10px", background: "rgba(255,255,255,0.06)" }}>
+                          Valuation: {returnDetails.valuationMethod === "winner"
+                            ? `winner=${returnDetails.winner || "unknown"}`
+                            : `mark (YES ${(Number(returnDetails.yesPrice || 0) * 100).toFixed(2)}¢ / NO ${(Number(returnDetails.noPrice || 0) * 100).toFixed(2)}¢)`}
+                        </span>
+                      </div>
+                    </>
+                  ) : (
+                    <div style={{ marginTop: 10, fontSize: 12, color: "rgba(255,255,255,0.65)" }}>
+                      Invested: <span style={{ fontFamily: "'DM Mono', monospace" }}>{fmtMoney(row.invested)}</span>
+                      <span style={{ marginLeft: 14 }}>
+                        Return: <span style={{ fontFamily: "'DM Mono', monospace" }}>{fmtPct(row.totalReturn)}</span>
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {timelineRows.length === 0 ? (
+                  <div style={{ marginTop: 12, fontSize: 13, color: "rgba(255,255,255,0.55)" }}>No transaction records found for this event.</div>
+                ) : (
+                  <div style={{ marginTop: 12, overflowX: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900, fontSize: 12 }}>
+                      <thead>
+                        <tr style={{ textAlign: "left", color: "rgba(255,255,255,0.65)", borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
+                          <th style={{ padding: "8px 10px" }}>User</th>
+                          <th style={{ padding: "8px 10px" }}>Market</th>
+                          <th style={{ padding: "8px 10px" }}>Type</th>
+                          <th style={{ padding: "8px 10px" }}>Side</th>
+                          <th style={{ padding: "8px 10px", textAlign: "right" }}>Amount</th>
+                          <th style={{ padding: "8px 10px", textAlign: "right" }}>Shares</th>
+                          <th style={{ padding: "8px 10px", textAlign: "right" }}>Price</th>
+                          <th style={{ padding: "8px 10px" }}>Consistency</th>
+                          <th style={{ padding: "8px 10px" }}>Time</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {timelineRows.map((bet) => {
+                          const betAmount = Number(bet.amount) || 0;
+                          const betShares = Number(bet.shares) || 0;
+                          const betPrice = Number(bet.price) || 0;
+                          const expectedAmount = betShares * betPrice;
+                          const amountMismatch = Math.abs(betAmount - expectedAmount);
+                          const tolerance = Math.max(expectedAmount * 0.02, 0.01);
+                          const isConsistent = amountMismatch <= tolerance;
+
+                          return (
+                            <tr
+                              key={bet.id}
+                              onClick={() => setSelectedTradeId((prev) => (prev === bet.id ? null : bet.id))}
+                              style={{
+                                borderBottom: "1px solid rgba(255,255,255,0.06)",
+                                cursor: "pointer",
+                                background: selectedTradeId === bet.id ? "rgba(59,130,246,0.16)" : "transparent",
+                              }}
+                              title={selectedTradeId === bet.id ? "Click to unselect" : "Click to highlight this trade on chart"}
+                            >
+                              <td style={{ padding: "8px 10px", color: "rgba(255,255,255,0.72)", fontFamily: "'DM Mono', monospace" }}>
+                                {bet.userId == null ? "—" : String(bet.userId)}
+                              </td>
+                              <td
+                                style={{
+                                  padding: "8px 10px",
+                                  color: "rgba(255,255,255,0.72)",
+                                  maxWidth: 340,
+                                  whiteSpace: "nowrap",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                }}
+                                title={String(bet.marketQuestion || "")}
+                              >
+                                {String(bet.marketQuestion || "—")}
+                              </td>
+                              <td style={{ padding: "8px 10px" }}>
+                                <span
+                                  style={{
+                                    fontSize: 10,
+                                    fontWeight: 800,
+                                    padding: "2px 8px",
+                                    borderRadius: 999,
+                                    border: `1px solid ${bet.type === "SELL" ? "rgba(248,113,113,0.4)" : bet.type === "BUY" ? "rgba(52,211,153,0.4)" : "rgba(191,219,254,0.4)"}`,
+                                    color: bet.type === "SELL" ? "#fca5a5" : bet.type === "BUY" ? "#86efac" : "#bfdbfe",
+                                  }}
+                                >
+                                  {bet.type}
+                                </span>
+                              </td>
+                              <td style={{ padding: "8px 10px", color: bet.side === "YES" ? "#86efac" : "#fca5a5", fontWeight: 700 }}>{bet.side}</td>
+                              <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{fmtMoney(betAmount)}</td>
+                              <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: "rgba(255,255,255,0.75)" }}>{betShares.toFixed(2)}</td>
+                              <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: "rgba(255,255,255,0.75)" }}>{(betPrice * 100).toFixed(2)}¢</td>
+                              <td style={{ padding: "8px 10px", fontSize: 11, fontWeight: 700 }} title={`Amount: ${betAmount}, Expected: ${expectedAmount.toFixed(4)}`}>
+                                {isConsistent ? (
+                                  <span style={{ color: "#86efac" }}>✓</span>
+                                ) : (
+                                  <span style={{ color: "#fca5a5" }}>⚠ {fmtMoney(Math.abs(amountMismatch))}</span>
+                                )}
+                              </td>
+                              <td style={{ padding: "8px 10px", color: "rgba(255,255,255,0.72)" }}>{new Date(bet.createdAt).toLocaleString()}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </section>
+
+              <section
+                style={{
+                  marginTop: 16,
+                  border: "1px solid rgba(255,255,255,0.12)",
+                  borderRadius: 14,
+                  background: "rgba(255,255,255,0.03)",
+                  padding: 16,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                  <div>
+                    <h2 style={{ margin: 0, fontSize: 16 }}>Price Chart</h2>
+                    <div style={{ marginTop: 6, fontSize: 12, color: "rgba(255,255,255,0.66)" }}>
+                      Multi-outcome chart for this event. Stars indicate trade execution prices.
+                    </div>
+                  </div>
+                  {selectedMarketInfo && (
+                    <div style={{ fontSize: 12, color: "rgba(255,255,255,0.55)" }}>
+                      Backtest market: <span style={{ color: "#fde68a", fontWeight: 700 }}>{selectedMarketInfo.title}</span>
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 10 }}>
+                  {chartSeries.map((series) => {
+                    const isActive = activeSeriesKey === series.key;
+                    return (
+                      <button
+                        key={series.key}
+                        type="button"
+                        onClick={() => setSelectedSeriesKey(series.key)}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 8,
+                          padding: "6px 10px",
+                          borderRadius: 999,
+                          border: `1px solid ${isActive ? series.color : `${series.color}33`}`,
+                          background: isActive ? `${series.color}2B` : `${series.color}12`,
+                          boxShadow: isActive ? `0 0 0 1px ${series.color}33 inset` : "none",
+                          fontSize: 12,
+                          color: "rgba(255,255,255,0.88)",
+                          cursor: "pointer",
+                        }}
+                        title="Click to set active series for trade markers"
+                      >
+                        <span style={{ width: 8, height: 8, borderRadius: 999, background: series.color, flexShrink: 0 }} />
+                        <span style={{ maxWidth: 220, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{series.label}</span>
+                        <span style={{ color: "rgba(255,255,255,0.58)" }}>{series.latestPriceCents == null ? "N/A" : `${series.latestPriceCents.toFixed(0)}¢`}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div style={{ marginTop: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                  <div style={{ display: "inline-flex", gap: 8, padding: 4, borderRadius: 999, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}>
+                    {(["1h", "6h", "1d", "all"] as const).map((windowKey) => (
+                      <button
+                        key={windowKey}
+                        type="button"
+                        onClick={() => setChartWindow(windowKey)}
+                        style={{
+                          border: 0,
+                          borderRadius: 999,
+                          padding: "7px 12px",
+                          background: chartWindow === windowKey ? "rgba(17,24,39,0.98)" : "transparent",
+                          color: chartWindow === windowKey ? "#fff" : "rgba(255,255,255,0.66)",
+                          fontSize: 12,
+                          fontWeight: 700,
+                          cursor: "pointer",
+                        }}
+                      >
+                        {getChartWindowLabel(windowKey)}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>
+                    {chartSeriesData.length > 0 ? new Date(chartSeriesData[chartSeriesData.length - 1].ts * 1000).toLocaleString() : "No data"}
+                  </div>
+                </div>
+
+                <div style={{ width: "100%", height: 340, marginTop: 14 }}>
+                  {priceHistoryLoading ? (
+                    <div style={{ height: "100%", borderRadius: 12, border: "1px dashed rgba(255,255,255,0.14)", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.5)", fontSize: 13 }}>
+                      Loading price chart...
+                    </div>
+                  ) : priceHistoryError ? (
+                    <div style={{ height: "100%", borderRadius: 12, border: "1px dashed rgba(255,255,255,0.14)", display: "flex", alignItems: "center", justifyContent: "center", color: "#fca5a5", fontSize: 13, textAlign: "center", padding: 16 }}>
+                      {priceHistoryError}
+                    </div>
+                  ) : officialChartData.length === 0 ? (
+                    <div style={{ height: "100%", borderRadius: 12, border: "1px dashed rgba(255,255,255,0.14)", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.5)", fontSize: 13 }}>
+                      No historical price points available yet.
+                    </div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={officialChartData} margin={{ top: 12, right: 18, bottom: 8, left: 4 }}>
+                        <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="4 4" />
+                        <XAxis
+                          dataKey="timeLabel"
+                          ticks={officialChartTicks}
+                          interval={0}
+                          tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 11 }}
+                          axisLine={{ stroke: "rgba(255,255,255,0.12)" }}
+                          tickLine={{ stroke: "rgba(255,255,255,0.12)" }}
+                          tickFormatter={(value) => String(value).slice(0, 5)}
+                        />
+                        <YAxis
+                          tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 11 }}
+                          axisLine={{ stroke: "rgba(255,255,255,0.12)" }}
+                          tickLine={{ stroke: "rgba(255,255,255,0.12)" }}
+                          domain={[0, 100]}
+                          tickFormatter={(value) => `${Number(value).toFixed(0)}¢`}
+                        />
+                        <Tooltip
+                          contentStyle={{
+                            background: "rgba(18, 10, 4, 0.96)",
+                            border: "1px solid rgba(255,255,255,0.14)",
+                            borderRadius: 10,
+                            color: "#fff",
+                          }}
+                          formatter={(value: number | string | undefined, name) => [`${Number(value ?? 0).toFixed(2)}¢`, String(name)]}
+                          labelFormatter={(label) => label}
+                        />
+                        {chartSeries.map((series) => (
+                          <Line
+                            key={series.key}
+                            type="monotone"
+                            dataKey={series.key}
+                            name={series.label}
+                            stroke={series.color}
+                            strokeWidth={activeSeriesKey === series.key ? 3.1 : 1.7}
+                            strokeOpacity={activeSeriesKey === series.key ? 1 : 0.45}
+                            dot={false}
+                            activeDot={{ r: 3 }}
+                          />
+                        ))}
+                        {groupedTradeMarkers.map((marker, index) => (
+                          <ReferenceDot
+                            key={`marker-group-${index}`}
+                            x={marker.x}
+                            y={marker.yCents}
+                            r={0}
+                            fill="transparent"
+                            stroke="transparent"
+                            ifOverflow="visible"
+                            shape={(props: { cx?: number; cy?: number; x?: number; y?: number }) => {
+                              const cx = props.cx ?? props.x;
+                              const cy = props.cy ?? props.y;
+                              return (
+                                <text
+                                  x={cx}
+                                  y={cy}
+                                  textAnchor="middle"
+                                  dominantBaseline="central"
+                                  fill={marker.color}
+                                  stroke={marker.markerBorder}
+                                  strokeWidth={0.4}
+                                  fontSize={14}
+                                  fontWeight={800}
+                                >
+                                  ★
+                                </text>
+                              );
+                            }}
+                            label={{ position: "top", value: marker.markerLabel, fill: "#fff", fontSize: 10 }}
+                          />
+                        ))}
+
+                        {selectedTradeId != null && (() => {
+                          const bet = timelineRows.find((item) => item.id === selectedTradeId);
+                          if (!bet) return null;
+                          const betTs = Date.parse(bet.createdAt);
+                          const nearest = findNearestChartDataPoint(officialChartData, betTs);
+                          const x = nearest?.timeLabel ?? new Date(bet.createdAt).toLocaleString();
+                          const betPrice = Number(bet.price);
+                          const yCents = Number.isFinite(betPrice) ? Number((betPrice * 100).toFixed(2)) : NaN;
+                          if (!Number.isFinite(yCents)) return null;
+
+                          return (
+                            <ReferenceDot
+                              key={`selected-trade-${selectedTradeId}`}
+                              x={x}
+                              y={yCents}
+                              r={0}
+                              fill="transparent"
+                              stroke="transparent"
+                              ifOverflow="visible"
+                              shape={(props: { cx?: number; cy?: number; x?: number; y?: number }) => {
+                                const cx = props.cx ?? props.x;
+                                const cy = props.cy ?? props.y;
+                                return (
+                                  <text
+                                    x={cx}
+                                    y={cy}
+                                    textAnchor="middle"
+                                    dominantBaseline="central"
+                                    fill="#bfdbfe"
+                                    stroke="rgba(59,130,246,0.65)"
+                                    strokeWidth={0.9}
+                                    fontSize={18}
+                                    fontWeight={900}
+                                  >
+                                    ★
+                                  </text>
+                                );
+                              }}
+                              label={{ position: "top", value: "selected", fill: "#bfdbfe", fontSize: 10 }}
+                            />
+                          );
+                        })()}
+                      </LineChart>
+                    </ResponsiveContainer>
+                  )}
+                </div>
+
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12, fontSize: 11, color: "rgba(255,255,255,0.58)" }}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#60a5fa" }} /> Outcome series</span>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#34d399" }} /> Active backtest market</span>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#fbbf24" }} /> Trade counts: {yesBuyMarkerCount + yesSellMarkerCount + noBuyMarkerCount + noSellMarkerCount}</span>
+                </div>
+              </section>
+
+              <section
+                style={{
+                  marginTop: 16,
                   display: "grid",
                   gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
                   gap: 12,
@@ -1073,186 +1473,6 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                   padding: 16,
                 }}
               >
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                  <div>
-                    <h2 style={{ margin: 0, fontSize: 16 }}>Price Chart</h2>
-                    <div style={{ marginTop: 6, fontSize: 12, color: "rgba(255,255,255,0.66)" }}>
-                      Multi-outcome chart for this event, styled closer to the Polymarket event page.
-                    </div>
-                  </div>
-                  {selectedMarketInfo && (
-                    <div style={{ fontSize: 12, color: "rgba(255,255,255,0.55)" }}>
-                      Backtest market: <span style={{ color: "#fde68a", fontWeight: 700 }}>{selectedMarketInfo.title}</span>
-                    </div>
-                  )}
-                </div>
-
-                <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 10 }}>
-                  {chartSeries.map((series) => {
-                    const isActive = activeSeriesKey === series.key;
-                    return (
-                      <button
-                        key={series.key}
-                        type="button"
-                        onClick={() => setSelectedSeriesKey(series.key)}
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 8,
-                          padding: "6px 10px",
-                          borderRadius: 999,
-                          border: `1px solid ${isActive ? series.color : `${series.color}33`}`,
-                          background: isActive ? `${series.color}2B` : `${series.color}12`,
-                          boxShadow: isActive ? `0 0 0 1px ${series.color}33 inset` : "none",
-                          fontSize: 12,
-                          color: "rgba(255,255,255,0.88)",
-                          cursor: "pointer",
-                        }}
-                        title="Click to set active series for trade markers"
-                      >
-                        <span style={{ width: 8, height: 8, borderRadius: 999, background: series.color, flexShrink: 0 }} />
-                        <span style={{ maxWidth: 220, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{series.label}</span>
-                        <span style={{ color: "rgba(255,255,255,0.58)" }}>{series.latestPriceCents == null ? "N/A" : `${series.latestPriceCents.toFixed(0)}¢`}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                <div style={{ marginTop: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                  <div style={{ display: "inline-flex", gap: 8, padding: 4, borderRadius: 999, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}>
-                    {(["1h", "6h", "1d", "all"] as const).map((windowKey) => (
-                      <button
-                        key={windowKey}
-                        type="button"
-                        onClick={() => setChartWindow(windowKey)}
-                        style={{
-                          border: 0,
-                          borderRadius: 999,
-                          padding: "7px 12px",
-                          background: chartWindow === windowKey ? "rgba(17,24,39,0.98)" : "transparent",
-                          color: chartWindow === windowKey ? "#fff" : "rgba(255,255,255,0.66)",
-                          fontSize: 12,
-                          fontWeight: 700,
-                          cursor: "pointer",
-                        }}
-                      >
-                        {getChartWindowLabel(windowKey)}
-                      </button>
-                    ))}
-                  </div>
-                  <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>
-                    {chartSeriesData.length > 0 ? new Date(chartSeriesData[chartSeriesData.length - 1].ts * 1000).toLocaleString() : "No data"}
-                  </div>
-                </div>
-
-                <div style={{ width: "100%", height: 340, marginTop: 14 }}>
-                  {priceHistoryLoading ? (
-                    <div style={{ height: "100%", borderRadius: 12, border: "1px dashed rgba(255,255,255,0.14)", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.5)", fontSize: 13 }}>
-                      Loading price chart...
-                    </div>
-                  ) : priceHistoryError ? (
-                    <div style={{ height: "100%", borderRadius: 12, border: "1px dashed rgba(255,255,255,0.14)", display: "flex", alignItems: "center", justifyContent: "center", color: "#fca5a5", fontSize: 13, textAlign: "center", padding: 16 }}>
-                      {priceHistoryError}
-                    </div>
-                  ) : officialChartData.length === 0 ? (
-                    <div style={{ height: "100%", borderRadius: 12, border: "1px dashed rgba(255,255,255,0.14)", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.5)", fontSize: 13 }}>
-                      No historical price points available yet.
-                    </div>
-                  ) : (
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={officialChartData} margin={{ top: 12, right: 18, bottom: 8, left: 4 }}>
-                        <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="4 4" />
-                        <XAxis
-                          dataKey="timeLabel"
-                          ticks={officialChartTicks}
-                          interval={0}
-                          tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 11 }}
-                          axisLine={{ stroke: "rgba(255,255,255,0.12)" }}
-                          tickLine={{ stroke: "rgba(255,255,255,0.12)" }}
-                          tickFormatter={(value) => String(value).slice(0, 5)}
-                        />
-                        <YAxis
-                          tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 11 }}
-                          axisLine={{ stroke: "rgba(255,255,255,0.12)" }}
-                          tickLine={{ stroke: "rgba(255,255,255,0.12)" }}
-                          domain={[0, 100]}
-                          tickFormatter={(value) => `${Number(value).toFixed(0)}¢`}
-                        />
-                        <Tooltip
-                          contentStyle={{
-                            background: "rgba(18, 10, 4, 0.96)",
-                            border: "1px solid rgba(255,255,255,0.14)",
-                            borderRadius: 10,
-                            color: "#fff",
-                          }}
-                          formatter={(value: number | string | undefined, name) => [`${Number(value ?? 0).toFixed(2)}¢`, String(name)]}
-                          labelFormatter={(label) => label}
-                        />
-                        {chartSeries.map((series) => (
-                          <Line
-                            key={series.key}
-                            type="monotone"
-                            dataKey={series.key}
-                            name={series.label}
-                            stroke={series.color}
-                            strokeWidth={activeSeriesKey === series.key ? 3.1 : 1.7}
-                            strokeOpacity={activeSeriesKey === series.key ? 1 : 0.45}
-                            dot={false}
-                            activeDot={{ r: 3 }}
-                          />
-                        ))}
-                        {groupedTradeMarkers.map((marker, index) => (
-                          <ReferenceDot
-                            key={`marker-group-${index}`}
-                            x={marker.x}
-                            y={marker.yCents}
-                            r={0}
-                            fill="transparent"
-                            stroke="transparent"
-                            ifOverflow="visible"
-                            shape={(props: any) => {
-                              const cx = props?.cx ?? props?.x;
-                              const cy = props?.cy ?? props?.y;
-                              return (
-                                <text
-                                  x={cx}
-                                  y={cy}
-                                  textAnchor="middle"
-                                  dominantBaseline="central"
-                                  fill={marker.color}
-                                  stroke={marker.markerBorder}
-                                  strokeWidth={0.4}
-                                  fontSize={14}
-                                  fontWeight={800}
-                                >
-                                  ★
-                                </text>
-                              );
-                            }}
-                            label={{ position: "top", value: marker.markerLabel, fill: "#fff", fontSize: 10 }}
-                          />
-                        ))}
-                      </LineChart>
-                    </ResponsiveContainer>
-                  )}
-                </div>
-
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12, fontSize: 11, color: "rgba(255,255,255,0.58)" }}>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#60a5fa" }} /> Outcome series</span>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#34d399" }} /> Active backtest market</span>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#fbbf24" }} /> Trade counts: {yesBuyMarkerCount + yesSellMarkerCount + noBuyMarkerCount + noSellMarkerCount}</span>
-                </div>
-              </section>
-
-              <section
-                style={{
-                  marginTop: 16,
-                  border: "1px solid rgba(255,255,255,0.12)",
-                  borderRadius: 14,
-                  background: "rgba(255,255,255,0.03)",
-                  padding: 16,
-                }}
-              >
                 <h2 style={{ margin: 0, fontSize: 16 }}>Position / Cumulative Shares Chart</h2>
                 <div style={{ marginTop: 8, fontSize: 12, color: "rgba(255,255,255,0.65)" }}>
                   This starts from 0 and shows how many YES / NO shares were accumulated over time.
@@ -1315,92 +1535,6 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#f87171" }} /> NO cumulative shares</span>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#93c5fd" }} /> Net position</span>
                 </div>
-              </section>
-
-              <section
-                style={{
-                  marginTop: 16,
-                  border: "1px solid rgba(255,255,255,0.12)",
-                  borderRadius: 14,
-                  background: "rgba(255,255,255,0.03)",
-                  padding: 16,
-                }}
-              >
-                <h2 style={{ margin: 0, fontSize: 16 }}>Transaction Timeline</h2>
-                <div style={{ marginTop: 8, fontSize: 12, color: "rgba(255,255,255,0.65)" }}>
-                  Chronological BUY / SELL / CLAIM flow for this event.
-                </div>
-
-                {timelineRows.length === 0 ? (
-                  <div style={{ marginTop: 12, fontSize: 13, color: "rgba(255,255,255,0.55)" }}>No transaction records found for your account in this event.</div>
-                ) : (
-                  <div style={{ marginTop: 12, overflowX: "auto" }}>
-                    <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760, fontSize: 12 }}>
-                      <thead>
-                        <tr style={{ textAlign: "left", color: "rgba(255,255,255,0.65)", borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
-                          <th style={{ padding: "8px 10px" }}>Type</th>
-                          <th style={{ padding: "8px 10px" }}>Side</th>
-                          <th style={{ padding: "8px 10px", textAlign: "right" }}>Amount</th>
-                          <th style={{ padding: "8px 10px", textAlign: "right" }}>Shares</th>
-                          <th style={{ padding: "8px 10px", textAlign: "right" }}>Price</th>
-                          <th style={{ padding: "8px 10px" }}>Consistency</th>
-                          <th style={{ padding: "8px 10px" }}>Time</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {timelineRows.map((bet) => {
-                          const betAmount = Number(bet.amount) || 0;
-                          const betShares = Number(bet.shares) || 0;
-                          const betPrice = Number(bet.price) || 0;
-                          const expectedAmount = betShares * betPrice;
-                          const amountMismatch = Math.abs(betAmount - expectedAmount);
-                          const tolerance = Math.max(expectedAmount * 0.02, 0.01);
-                          const isConsistent = amountMismatch <= tolerance;
-
-                          return (
-                            <tr
-                              key={bet.id}
-                              onClick={() => setSelectedTradeId((prev) => (prev === bet.id ? null : bet.id))}
-                              style={{
-                                borderBottom: "1px solid rgba(255,255,255,0.06)",
-                                cursor: "pointer",
-                                background: selectedTradeId === bet.id ? "rgba(59,130,246,0.16)" : "transparent",
-                              }}
-                              title={selectedTradeId === bet.id ? "Click to unselect" : "Click to highlight this trade on chart"}
-                            >
-                              <td style={{ padding: "8px 10px" }}>
-                                <span
-                                  style={{
-                                    fontSize: 10,
-                                    fontWeight: 800,
-                                    padding: "2px 8px",
-                                    borderRadius: 999,
-                                    border: `1px solid ${bet.type === "SELL" ? "rgba(248,113,113,0.4)" : bet.type === "BUY" ? "rgba(52,211,153,0.4)" : "rgba(191,219,254,0.4)"}`,
-                                    color: bet.type === "SELL" ? "#fca5a5" : bet.type === "BUY" ? "#86efac" : "#bfdbfe",
-                                  }}
-                                >
-                                  {bet.type}
-                                </span>
-                              </td>
-                              <td style={{ padding: "8px 10px", color: bet.side === "YES" ? "#86efac" : "#fca5a5", fontWeight: 700 }}>{bet.side}</td>
-                              <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{fmtMoney(betAmount)}</td>
-                              <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: "rgba(255,255,255,0.75)" }}>{betShares.toFixed(2)}</td>
-                              <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: "rgba(255,255,255,0.75)" }}>{(betPrice * 100).toFixed(2)}¢</td>
-                              <td style={{ padding: "8px 10px", fontSize: 11, fontWeight: 700 }} title={`Amount: ${betAmount}, Expected: ${expectedAmount.toFixed(4)}`}>
-                                {isConsistent ? (
-                                  <span style={{ color: "#86efac" }}>✓</span>
-                                ) : (
-                                  <span style={{ color: "#fca5a5" }}>⚠ {fmtMoney(Math.abs(amountMismatch))}</span>
-                                )}
-                              </td>
-                              <td style={{ padding: "8px 10px", color: "rgba(255,255,255,0.72)" }}>{new Date(bet.createdAt).toLocaleString()}</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
               </section>
 
               <div style={{ marginTop: 18, display: "flex", gap: 10, flexWrap: "wrap" }}>
