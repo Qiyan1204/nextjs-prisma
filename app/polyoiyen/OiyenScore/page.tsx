@@ -96,6 +96,7 @@ const OIYEN_FETCH_MAX_PAGES_BY_CATEGORY: Record<CategoryKey, number> = {
   elonTweets: 12,
   fedRates: 12,
   nbaGames: 12,
+  nflMarkets: 12,
 };
 
 function parsePositiveIntInRange(raw: string | null, fallback: number, min: number, max: number): number {

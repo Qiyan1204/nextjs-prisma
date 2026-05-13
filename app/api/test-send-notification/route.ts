@@ -39,7 +39,10 @@ export async function GET(req: NextRequest) {
       diagnostics = null;
     }
 
-    const queuedEventId = diagnostics?.queuedEventId;
+    const queuedEventIdRaw = diagnostics?.queuedEventId;
+    const queuedEventId = (typeof queuedEventIdRaw === "string" || typeof queuedEventIdRaw === "number")
+      ? queuedEventIdRaw
+      : null;
     const queuedHasExited = diagnostics?.queuedHasExited;
     const queuedTradeCount = diagnostics?.queuedTradeCount;
 

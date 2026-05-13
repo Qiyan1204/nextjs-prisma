@@ -20,7 +20,14 @@ export async function GET(request: NextRequest) {
     }
 
     let eventBacktestLinks:
-      | Array<{ eventId: string | number; label?: string; totalReturn?: number | null }>
+      | Array<{
+          eventId: string | number;
+          label?: string;
+          totalReturn?: number | null;
+          winRate?: number | null;
+          trades?: number | null;
+          statusLabel?: string;
+        }>
       | undefined;
 
     const baseUrl = request.nextUrl.origin.replace(/\/$/, "");
@@ -309,7 +316,7 @@ export async function GET(request: NextRequest) {
                     eventId: item.eventId,
                     totalReturn,
                     winRate,
-                    trades: trades == null ? undefined : trades,
+                    trades: trades ?? null,
                     statusLabel,
                     createdAt,
                     source: "Test Split Notification (aligned)",
@@ -452,7 +459,7 @@ export async function GET(request: NextRequest) {
                 eventId: String(details.eventId),
                 totalReturn,
                 winRate,
-                trades: trades == null ? undefined : trades,
+                trades: trades ?? null,
                 statusLabel: "completed",
                 createdAt,
                 source: "Test Split Notification (computed)",

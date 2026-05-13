@@ -485,6 +485,7 @@ function normalizeMetricRows(
     movieBoxOffice: null,
     fedRates: null,
     nbaGames: null,
+    nflMarkets: null,
   };
 
   if (usable.length === 0) return result;
@@ -991,6 +992,7 @@ function emptyCategoryRecord<T>(value: T): Record<CategoryKey, T> {
     movieBoxOffice: value,
     fedRates: value,
     nbaGames: value,
+    nflMarkets: value,
   };
 }
 
@@ -1111,6 +1113,7 @@ export default function CrossCategoryEventAnalysisPage() {
               movieBoxOffice: Array.isArray(parsed.movieBoxOffice) ? parsed.movieBoxOffice : [],
               fedRates: Array.isArray(parsed.fedRates) ? parsed.fedRates : [],
               nbaGames: Array.isArray(parsed.nbaGames) ? parsed.nbaGames : [],
+              nflMarkets: Array.isArray(parsed.nflMarkets) ? parsed.nflMarkets : [],
             };
           }
         } catch {
@@ -1369,6 +1372,7 @@ export default function CrossCategoryEventAnalysisPage() {
       movieBoxOffice: [],
       fedRates: [],
       nbaGames: [],
+      nflMarkets: [],
     };
 
     for (const cat of categoriesWithScores) {
@@ -1384,6 +1388,7 @@ export default function CrossCategoryEventAnalysisPage() {
       movieBoxOffice: null,
       fedRates: null,
       nbaGames: null,
+      nflMarkets: null,
     };
 
     (Object.keys(out) as CategoryKey[]).forEach((key) => {

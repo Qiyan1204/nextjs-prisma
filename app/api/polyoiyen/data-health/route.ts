@@ -544,6 +544,7 @@ function buildDegradedDataHealthResponse(selectedEventIds: Set<string>, reason: 
     movieBoxOffice: { eventCount: 0, tokenCoveragePct: 0, avgLiquidity: 0 },
     fedRates: { eventCount: 0, tokenCoveragePct: 0, avgLiquidity: 0 },
     nbaGames: { eventCount: 0, tokenCoveragePct: 0, avgLiquidity: 0 },
+    nflMarkets: { eventCount: 0, tokenCoveragePct: 0, avgLiquidity: 0 },
   };
 
   return {
@@ -1339,6 +1340,7 @@ export async function GET(req: Request) {
     movieBoxOffice: { eventCount: 0, tokenCoveragePct: 0, avgLiquidity: 0 },
     fedRates: { eventCount: 0, tokenCoveragePct: 0, avgLiquidity: 0 },
     nbaGames: { eventCount: 0, tokenCoveragePct: 0, avgLiquidity: 0 },
+    nflMarkets: { eventCount: 0, tokenCoveragePct: 0, avgLiquidity: 0 },
   };
 
   for (const cat of CATEGORY_CONFIG) {

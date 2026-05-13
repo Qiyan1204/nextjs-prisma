@@ -76,6 +76,14 @@ export const MARKET_GROUP_PRESETS: MarketGroupPreset[] = [
     includeAny: ["nba", "basketball", "playoffs", "finals"],
     excludeAny: ["nfl", "mlb", "nhl", "soccer"],
   },
+  {
+    key: "nfl-markets-core",
+    label: "NFL Markets Core",
+    description: "NFL season, playoffs, Super Bowl, and game-result contracts.",
+    category: "nflMarkets",
+    includeAny: ["nfl", "football", "super bowl", "playoffs"],
+    excludeAny: ["nba", "mlb", "nhl", "soccer"],
+  },
 ];
 
 const DEFAULT_PRESET_KEY_BY_CATEGORY: Record<CategoryKey, string> = {
@@ -83,6 +91,7 @@ const DEFAULT_PRESET_KEY_BY_CATEGORY: Record<CategoryKey, string> = {
   movieBoxOffice: "movies-box-office-core",
   fedRates: "fed-rates-core",
   nbaGames: "nba-games-core",
+  nflMarkets: "nfl-markets-core",
 };
 
 function normalize(text: string): string {
