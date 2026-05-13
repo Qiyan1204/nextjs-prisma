@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { recordPull } from "@/lib/pullMetrics";
 import { sendBacktestDailySummaryDiscord } from "@/lib/backtestDiscord";
+import { recordBacktestNotification } from "@/lib/backtestNotificationLog";
 
 function toDateKeyInTimeZone(date: Date, timeZone: string): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -100,13 +101,21 @@ export async function GET(req: NextRequest) {
       }));
 
     if (shouldNotify) {
-      await sendBacktestDailySummaryDiscord({
+      const discordPayload = {
         periodLabel: `Last 24h (${timeZone})`,
         totalCompleted: runs.length,
         avgReturn: average(runs.map((r) => r.avgReturn)),
         avgWinRate: average(runs.map((r) => r.aggregateWinRate)),
         statusCounts,
         topRuns,
+      };
+
+      await recordBacktestNotification({
+        kind: "BACKTEST_DAILY_SUMMARY",
+        modelBacktestId: null,
+        backtestVersionRunId: null,
+        payload: discordPayload,
+        send: () => sendBacktestDailySummaryDiscord(discordPayload),
       });
     }
 

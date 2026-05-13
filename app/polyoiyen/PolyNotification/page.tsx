@@ -28,6 +28,24 @@ interface MarketPriceInfo {
   noPrice: number;
 }
 
+type BacktestNotificationListItem = {
+  id: number;
+  kind: string;
+  deliveryStatus: string;
+  channel: string;
+  eventId: string | null;
+  createdAt: string;
+  sentAt: string | null;
+  errorMessage: string | null;
+  modelBacktest?: { id: number; name: string; version: string } | null;
+  backtestVersionRun?: { id: number; createdAt: string } | null;
+};
+
+type BacktestNotificationDetailResponse = {
+  item: BacktestNotificationListItem;
+  payload: unknown;
+};
+
 // ─── helpers ──────────────────────────────────────────────────────────────────
 function timeAgo(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -303,6 +321,27 @@ export default function PolyNotificationPage() {
   // Local anti-spam guard: don't call trigger endpoint for the same alert more than once per minute.
   const notifiedAtRef = useRef<Map<number, number>>(new Map());
 
+  const [backtestNotifs, setBacktestNotifs] = useState<BacktestNotificationListItem[]>([]);
+  const [backtestLoading, setBacktestLoading] = useState(true);
+  const [backtestError, setBacktestError] = useState<string | null>(null);
+  const [selectedBacktestNotifId, setSelectedBacktestNotifId] = useState<number | null>(null);
+  const [selectedBacktestDetail, setSelectedBacktestDetail] = useState<BacktestNotificationDetailResponse | null>(null);
+  const [backtestDetailLoading, setBacktestDetailLoading] = useState(false);
+
+  async function readErrorBody(res: Response): Promise<string> {
+    try {
+      const contentType = res.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        const data = await res.json();
+        const msg = typeof data?.error === "string" ? data.error : JSON.stringify(data);
+        return msg || "";
+      }
+      return await res.text();
+    } catch {
+      return "";
+    }
+  }
+
   // Fetch all user alerts
   const fetchAlerts = useCallback(async () => {
     try {
@@ -427,6 +466,57 @@ export default function PolyNotificationPage() {
   useEffect(() => {
     fetchAlerts();
   }, [fetchAlerts]);
+
+  const fetchBacktestNotifs = useCallback(async () => {
+    try {
+      const res = await fetch("/api/polyoiyen/backtest-notifications?limit=50", { cache: "no-store" });
+      if (!res.ok) {
+        const details = await readErrorBody(res);
+        throw new Error(`Failed to fetch backtest notifications (HTTP ${res.status})${details ? `: ${details}` : ""}`);
+      }
+      const data = await res.json();
+      setBacktestNotifs(Array.isArray(data?.items) ? data.items : []);
+    } catch (e: unknown) {
+      setBacktestError(e instanceof Error ? e.message : "Unknown error");
+    } finally {
+      setBacktestLoading(false);
+    }
+  }, []);
+
+  const fetchBacktestDetail = useCallback(async (id: number) => {
+    setBacktestDetailLoading(true);
+    try {
+      const res = await fetch(`/api/polyoiyen/backtest-notifications/${id}`, { cache: "no-store" });
+      if (!res.ok) {
+        const details = await readErrorBody(res);
+        throw new Error(`Failed to fetch backtest notification detail (HTTP ${res.status})${details ? `: ${details}` : ""}`);
+      }
+      const data: BacktestNotificationDetailResponse = await res.json();
+      setSelectedBacktestDetail(data);
+    } catch (e: unknown) {
+      setSelectedBacktestDetail(null);
+      setBacktestError(e instanceof Error ? e.message : "Unknown error");
+    } finally {
+      setBacktestDetailLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchBacktestNotifs();
+  }, [fetchBacktestNotifs]);
+
+  useEffect(() => {
+    const idParam = new URLSearchParams(window.location.search).get("btNotifId");
+    const id = idParam ? Number(idParam) : null;
+    if (id && Number.isFinite(id) && id > 0) {
+      setSelectedBacktestNotifId(id);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (selectedBacktestNotifId == null) return;
+    fetchBacktestDetail(selectedBacktestNotifId);
+  }, [selectedBacktestNotifId, fetchBacktestDetail]);
 
   useEffect(() => {
     if (alerts.length > 0) {
@@ -607,6 +697,24 @@ export default function PolyNotificationPage() {
           background: rgba(249,115,22,0.09);
           color: #f97316;
         }
+        .bt-row-btn {
+          width: 100%;
+          text-align: left;
+          background: rgba(255,255,255,0.02);
+          border: 1px solid rgba(249,115,22,0.14);
+          border-radius: 12px;
+          padding: 12px 14px;
+          cursor: pointer;
+          transition: all 0.18s;
+        }
+        .bt-row-btn:hover {
+          border-color: rgba(249,115,22,0.28);
+          background: rgba(249,115,22,0.06);
+        }
+        .bt-row-btn.active {
+          border-color: rgba(52,211,153,0.35);
+          background: rgba(52,211,153,0.08);
+        }
       `}</style>
       
 
@@ -727,6 +835,169 @@ export default function PolyNotificationPage() {
               {dismissedAlerts.length > 0 && (
                 <DismissedSection alerts={dismissedAlerts} prices={prices} />
               )}
+
+              {/* Backtest notifications */}
+              <div style={{ marginTop: 36 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
+                  <div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginBottom: 3 }}>
+                      🧪 Backtest notifications
+                    </div>
+                    <div style={{ fontSize: 12, color: "rgba(255,255,255,0.44)" }}>
+                      Latest backtest Discord send attempts (stored for audit + detail view).
+                    </div>
+                  </div>
+                  <button
+                    className="notif-dismiss-all-btn"
+                    onClick={() => {
+                      setBacktestLoading(true);
+                      setBacktestError(null);
+                      fetchBacktestNotifs();
+                    }}
+                  >
+                    Refresh
+                  </button>
+                </div>
+
+                {backtestLoading ? (
+                  <div
+                    style={{
+                      textAlign: "center",
+                      padding: "36px 0",
+                      color: "rgba(255,255,255,0.35)",
+                      fontSize: 13,
+                      border: "1px dashed rgba(249,115,22,0.15)",
+                      borderRadius: 16,
+                    }}
+                  >
+                    Loading backtest notifications…
+                  </div>
+                ) : backtestError ? (
+                  <div
+                    style={{
+                      textAlign: "center",
+                      padding: "36px 0",
+                      color: "#f87171",
+                      fontSize: 13,
+                      border: "1px solid rgba(248,113,113,0.2)",
+                      borderRadius: 16,
+                      background: "rgba(248,113,113,0.06)",
+                    }}
+                  >
+                    {backtestError}
+                  </div>
+                ) : backtestNotifs.length === 0 ? (
+                  <div
+                    style={{
+                      textAlign: "center",
+                      padding: "36px 0",
+                      color: "rgba(255,255,255,0.35)",
+                      fontSize: 13,
+                      border: "1px dashed rgba(249,115,22,0.15)",
+                      borderRadius: 16,
+                    }}
+                  >
+                    No backtest notifications yet.
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                      {backtestNotifs.slice(0, 20).map((n) => {
+                        const isActive = selectedBacktestNotifId === n.id;
+                        const title = n.modelBacktest
+                          ? `${n.modelBacktest.name} · ${n.modelBacktest.version}`
+                          : n.eventId
+                            ? `Event ${n.eventId}`
+                            : "Backtest";
+
+                        return (
+                          <button
+                            key={n.id}
+                            className={`bt-row-btn${isActive ? " active" : ""}`}
+                            onClick={() => {
+                              setBacktestError(null);
+                              setSelectedBacktestNotifId(n.id);
+                              const url = new URL(window.location.href);
+                              url.searchParams.set("btNotifId", String(n.id));
+                              window.history.replaceState({}, "", url.toString());
+                            }}
+                          >
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                              <div style={{ fontSize: 13, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {title}
+                              </div>
+                              <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.06em", color: n.deliveryStatus === "SENT" ? "#34d399" : n.deliveryStatus === "FAILED" ? "#f87171" : "#f97316" }}>
+                                {String(n.deliveryStatus || "PENDING").toUpperCase()}
+                              </div>
+                            </div>
+                            <div style={{ marginTop: 4, fontSize: 12, color: "rgba(255,255,255,0.44)" }}>
+                              {n.kind}
+                              {n.eventId ? ` · eventId=${n.eventId}` : ""}
+                              {n.sentAt ? ` · sent ${timeAgo(n.sentAt)}` : ` · created ${timeAgo(n.createdAt)}`}
+                              {n.errorMessage ? ` · error: ${n.errorMessage}` : ""}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {selectedBacktestNotifId != null && (
+                      <div
+                        style={{
+                          marginTop: 14,
+                          border: "1px solid rgba(249,115,22,0.14)",
+                          borderRadius: 16,
+                          background: "rgba(255,255,255,0.02)",
+                          padding: "14px 16px",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8 }}>
+                          <div style={{ fontSize: 13, fontWeight: 800, color: "#fff" }}>
+                            Detail #{selectedBacktestNotifId}
+                          </div>
+                          <button
+                            className="notif-dismiss-all-btn"
+                            onClick={() => {
+                              if (selectedBacktestNotifId != null) fetchBacktestDetail(selectedBacktestNotifId);
+                            }}
+                          >
+                            Reload detail
+                          </button>
+                        </div>
+
+                        {backtestDetailLoading ? (
+                          <div style={{ fontSize: 12, color: "rgba(255,255,255,0.44)" }}>
+                            Loading detail…
+                          </div>
+                        ) : !selectedBacktestDetail ? (
+                          <div style={{ fontSize: 12, color: "rgba(255,255,255,0.44)" }}>
+                            No detail loaded.
+                          </div>
+                        ) : (
+                          <pre
+                            style={{
+                              marginTop: 8,
+                              whiteSpace: "pre-wrap",
+                              wordBreak: "break-word",
+                              fontSize: 11,
+                              lineHeight: 1.35,
+                              color: "rgba(255,255,255,0.72)",
+                              fontFamily: "'DM Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+                              background: "rgba(0,0,0,0.22)",
+                              border: "1px solid rgba(255,255,255,0.08)",
+                              borderRadius: 12,
+                              padding: 12,
+                              overflow: "auto",
+                            }}
+                          >
+                            {JSON.stringify(selectedBacktestDetail.payload ?? selectedBacktestDetail.item, null, 2)}
+                          </pre>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
             </>
           )}
         </div>

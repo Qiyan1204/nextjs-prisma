@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { sendEventBacktestDetailsDiscord } from "@/lib/backtestDiscord";
+import { recordBacktestNotification } from "@/lib/backtestNotificationLog";
 
 type TopModelRow = {
   eventId: string;
@@ -256,9 +257,8 @@ export async function GET(req: NextRequest) {
             backtestStatus: row.totalReturn >= 0 ? "healthy" : "degraded",
           },
         });
-
         if (shouldNotify) {
-          await sendEventBacktestDetailsDiscord({
+          const discordPayload = {
             eventId: row.eventId,
             totalReturn: row.totalReturn,
             winRate: row.winRate,
@@ -267,6 +267,18 @@ export async function GET(req: NextRequest) {
             createdAt: run.createdAt,
             timeZone,
             source: `backtest-daily-queue:${plan.strategyVariant}`,
+          };
+
+          await recordBacktestNotification({
+            kind: "EVENT_BACKTEST_DETAILS",
+            modelBacktestId: model.id,
+            backtestVersionRunId: run.id,
+            eventId: row.eventId,
+            payload: {
+              ...discordPayload,
+              createdAt: run.createdAt.toISOString(),
+            },
+            send: () => sendEventBacktestDetailsDiscord(discordPayload),
           });
         }
 

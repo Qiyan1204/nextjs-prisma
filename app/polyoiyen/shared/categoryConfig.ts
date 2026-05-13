@@ -1,4 +1,4 @@
-export type CategoryKey = "elonTweets" | "movieBoxOffice" | "fedRates" | "nbaGames";
+export type CategoryKey = "elonTweets" | "movieBoxOffice" | "fedRates" | "nbaGames" | "nflMarkets";
 
 export type CategoryConfigItem = {
   key: CategoryKey;
@@ -41,6 +41,14 @@ export const CATEGORY_CONFIG: CategoryConfigItem[] = [
     keywords: ["nba", "basketball", "playoffs", "lakers", "celtics", "warriors"],
     pageSignals: ["predictions/nba", "nba"],
     backtestSegments: ["nba", "basketball", "playoffs", "finals"],
+  },
+  {
+    key: "nflMarkets",
+    label: "NFL markets",
+    tagSlugs: ["nfl"],
+    keywords: ["nfl", "football", "super bowl", "touchdown", "quarterback", "afc", "nfc"],
+    pageSignals: ["predictions/nfl", "nfl"],
+    backtestSegments: ["nfl", "football", "super bowl", "touchdown", "quarterback"],
   },
 ];
 
@@ -149,4 +157,5 @@ export const TAG_SLUGS_BY_CATEGORY: Record<CategoryKey, string[]> = {
   movieBoxOffice: CATEGORY_CONFIG.find((c) => c.key === "movieBoxOffice")?.tagSlugs || [],
   fedRates: CATEGORY_CONFIG.find((c) => c.key === "fedRates")?.tagSlugs || [],
   nbaGames: CATEGORY_CONFIG.find((c) => c.key === "nbaGames")?.tagSlugs || [],
+  nflMarkets: CATEGORY_CONFIG.find((c) => c.key === "nflMarkets")?.tagSlugs || [],
 };

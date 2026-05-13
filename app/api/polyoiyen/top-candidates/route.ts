@@ -84,6 +84,7 @@ export async function GET(req: Request) {
     movieBoxOffice: [],
     fedRates: [],
     nbaGames: [],
+    nflMarkets: [],
   };
 
   for (const category of CATEGORY_CONFIG) {

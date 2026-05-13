@@ -1,5 +1,6 @@
 import prisma from "@/lib/prisma";
 import { sendBacktestCompletedDiscord, sendEventBacktestDetailsDiscord } from "@/lib/backtestDiscord";
+import { recordBacktestNotification } from "@/lib/backtestNotificationLog";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function GET(req: NextRequest) {
@@ -30,9 +31,10 @@ export async function GET(req: NextRequest) {
     }
 
     // Prefer sending an event-specific notification if we can infer the event id from diagnostics.
-    let diagnostics: any = null;
+    let diagnostics: Record<string, unknown> | null = null;
     try {
-      diagnostics = latestRun.diagnosticsJson ? JSON.parse(String(latestRun.diagnosticsJson)) : null;
+      const parsed = latestRun.diagnosticsJson ? JSON.parse(String(latestRun.diagnosticsJson)) : null;
+      diagnostics = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
     } catch {
       diagnostics = null;
     }
@@ -42,7 +44,7 @@ export async function GET(req: NextRequest) {
     const queuedTradeCount = diagnostics?.queuedTradeCount;
 
     if (queuedEventId != null) {
-      await sendEventBacktestDetailsDiscord({
+      const discordPayload = {
         eventId: queuedEventId,
         totalReturn: latestRun.avgReturn,
         winRate: latestRun.aggregateWinRate,
@@ -50,6 +52,18 @@ export async function GET(req: NextRequest) {
         statusLabel: queuedHasExited === true ? "Exited" : queuedHasExited === false ? "Active" : "Unknown",
         createdAt: latestRun.createdAt,
         source: "manual-latest-run",
+      };
+
+      const notificationId = await recordBacktestNotification({
+        kind: "EVENT_BACKTEST_DETAILS",
+        modelBacktestId: latestRun.modelBacktestId,
+        backtestVersionRunId: latestRun.id,
+        eventId: queuedEventId,
+        payload: {
+          ...discordPayload,
+          createdAt: latestRun.createdAt.toISOString(),
+        },
+        send: () => sendEventBacktestDetailsDiscord(discordPayload),
       });
 
       return NextResponse.json({
@@ -58,11 +72,12 @@ export async function GET(req: NextRequest) {
         forced: force,
         eventId: String(queuedEventId),
         runId: latestRun.id,
+        notificationId,
       });
     }
 
     // 发送通知
-    await sendBacktestCompletedDiscord({
+    const discordPayload = {
       modelBacktestId: latestRun.modelBacktestId,
       modelName: latestRun.modelBacktest.name,
       modelVersion: latestRun.modelBacktest.version,
@@ -74,12 +89,24 @@ export async function GET(req: NextRequest) {
       backtestStatus: latestRun.backtestStatus,
       createdAt: latestRun.createdAt,
       source: "manual-test",
+    };
+
+    const notificationId = await recordBacktestNotification({
+      kind: "BACKTEST_COMPLETED",
+      modelBacktestId: latestRun.modelBacktestId,
+      backtestVersionRunId: latestRun.id,
+      payload: {
+        ...discordPayload,
+        createdAt: latestRun.createdAt.toISOString(),
+      },
+      send: () => sendBacktestCompletedDiscord(discordPayload),
     });
 
     return NextResponse.json({
       success: true,
       message: "Discord notification sent successfully",
       forced: force,
+      notificationId,
       backtest: {
         modelName: latestRun.modelBacktest.name,
         version: latestRun.modelBacktest.version,

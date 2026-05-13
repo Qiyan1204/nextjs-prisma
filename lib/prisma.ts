@@ -12,12 +12,11 @@ function createPrismaClient() {
   return new PrismaClient({ adapter })
 }
 
-// In development, always create a fresh client to pick up schema changes
-const prisma = process.env.NODE_ENV === 'production' 
-  ? (globalForPrisma.prisma ?? createPrismaClient())
-  : createPrismaClient()
+// Reuse a single PrismaClient instance to avoid exhausting DB connections.
+// When the schema/client changes, restart the dev server (or rerun prisma generate).
+const prisma = globalForPrisma.prisma ?? createPrismaClient()
 
-if (process.env.NODE_ENV === 'production') {
+if (process.env.NODE_ENV !== 'production') {
   globalForPrisma.prisma = prisma
 }
 

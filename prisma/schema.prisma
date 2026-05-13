@@ -449,6 +449,32 @@ model AlertNotificationEvent {
   @@index([createdAt])
 }
 
+// Backtest notification audit trail (Discord payload + delivery status)
+model BacktestNotificationEvent {
+  id                 Int               @id @default(autoincrement())
+  kind               String            // "COMPLETED" | "DAILY_SUMMARY" | "EVENT_DETAILS" | ...
+  channel            String            @default("DISCORD")
+  deliveryStatus     String            @default("PENDING") // "PENDING" | "SENT" | "FAILED"
+  errorMessage       String?
+  sentAt             DateTime?
+
+  modelBacktestId     Int?
+  modelBacktest       ModelBacktest?      @relation(fields: [modelBacktestId], references: [id], onDelete: SetNull)
+  backtestVersionRunId Int?
+  backtestVersionRun   BacktestVersionRun? @relation(fields: [backtestVersionRunId], references: [id], onDelete: SetNull)
+  eventId             String?
+
+  payloadJson        String            // JSON: input payload used to generate the notification
+  createdAt          DateTime          @default(now())
+
+  @@index([createdAt])
+  @@index([kind, createdAt])
+  @@index([deliveryStatus, createdAt])
+  @@index([modelBacktestId, createdAt])
+  @@index([backtestVersionRunId, createdAt])
+  @@index([eventId, createdAt])
+}
+
 // ─────────────────────────────────────────────
 // PolyOiyen Backtest Versioning System
 // ─────────────────────────────────────────────
@@ -471,6 +497,7 @@ model ModelBacktest {
   inverseModels     ModelBacktest[]       @relation("InversePair")
   runs              BacktestVersionRun[]
   strategies        StrategyVariant[]
+  notificationEvents BacktestNotificationEvent[]
   createdAt         DateTime              @default(now())
   updatedAt         DateTime              @updatedAt
 
@@ -484,6 +511,7 @@ model BacktestVersionRun {
   id                      Int      @id @default(autoincrement())
   modelBacktestId         Int
   modelBacktest           ModelBacktest @relation(fields: [modelBacktestId], references: [id], onDelete: Cascade)
+  notificationEvents       BacktestNotificationEvent[]
   totalRuns               Int
   aggregateWinRate        Float?
   avgReturn               Float?

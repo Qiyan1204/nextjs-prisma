@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { sendBacktestCompletedDiscord } from "@/lib/backtestDiscord";
+import { enqueueBacktestNotification } from "@/lib/backtestNotificationLog";
 import {
   flipTrade,
   buildInverseEquityCurvePoints,
@@ -21,7 +22,6 @@ export async function POST(request: Request) {
     const {
       originalModelBacktestId,
       tradeData, // Array of trade records
-      strategyMetrics, // { [strategyName]: { winRate, avgReturn, maxDrawdown, ... } }
       equityCurveAggregate,
     } = body;
 
@@ -87,10 +87,8 @@ export async function POST(request: Request) {
 
     // Create strategy variants for inverse model
     for (const [stratName, inverseMets] of inverseStrategyMetrics.entries()) {
-      const originalMets = strategyMetrics?.[stratName];
-
       // Find original strategy
-      const origStrat = originalModel.strategies.find((s: any) => s.strategyName === stratName);
+      const origStrat = originalModel.strategies.find((s) => s.strategyName === stratName);
 
       await prisma.strategyVariant.create({
         data: {
@@ -156,7 +154,7 @@ export async function POST(request: Request) {
       },
     });
 
-    void sendBacktestCompletedDiscord({
+    const discordPayload = {
       modelBacktestId: inverseModel.id,
       modelName: inverseModel.name,
       modelVersion: inverseModel.version,
@@ -168,8 +166,17 @@ export async function POST(request: Request) {
       backtestStatus: run.backtestStatus,
       createdAt: run.createdAt,
       source: "backtest-generate-inverse",
-    }).catch((err) => {
-      console.error("Inverse backtest Discord notification failed:", err);
+    };
+
+    enqueueBacktestNotification({
+      kind: "BACKTEST_COMPLETED",
+      modelBacktestId: inverseModel.id,
+      backtestVersionRunId: run.id,
+      payload: {
+        ...discordPayload,
+        createdAt: run.createdAt.toISOString(),
+      },
+      send: () => sendBacktestCompletedDiscord(discordPayload),
     });
 
     // Perform edge analysis

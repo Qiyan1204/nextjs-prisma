@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { getAuthUser } from "@/lib/auth";
 import { sendBacktestCompletedDiscord } from "@/lib/backtestDiscord";
+import { enqueueBacktestNotification } from "@/lib/backtestNotificationLog";
 import { CATEGORY_CONFIG, TAG_SLUGS_BY_CATEGORY, type CategoryKey } from "@/app/polyoiyen/shared/categoryConfig";
 import { hasCompleteYesNoTokens } from "@/app/polyoiyen/shared/marketAssessmentEngine";
 
@@ -336,7 +337,7 @@ async function persistAutoBacktestRun(args: {
 
     const notifyAutoBacktest = process.env.BACKTEST_NOTIFY_AUTO === "true";
     if (notifyAutoBacktest) {
-      void sendBacktestCompletedDiscord({
+      const discordPayload = {
         modelBacktestId: autoModel.id,
         modelName: autoModel.name,
         modelVersion: autoModel.version,
@@ -348,8 +349,17 @@ async function persistAutoBacktestRun(args: {
         backtestStatus: run.backtestStatus,
         createdAt: run.createdAt,
         source: "data-health-auto",
-      }).catch((err) => {
-        console.error("Auto backtest Discord notification failed:", err);
+      };
+
+      enqueueBacktestNotification({
+        kind: "BACKTEST_COMPLETED",
+        modelBacktestId: autoModel.id,
+        backtestVersionRunId: run.id,
+        payload: {
+          ...discordPayload,
+          createdAt: run.createdAt.toISOString(),
+        },
+        send: () => sendBacktestCompletedDiscord(discordPayload),
       });
     }
 
