@@ -39,6 +39,7 @@ type DailySummaryInput = {
 
 type EventBacktestDetailsInput = {
   eventId: string | number;
+  eventTitle?: string;
   totalReturn: number | null;
   winRate: number | null;
   trades: number | null;
@@ -414,17 +415,20 @@ export async function sendEventBacktestDetailsDiscord(input: EventBacktestDetail
   const timeZone = input.timeZone || process.env.POLYOIYEN_NOTIFY_TZ || "Asia/Kuala_Lumpur";
   const detailsUrl = getBacktestEventDetailsUrl(input.eventId);
   const footerTimestamp = formatBacktestDateTime(input.createdAt, timeZone);
+  const titleLabel = trimTitle(input.eventTitle ? String(input.eventTitle) : `Event ${String(input.eventId)}`, 72);
 
   const payload = {
     embeds: [
       {
-        title: "Event Backtest Details",
+        title: `Market Backtest Completed • ${titleLabel}`,
         url: detailsUrl,
         description: [
           "Click title to open details page",
           "",
           "Event ID",
           String(input.eventId),
+          "Event Title",
+          input.eventTitle ? trimTitle(String(input.eventTitle), 120) : "N/A",
           "Total Return",
           formatPct(input.totalReturn),
           "Win Rate",

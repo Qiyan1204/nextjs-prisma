@@ -18,6 +18,24 @@ type PositionMarkerPoint = {
   eventId: string;
 };
 
+type UserBet = {
+  id: number;
+  userId?: number;
+  eventId: string;
+  marketQuestion?: string;
+  category?: string;
+  side: "YES" | "NO";
+  type: "BUY" | "SELL" | "CLAIM" | string;
+  amount: string | number;
+  shares: string | number;
+  price: string | number;
+  createdAt: string;
+};
+
+type BacktestEventDetailsResponse = {
+  bets?: UserBet[];
+};
+
 type ModelBacktestPayload = {
   checkedAt: string;
   backtestQuality: {
@@ -223,6 +241,11 @@ function fmt(value: number | null | undefined, suffix = ""): string {
   return `${value.toFixed(2)}${suffix}`;
 }
 
+function fmtUsd(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  return `$${value.toFixed(2)}`;
+}
+
 function statusMeta(status: ModelBacktestPayload["backtestQuality"]["status"]) {
   if (status === "healthy") return { label: "HEALTHY", color: "#86efac", border: "rgba(52,211,153,0.35)", bg: "rgba(20,83,45,0.35)" };
   if (status === "unhealthy") return { label: "UNHEALTHY", color: "#fca5a5", border: "rgba(248,113,113,0.35)", bg: "rgba(127,29,29,0.35)" };
@@ -270,6 +293,9 @@ function ModelBacktestContent() {
     return raw === "YES" || raw === "NO" ? raw : "ALL";
   });
   const [selectedPositionEventId, setSelectedPositionEventId] = useState<string>("");
+  const [tradeHistoryLoading, setTradeHistoryLoading] = useState(false);
+  const [tradeHistoryError, setTradeHistoryError] = useState<string | null>(null);
+  const [tradeHistoryBets, setTradeHistoryBets] = useState<UserBet[]>([]);
   const [lossFilter, setLossFilter] = useState<"ALL" | "LOSS_ONLY">(() => {
     const raw = searchParams.get("lf") || "ALL";
     return raw === "LOSS_ONLY" ? "LOSS_ONLY" : "ALL";
@@ -442,6 +468,58 @@ function ModelBacktestContent() {
       setSelectedPositionEventId("");
     }
   }, [filteredBacktestedPositions, selectedPositionEventId]);
+
+  useEffect(() => {
+    if (!selectedPositionEventId) {
+      setTradeHistoryBets([]);
+      setTradeHistoryError(null);
+      setTradeHistoryLoading(false);
+      return;
+    }
+
+    let alive = true;
+
+    async function loadTradeHistory() {
+      setTradeHistoryLoading(true);
+      setTradeHistoryError(null);
+
+      try {
+        const res = await fetch(`/api/polyoiyen/backtest-event/${encodeURIComponent(selectedPositionEventId)}`, {
+          cache: "no-store",
+        });
+
+        if (!res.ok) {
+          let detail = "";
+          try {
+            const body = await res.json();
+            detail = body?.error ? String(body.error) : "";
+          } catch {
+            // ignore
+          }
+          throw new Error(detail ? `Failed to load trade history: ${detail}` : "Failed to load trade history");
+        }
+
+        const payload = (await res.json()) as BacktestEventDetailsResponse;
+        const bets = Array.isArray(payload?.bets) ? payload.bets : [];
+        const sorted = [...bets].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+        if (!alive) return;
+        setTradeHistoryBets(sorted);
+      } catch (e) {
+        if (!alive) return;
+        setTradeHistoryBets([]);
+        setTradeHistoryError(e instanceof Error ? e.message : "Failed to load trade history");
+      } finally {
+        if (alive) setTradeHistoryLoading(false);
+      }
+    }
+
+    void loadTradeHistory();
+
+    return () => {
+      alive = false;
+    };
+  }, [selectedPositionEventId]);
 
   const positionPriceChartData = useMemo(() => {
     const points: PositionMarkerPoint[] = [];
@@ -1172,6 +1250,123 @@ function ModelBacktestContent() {
               <div style={{ marginBottom: 12, fontSize: 11, color: "rgba(255,255,255,0.58)" }}>
                 <span style={{ color: "#86efac", marginRight: 6 }}>★</span> entered
                 <span style={{ color: "#fca5a5", marginLeft: 14, marginRight: 6 }}>★</span> exited
+              </div>
+
+              <div
+                style={{
+                  border: "1px solid rgba(255,255,255,0.12)",
+                  borderRadius: 12,
+                  background: "rgba(0,0,0,0.14)",
+                  padding: 14,
+                  marginBottom: 14,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 800 }}>Trade History</div>
+                    <div style={{ marginTop: 4, fontSize: 11, color: "rgba(255,255,255,0.58)" }}>
+                      Shows the underlying BUY / SELL / CLAIM transactions for the selected backtest run.
+                    </div>
+                  </div>
+                  {selectedPositionEventId ? (
+                    <a
+                      href={`/polyoiyen/backtest-event/${encodeURIComponent(selectedPositionEventId)}`}
+                      style={{ color: "#fdba74", textDecoration: "none", fontSize: 12, fontWeight: 800 }}
+                      title="Open the full backtest event details page"
+                    >
+                      Open full details
+                    </a>
+                  ) : null}
+                </div>
+
+                {!selectedPositionEventId ? (
+                  <div style={{ marginTop: 10, fontSize: 12, color: "rgba(255,255,255,0.62)" }}>
+                    Select a position above to load its trade history.
+                  </div>
+                ) : tradeHistoryLoading ? (
+                  <div style={{ marginTop: 10, fontSize: 12, color: "rgba(255,255,255,0.62)" }}>
+                    Loading trade history...
+                  </div>
+                ) : tradeHistoryError ? (
+                  <div
+                    style={{
+                      marginTop: 10,
+                      border: "1px solid rgba(248,113,113,0.35)",
+                      borderRadius: 10,
+                      padding: 10,
+                      background: "rgba(127,29,29,0.18)",
+                      color: "#fca5a5",
+                      fontSize: 12,
+                    }}
+                  >
+                    {tradeHistoryError}
+                  </div>
+                ) : tradeHistoryBets.length === 0 ? (
+                  <div style={{ marginTop: 10, fontSize: 12, color: "rgba(255,255,255,0.62)" }}>
+                    No trade history records returned for this run.
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 10, overflowX: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 860, fontSize: 12 }}>
+                      <thead>
+                        <tr style={{ textAlign: "left", color: "rgba(255,255,255,0.65)", borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
+                          <th style={{ padding: "8px 10px" }}>Type</th>
+                          <th style={{ padding: "8px 10px" }}>Side</th>
+                          <th style={{ padding: "8px 10px", textAlign: "right" }}>Amount</th>
+                          <th style={{ padding: "8px 10px", textAlign: "right" }}>Shares</th>
+                          <th style={{ padding: "8px 10px", textAlign: "right" }}>Price</th>
+                          <th style={{ padding: "8px 10px" }}>Market</th>
+                          <th style={{ padding: "8px 10px" }}>Time</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {tradeHistoryBets.map((bet) => {
+                          const amount = Number(bet.amount);
+                          const shares = Number(bet.shares);
+                          const price = Number(bet.price);
+                          const priceCents = Number.isFinite(price) ? price * 100 : NaN;
+
+                          return (
+                            <tr key={bet.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+                              <td style={{ padding: "8px 10px" }}>
+                                <span
+                                  style={{
+                                    fontSize: 10,
+                                    fontWeight: 800,
+                                    padding: "2px 8px",
+                                    borderRadius: 999,
+                                    border: `1px solid ${bet.type === "SELL" ? "rgba(248,113,113,0.4)" : bet.type === "BUY" ? "rgba(52,211,153,0.4)" : "rgba(191,219,254,0.4)"}`,
+                                    color: bet.type === "SELL" ? "#fca5a5" : bet.type === "BUY" ? "#86efac" : "#bfdbfe",
+                                  }}
+                                >
+                                  {bet.type}
+                                </span>
+                              </td>
+                              <td style={{ padding: "8px 10px", color: bet.side === "YES" ? "#86efac" : "#fca5a5", fontWeight: 700 }}>{bet.side}</td>
+                              <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{fmtUsd(Number.isFinite(amount) ? amount : null)}</td>
+                              <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: "rgba(255,255,255,0.74)" }}>{Number.isFinite(shares) ? shares.toFixed(2) : "—"}</td>
+                              <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: "rgba(255,255,255,0.74)" }}>{Number.isFinite(priceCents) ? `${priceCents.toFixed(2)}¢` : "—"}</td>
+                              <td
+                                style={{
+                                  padding: "8px 10px",
+                                  maxWidth: 320,
+                                  whiteSpace: "nowrap",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  color: "rgba(255,255,255,0.72)",
+                                }}
+                                title={String(bet.marketQuestion || "")}
+                              >
+                                {String(bet.marketQuestion || "—")}
+                              </td>
+                              <td style={{ padding: "8px 10px", color: "rgba(255,255,255,0.66)" }}>{new Date(bet.createdAt).toLocaleString()}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
 
               <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>Recent PolyOiyen Backtests</div>

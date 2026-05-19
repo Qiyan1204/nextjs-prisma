@@ -210,9 +210,6 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ ev
     }
 
     const invested = yesBuyAmount + noBuyAmount;
-    if (invested <= 0) {
-      return NextResponse.json({ error: "No backtest details found for this event." }, { status: 404 });
-    }
 
     const netYesShares = Math.max(0, yesBuyShares - yesSellShares);
     const netNoShares = Math.max(0, noBuyShares - noSellShares);
@@ -228,7 +225,7 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ ev
     }
 
     const realizedValue = realizedCash + remainingValue;
-    const totalReturn = ((realizedValue - invested) / invested) * 100;
+  const totalReturn = invested > 0 ? ((realizedValue - invested) / invested) * 100 : 0;
 
     const returnDetails: ReturnDetails = {
       invested: Number(invested.toFixed(6)),
@@ -257,6 +254,7 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ ev
 
     const riskReasons: string[] = [];
     if (rawBets.length < 8) riskReasons.push("Small sample");
+    if (invested <= 0) riskReasons.push("No buys");
     if (!hasExited) riskReasons.push("Open position");
     if (Math.abs(totalReturn) >= 100) riskReasons.push("Extreme return swing");
     if (totalReturn < -20) riskReasons.push("Negative return");

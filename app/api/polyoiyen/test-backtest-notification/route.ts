@@ -5,12 +5,19 @@ import { recordBacktestNotification } from "@/lib/backtestNotificationLog";
 /**
  * GET /api/polyoiyen/test-backtest-notification
  * Send a test backtest completion notification to Discord
+ * 
+ * Split mode (send per-event backtest details):
+ * - ?split=1&eventIds=385825,27830,...  (optional: specify exact event IDs; defaults to top-candidates sources)
+ * 
+ * Summary mode (send one BACKTEST_COMPLETED summary):
+ * - ?eventIds=385825,27830,... (optional: specify exact event IDs for the Top 10 list)
  * ?modelBacktestId=1 (optional, defaults to 1)
  */
 export async function GET(request: NextRequest) {
   try {
     const split = request.nextUrl.searchParams.get("split") === "1";
     const splitSource = (request.nextUrl.searchParams.get("splitSource") || "topCandidates").trim();
+    const eventIdsParam = (request.nextUrl.searchParams.get("eventIds") || request.nextUrl.searchParams.get("ids") || "").trim();
 
     // Get modelBacktestId from query params, default to 1
     const modelBacktestId = parseInt(request.nextUrl.searchParams.get("modelBacktestId") || "1");
@@ -119,6 +126,40 @@ export async function GET(request: NextRequest) {
       }
     };
 
+    const parseEventIds = (raw: string): string[] => {
+      const tokens = raw
+        .split(/[\s,]+/g)
+        .map((x) => x.trim())
+        .filter(Boolean);
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const token of tokens) {
+        const normalized = String(token);
+        if (!normalized) continue;
+        if (seen.has(normalized)) continue;
+        seen.add(normalized);
+        out.push(normalized);
+        if (out.length >= desiredCount) break;
+      }
+      return out;
+    };
+
+    const fetchGammaEventTitle = async (eventId: string): Promise<string | null> => {
+      try {
+        const res = await fetch(`https://gamma-api.polymarket.com/events/${encodeURIComponent(eventId)}`, {
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+        });
+        if (!res.ok) return null;
+        const payload = await res.json();
+        const title = typeof payload?.title === "string" ? payload.title : typeof payload?.question === "string" ? payload.question : "";
+        const cleaned = String(title || "").trim();
+        return cleaned ? cleaned : null;
+      } catch {
+        return null;
+      }
+    };
+
     const buildTopCandidateEventLinks = async (): Promise<
       Array<{ eventId: string; label: string; totalReturn: number | null; trades: number | null; statusLabel: string; winRate: number | null }>
     > => {
@@ -168,6 +209,67 @@ export async function GET(request: NextRequest) {
     };
 
     if (split) {
+      const specifiedEventIds = eventIdsParam ? parseEventIds(eventIdsParam) : [];
+
+      if (specifiedEventIds.length > 0) {
+        const createdAt = new Date();
+        const notificationIds: number[] = [];
+
+        for (const eventId of specifiedEventIds) {
+          const summary = await tryFetchBacktestEventSummary(eventId);
+          const eventTitle = summary.marketTitle || (await fetchGammaEventTitle(eventId)) || `Event ${eventId}`;
+          const totalReturn = summary.totalReturn;
+          const winRate = summary.winRate != null
+            ? summary.winRate
+            : totalReturn == null
+              ? null
+              : totalReturn >= 0
+                ? 100
+                : 0;
+          const trades = summary.tradeCount;
+          const statusLabel = summary.hasExited === true ? "Exited" : summary.hasExited === false ? "Active" : "Unknown";
+
+          const id = await recordBacktestNotification({
+            kind: "EVENT_BACKTEST_DETAILS",
+            modelBacktestId,
+            backtestVersionRunId: null,
+            eventId,
+            payload: {
+              eventId,
+              eventTitle,
+              totalReturn,
+              winRate,
+              trades,
+              statusLabel,
+              createdAt: createdAt.toISOString(),
+              source: "Test Split Notification (specified events)",
+            },
+            send: () =>
+              sendEventBacktestDetailsDiscord({
+                eventId,
+                eventTitle,
+                totalReturn,
+                winRate,
+                trades,
+                statusLabel,
+                createdAt,
+                source: "Test Split Notification (specified events)",
+              }),
+          });
+
+          notificationIds.push(id);
+        }
+
+        return NextResponse.json({
+          message: "Split notifications sent successfully (specified events)",
+          modelBacktestId,
+          requested: specifiedEventIds.length,
+          sent: notificationIds.length,
+          eventIds: specifiedEventIds,
+          notificationIds,
+        });
+      }
+
       eventBacktestLinks = await buildTopCandidateEventLinks();
 
       type WorstEventItem = {
@@ -218,6 +320,7 @@ export async function GET(request: NextRequest) {
             send: () =>
               sendEventBacktestDetailsDiscord({
                 eventId: String(item.eventId),
+                eventTitle: item.label,
                 totalReturn,
                 winRate,
                 trades,
@@ -314,6 +417,7 @@ export async function GET(request: NextRequest) {
                 send: () =>
                   sendEventBacktestDetailsDiscord({
                     eventId: item.eventId,
+                    eventTitle: item.label,
                     totalReturn,
                     winRate,
                     trades: trades ?? null,
@@ -457,6 +561,7 @@ export async function GET(request: NextRequest) {
             send: () =>
               sendEventBacktestDetailsDiscord({
                 eventId: String(details.eventId),
+                eventTitle: marketTitle,
                 totalReturn,
                 winRate,
                 trades: trades ?? null,
@@ -489,11 +594,38 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    try {
-      eventBacktestLinks = await buildTopCandidateEventLinks();
-    } catch {
-      eventBacktestLinks = undefined;
+    // Summary mode: optionally build Top 10 list from specified eventIds.
+    const specifiedEventIds = eventIdsParam ? parseEventIds(eventIdsParam) : [];
+    if (specifiedEventIds.length > 0) {
+      const out: Array<{ eventId: string; label: string; totalReturn: number | null }> = [];
+      for (const eventId of specifiedEventIds) {
+        const summary = await tryFetchBacktestEventSummary(eventId);
+        const title = summary.marketTitle || (await fetchGammaEventTitle(eventId)) || `Event ${eventId}`;
+        out.push({ eventId, label: title, totalReturn: summary.totalReturn });
+      }
+      eventBacktestLinks = out;
+    } else {
+      try {
+        eventBacktestLinks = await buildTopCandidateEventLinks();
+      } catch {
+        eventBacktestLinks = undefined;
+      }
     }
+
+    const returns = (eventBacktestLinks || [])
+      .map((x) => (typeof x.totalReturn === "number" && Number.isFinite(x.totalReturn) ? x.totalReturn : null))
+      .filter((x): x is number => x != null);
+
+    const aggregateWinRate = returns.length > 0
+      ? (returns.filter((r) => r >= 0).length / returns.length) * 100
+      : 55.5;
+    const avgReturn = returns.length > 0
+      ? returns.reduce((a, b) => a + b, 0) / returns.length
+      : 12.3;
+    // Heuristic for summary display: use worst event return as a "max drawdown" proxy.
+    const avgMaxDrawdown = returns.length > 0
+      ? Math.min(...returns)
+      : -8.5;
 
     const createdAt = new Date();
     const discordPayload = {
@@ -502,12 +634,12 @@ export async function GET(request: NextRequest) {
       modelVersion: "v1.0",
       runId: 12345,
       totalRuns: 10,
-      aggregateWinRate: 55.5,
-      avgReturn: 12.3,
-      avgMaxDrawdown: -8.5,
+      aggregateWinRate,
+      avgReturn,
+      avgMaxDrawdown,
       backtestStatus: "completed",
       createdAt,
-      source: "Test Notification",
+      source: specifiedEventIds.length > 0 ? "Test Notification (specified events summary)" : "Test Notification",
       eventBacktestLinks,
     };
 

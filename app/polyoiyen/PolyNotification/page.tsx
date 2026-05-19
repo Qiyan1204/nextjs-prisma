@@ -34,6 +34,7 @@ type BacktestNotificationListItem = {
   deliveryStatus: string;
   channel: string;
   eventId: string | null;
+  eventTitle?: string | null;
   createdAt: string;
   sentAt: string | null;
   errorMessage: string | null;
@@ -61,6 +62,13 @@ function timeAgo(dateStr: string): string {
 function pct(v: number | null): string {
   if (v === null) return "—";
   return `${Math.round(v * 100)}¢`;
+}
+
+function trimText(value: string, maxLen = 72): string {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (text.length <= maxLen) return text;
+  return `${text.slice(0, Math.max(0, maxLen - 3))}...`;
 }
 
 // ─── AlertCard ────────────────────────────────────────────────────────────────
@@ -906,8 +914,10 @@ export default function PolyNotificationPage() {
                         const isActive = selectedBacktestNotifId === n.id;
                         const title = n.modelBacktest
                           ? `${n.modelBacktest.name} · ${n.modelBacktest.version}`
-                          : n.eventId
-                            ? `Event ${n.eventId}`
+                          : n.eventTitle
+                            ? trimText(n.eventTitle)
+                            : n.eventId
+                              ? `Event ${n.eventId}`
                             : "Backtest";
 
                         return (

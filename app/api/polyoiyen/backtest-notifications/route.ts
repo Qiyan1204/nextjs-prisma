@@ -2,6 +2,38 @@ import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { Prisma } from "@/app/generated/prisma/client";
 
+function safeJsonParse(value: unknown): unknown {
+  if (typeof value !== "string") return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function extractEventTitleFromPayload(kind: string, payloadJson: unknown): string | null {
+  // Only event-scoped notifications are expected to include an event title.
+  if (!String(kind || "").toUpperCase().includes("EVENT")) return null;
+
+  const payload = safeJsonParse(payloadJson);
+  if (!payload || typeof payload !== "object") return null;
+  const rec = payload as Record<string, unknown>;
+
+  const candidates = [
+    rec.eventTitle,
+    rec.marketTitle,
+    rec.label,
+    rec.marketQuestion,
+    rec.title,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+
+  return null;
+}
+
 export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
@@ -33,7 +65,12 @@ export async function GET(request: Request) {
       },
     });
 
-    return NextResponse.json({ items });
+    return NextResponse.json({
+      items: items.map((item) => ({
+        ...item,
+        eventTitle: extractEventTitleFromPayload(item.kind, item.payloadJson),
+      })),
+    });
   } catch (error) {
     console.error("Failed to list backtest notifications:", error);
     return NextResponse.json(

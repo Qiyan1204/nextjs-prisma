@@ -487,26 +487,14 @@ function findNearestHistoryPoint(points: PriceHistoryPoint[], tsMs: number): Pri
   return nearest;
 }
 
-function getPriceHistoryWindow(bets: UserBet[], eventEndDate: string): { startTime: string; endTime: string } | null {
-  const buyTimes = bets
-    .filter((bet) => bet.type === "BUY")
-    .map((bet) => Date.parse(bet.createdAt))
-    .filter((ts) => Number.isFinite(ts));
-
-  if (buyTimes.length === 0) return null;
-
-  const sellTimes = bets
-    .filter((bet) => bet.type === "SELL")
-    .map((bet) => Date.parse(bet.createdAt))
-    .filter((ts) => Number.isFinite(ts));
-
-  const eventEndMs = Date.parse(eventEndDate);
+function getPriceHistoryWindow(event: PolyEvent): { startTime: string; endTime: string } | null {
   const nowMs = Date.now();
-  const fallbackEndMs = Number.isFinite(eventEndMs) ? Math.min(eventEndMs, nowMs) : nowMs;
-  const startMs = Math.min(...buyTimes) - 24 * 60 * 60 * 1000;
-  const endMs = sellTimes.length > 0 ? Math.max(...sellTimes) : fallbackEndMs;
+  const startMs = Date.parse(event.startDate);
+  if (!Number.isFinite(startMs)) return null;
 
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || startMs >= endMs) return null;
+  const endMsRaw = Date.parse(event.endDate);
+  const endMs = Number.isFinite(endMsRaw) ? Math.min(endMsRaw, nowMs) : nowMs;
+  if (!Number.isFinite(endMs) || startMs >= endMs) return null;
 
   return {
     startTime: new Date(startMs).toISOString(),
@@ -2220,7 +2208,7 @@ export function DetailPage({
   const [editCommentInput, setEditCommentInput] = useState("");
   const [selectedMarketIndex, setSelectedMarketIndex] = useState(() => getDefaultMarketIndex(event.markets));
   const priceHistoryWindowRef = useRef<{ startTime: string; endTime: string } | null>(null);
-  const priceHistoryWindow = useMemo(() => getPriceHistoryWindow(userBets, event.endDate), [userBets, event.endDate]);
+  const priceHistoryWindow = useMemo(() => getPriceHistoryWindow(event), [event.startDate, event.endDate]);
 
   useEffect(() => {
     setSelectedMarketIndex(getDefaultMarketIndex(event.markets));
@@ -2279,7 +2267,7 @@ export function DetailPage({
           yesAssetId: tokenIds.yes,
           noAssetId: tokenIds.no,
           limit: "300",
-          maxPages: "80",
+          maxPages: priceHistoryWindowRef.current ? "180" : "80",
         });
 
         if (priceHistoryWindowRef.current) {

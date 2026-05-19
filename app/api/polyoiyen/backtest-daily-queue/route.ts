@@ -260,6 +260,7 @@ export async function GET(req: NextRequest) {
         if (shouldNotify) {
           const discordPayload = {
             eventId: row.eventId,
+            eventTitle: row.marketTitle || row.marketQuestion || `Event ${String(row.eventId)}`,
             totalReturn: row.totalReturn,
             winRate: row.winRate,
             trades: row.tradeCount,

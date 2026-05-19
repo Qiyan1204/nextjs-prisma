@@ -47,8 +47,27 @@ export async function GET(req: NextRequest) {
     const queuedTradeCount = diagnostics?.queuedTradeCount;
 
     if (queuedEventId != null) {
+      let eventTitle: string | undefined;
+      try {
+        const res = await fetch(`${process.env.POLYOIYEN_BASE_URL || "https://oiyen.quadrawebs.com"}/api/polymarket?id=${encodeURIComponent(String(queuedEventId))}`, {
+          method: "GET",
+          cache: "no-store",
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const event = Array.isArray(data?.events) ? data.events[0] : data;
+          if (event && typeof event === "object") {
+            const t = (event as Record<string, unknown>)?.title;
+            if (typeof t === "string" && t.trim()) eventTitle = t.trim();
+          }
+        }
+      } catch {
+        // ignore enrichment errors
+      }
+
       const discordPayload = {
         eventId: queuedEventId,
+        eventTitle,
         totalReturn: latestRun.avgReturn,
         winRate: latestRun.aggregateWinRate,
         trades: typeof queuedTradeCount === "number" ? queuedTradeCount : latestRun.totalRuns,

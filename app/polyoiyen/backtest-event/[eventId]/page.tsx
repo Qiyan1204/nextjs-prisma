@@ -47,6 +47,7 @@ type PolyMarket = {
 
 type PolyEvent = {
   id: string;
+  startDate?: string;
   endDate?: string;
   markets?: PolyMarket[];
 };
@@ -273,7 +274,7 @@ async function fetchHistoryByTokens(
     yesAssetId: tokenIds.yes,
     noAssetId: tokenIds.no,
     limit: "300",
-    maxPages: "120",
+    maxPages: "200",
   });
 
   if (historyWindow) {
@@ -342,7 +343,19 @@ function findNearestChartDataPoint(points: MarketChartPoint[], tsMs: number): Ma
   return nearest;
 }
 
-function getPriceHistoryWindow(bets: UserBet[], eventEndDate: string): { startTime: string; endTime: string } | null {
+function getPriceHistoryWindow(event: PolyEvent | null, bets: UserBet[]): { startTime: string; endTime: string } | null {
+  const nowMs = Date.now();
+  const startMsFromEvent = event?.startDate ? Date.parse(event.startDate) : NaN;
+  const endMsFromEvent = event?.endDate ? Date.parse(event.endDate) : NaN;
+  const endMs = Number.isFinite(endMsFromEvent) ? Math.min(endMsFromEvent, nowMs) : nowMs;
+
+  if (Number.isFinite(startMsFromEvent) && startMsFromEvent < endMs) {
+    return {
+      startTime: new Date(startMsFromEvent).toISOString(),
+      endTime: new Date(endMs).toISOString(),
+    };
+  }
+
   const buyTimes = bets
     .filter((bet) => bet.type === "BUY")
     .map((bet) => Date.parse(bet.createdAt))
@@ -355,17 +368,14 @@ function getPriceHistoryWindow(bets: UserBet[], eventEndDate: string): { startTi
     .map((bet) => Date.parse(bet.createdAt))
     .filter((ts) => Number.isFinite(ts));
 
-  const eventEndMs = Date.parse(eventEndDate);
-  const nowMs = Date.now();
-  const fallbackEndMs = Number.isFinite(eventEndMs) ? Math.min(eventEndMs, nowMs) : nowMs;
   const startMs = Math.min(...buyTimes) - 24 * 60 * 60 * 1000;
-  const endMs = sellTimes.length > 0 ? Math.max(...sellTimes) : fallbackEndMs;
+  const endMsFinal = sellTimes.length > 0 ? Math.max(...sellTimes) : endMs;
 
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || startMs >= endMs) return null;
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMsFinal) || startMs >= endMsFinal) return null;
 
   return {
     startTime: new Date(startMs).toISOString(),
-    endTime: new Date(endMs).toISOString(),
+    endTime: new Date(endMsFinal).toISOString(),
   };
 }
 
@@ -479,7 +489,7 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
           return normalizeLooseText(String(bet.marketQuestion || "")) === wantedQuestion;
         });
 
-        const historyWindow = getPriceHistoryWindow(filteredBets, event?.endDate || "");
+        const historyWindow = getPriceHistoryWindow(event ?? null, filteredBets);
 
         const candidateHistories = await Promise.all(
           marketCandidates.map(async (candidate) => {
