@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { use, useEffect, useMemo, useState } from "react";
-import { CartesianGrid, Legend, Line, LineChart, ReferenceDot, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Brush, CartesianGrid, Legend, Line, LineChart, ReferenceDot, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import PolyHeader from "../../PolyHeader";
 
 type ModelRow = {
@@ -257,6 +257,70 @@ function buildForwardFilledChartData(seriesList: MarketSeries[]): MarketChartPoi
 
     return row;
   });
+}
+
+function scoreLooseTextMatch(haystack: string, needle: string): number {
+  const h = normalizeLooseText(haystack);
+  const n = normalizeLooseText(needle);
+  if (!h || !n) return 1;
+  if (h === n) return 0;
+  if (h.includes(n) || n.includes(h)) return 0.1;
+
+  const hWords = h.split(" ").filter(Boolean);
+  const nWords = n.split(" ").filter(Boolean);
+  if (hWords.length === 0 || nWords.length === 0) return 1;
+  const overlap = hWords.filter((word) => nWords.includes(word)).length;
+  const ratio = overlap / hWords.length;
+  return 1 - ratio;
+}
+
+function pickBestSeriesKeyForBet(seriesList: MarketSeries[], bet: UserBet): string | null {
+  if (seriesList.length === 0) return null;
+  const betQuestion = String(bet.marketQuestion || "");
+  if (!betQuestion) return seriesList[0].key;
+
+  let bestKey = seriesList[0].key;
+  let bestScore = scoreLooseTextMatch(seriesList[0].label, betQuestion);
+
+  for (let i = 1; i < seriesList.length; i += 1) {
+    const score = scoreLooseTextMatch(seriesList[i].label, betQuestion);
+    if (score < bestScore) {
+      bestScore = score;
+      bestKey = seriesList[i].key;
+    }
+  }
+
+  // If there's basically no overlap, don't confidently assign—caller may fall back to active series.
+  if (bestScore >= 0.95) return null;
+  return bestKey;
+}
+
+function clamp01(v: number): number {
+  return Math.max(0, Math.min(1, v));
+}
+
+function normalizeBinaryPrice(raw: number): number {
+  if (!Number.isFinite(raw)) return NaN;
+  // Most of the app stores probabilities as $0-$1. If we ever get cents (0-100), normalize.
+  if (raw > 1.2 && raw <= 100) return raw / 100;
+  return raw;
+}
+
+function pickBestSeriesKeyForQuestion(seriesList: MarketSeries[], question: string): string | null {
+  if (seriesList.length === 0) return null;
+  const q = String(question || "");
+  if (!q) return seriesList[0].key;
+
+  let bestKey = seriesList[0].key;
+  let bestScore = scoreLooseTextMatch(seriesList[0].label, q);
+  for (let i = 1; i < seriesList.length; i += 1) {
+    const score = scoreLooseTextMatch(seriesList[i].label, q);
+    if (score < bestScore) {
+      bestScore = score;
+      bestKey = seriesList[i].key;
+    }
+  }
+  return bestKey;
 }
 
 function getChartWindowLabel(windowKey: string): string {
@@ -540,7 +604,7 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
         if (!alive) return;
         setPriceHistory(best.points);
         setMarketSeries(nextSeries);
-        setSelectedSeriesKey(nextSeries[0]?.key ?? null);
+        setSelectedSeriesKey(pickBestSeriesKeyForQuestion(nextSeries, currentRow.marketQuestion) ?? nextSeries[0]?.key ?? null);
         setSelectedMarketInfo({
           title: best.candidate.market.title || best.candidate.market.question || "Unnamed market",
           question: best.candidate.market.question || "",
@@ -565,6 +629,13 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
   }, [row, eventBets]);
 
   const timelineRows = [...eventBets].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+
+  const timelineRowsForChartMarkers = useMemo(() => {
+    // Show trade markers across all users for this event.
+    // We'll still map each bet onto the best-matching market series below and then
+    // render only the active series' markers to avoid cross-series confusion.
+    return timelineRows;
+  }, [timelineRows, row?.marketQuestion]);
 
   const positionChartData = timelineRows.reduce<
     Array<{
@@ -706,16 +777,24 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
     ? selectedSeriesKey
     : chartSeries[0]?.key ?? null;
 
-  const tradeMarkers = timelineRows
+  const tradeMarkers = timelineRowsForChartMarkers
     .filter((bet) => bet.type === "BUY" || bet.type === "SELL")
     .map((bet) => {
       const ts = Date.parse(bet.createdAt);
-      const nearest = findNearestChartDataPoint(chartSeriesData, ts);
-      const seriesKey = activeSeriesKey;
+      if (!Number.isFinite(ts)) return null;
+      if (chartCutoffMs != null && ts < chartCutoffMs) return null;
+
+      const nearest = findNearestChartDataPoint(officialChartData, ts);
+      if (!nearest) return null;
+
+      const seriesKey = pickBestSeriesKeyForBet(chartSeries, bet) ?? activeSeriesKey;
       const rawCandidate = nearest && seriesKey ? nearest[seriesKey] : null;
       const rawY = typeof rawCandidate === "number" ? rawCandidate : null;
-      const executionPrice = Number(bet.price);
-      const yValue = Number.isFinite(executionPrice) && executionPrice > 0 ? executionPrice * 100 : rawY ?? null;
+      const executionPriceRaw = Number(bet.price);
+      const executionPrice = Number.isFinite(executionPriceRaw) ? executionPriceRaw : NaN;
+      const normalizedExecutionPrice = normalizeBinaryPrice(executionPrice);
+      const executionYesPrice = bet.side === "NO" ? clamp01(1 - normalizedExecutionPrice) : normalizedExecutionPrice;
+      const yValue = Number.isFinite(executionYesPrice) && executionYesPrice > 0 ? executionYesPrice * 100 : rawY ?? null;
       const kind = `${bet.side} ${bet.type}` as const;
 
       const styleMap: Record<string, { color: string; label: string; border: string }> = {
@@ -727,9 +806,9 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
 
       const style = styleMap[kind];
 
-      return {
+      return seriesKey ? {
         id: bet.id,
-        x: nearest?.timeLabel ?? new Date(bet.createdAt).toLocaleString(),
+        x: nearest.timeLabel,
         yCents: Number.isFinite(Number(yValue)) ? Number(Number(yValue).toFixed(2)) : NaN,
         type: bet.type,
         side: bet.side,
@@ -737,8 +816,10 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
         color: style?.color || "#9ca3af",
         markerLabel: style?.label || "",
         markerBorder: style?.border || "rgba(156,163,175,0.55)",
-      };
+        seriesKey,
+      } : null;
     })
+    .filter((marker): marker is NonNullable<typeof marker> => Boolean(marker))
     .filter((marker) => Number.isFinite(marker.yCents));
 
   const groupedTradeMarkers = useMemo(() => {
@@ -752,7 +833,7 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
     }>();
 
     for (const marker of tradeMarkers) {
-      const key = `${marker.x}__${marker.yCents.toFixed(2)}`;
+      const key = `${marker.seriesKey}__${marker.x}__${marker.yCents.toFixed(2)}`;
       const existing = groups.get(key);
       if (!existing) {
         groups.set(key, {
@@ -1103,7 +1184,7 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                   <div>
                     <h2 style={{ margin: 0, fontSize: 16 }}>Price Chart</h2>
                     <div style={{ marginTop: 6, fontSize: 12, color: "rgba(255,255,255,0.66)" }}>
-                      Multi-outcome chart for this event. Stars indicate trade execution prices.
+                      Multi-outcome chart for this event. Stars indicate trade execution prices across outcomes (NO trades are shown on the YES scale).
                     </div>
                   </div>
                   {selectedMarketInfo && (
@@ -1202,6 +1283,7 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                           axisLine={{ stroke: "rgba(255,255,255,0.12)" }}
                           tickLine={{ stroke: "rgba(255,255,255,0.12)" }}
                           domain={[0, 100]}
+                          padding={{ top: 10, bottom: 10 }}
                           tickFormatter={(value) => `${Number(value).toFixed(0)}¢`}
                         />
                         <Tooltip
@@ -1227,6 +1309,14 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                             activeDot={{ r: 3 }}
                           />
                         ))}
+                        <Brush
+                          dataKey="timeLabel"
+                          height={22}
+                          travellerWidth={10}
+                          stroke="rgba(255,255,255,0.22)"
+                          fill="rgba(255,255,255,0.06)"
+                          tickFormatter={(value) => String(value).slice(0, 5)}
+                        />
                         {groupedTradeMarkers.map((marker, index) => (
                           <ReferenceDot
                             key={`marker-group-${index}`}
@@ -1248,7 +1338,7 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                                   fill={marker.color}
                                   stroke={marker.markerBorder}
                                   strokeWidth={0.4}
-                                  fontSize={14}
+                                  fontSize={28}
                                   fontWeight={800}
                                 >
                                   ★

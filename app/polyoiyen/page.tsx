@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { CartesianGrid, Legend, Line, LineChart, ReferenceDot, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Brush, CartesianGrid, Legend, Line, LineChart, ReferenceDot, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import PolyHeader from "./PolyHeader";
 import { CATEGORY_CONFIG, QUICK_MARKET_FILTERS, type CategoryKey } from "./shared/categoryConfig";
 import { eventMatchesGroupPreset, getDefaultPresetForCategory } from "./shared/marketGroupProfiles";
@@ -2481,7 +2481,9 @@ export function DetailPage({
     .filter((bet) => bet.type === "BUY" || bet.type === "SELL")
     .map((bet) => {
       const historyPoint = findNearestHistoryPoint(priceHistory, Date.parse(bet.createdAt));
-      const yValue = bet.side === "YES" ? historyPoint?.yesPrice ?? Number(bet.price) : historyPoint?.noPrice ?? Number(bet.price);
+      const rawFallback = Number(bet.price);
+      const fallbackPrice = Number.isFinite(rawFallback) && rawFallback > 1.2 && rawFallback <= 100 ? rawFallback / 100 : rawFallback;
+      const yValue = bet.side === "YES" ? historyPoint?.yesPrice ?? fallbackPrice : historyPoint?.noPrice ?? fallbackPrice;
       const kind = `${bet.side} ${bet.type}` as const;
 
       const styleMap: Record<string, { color: string; label: string; radius: number; position: "top" | "bottom"; border: string }> = {
@@ -2897,6 +2899,14 @@ export function DetailPage({
                       />
                       <Line type="monotone" dataKey="yesCents" name="YES" stroke="#34d399" strokeWidth={2.2} dot={false} activeDot={{ r: 3 }} />
                       <Line type="monotone" dataKey="noCents" name="NO" stroke="#f87171" strokeWidth={2.2} dot={false} activeDot={{ r: 3 }} />
+                      <Brush
+                        dataKey="timeLabel"
+                        height={22}
+                        travellerWidth={10}
+                        stroke="rgba(255,255,255,0.22)"
+                        fill="rgba(255,255,255,0.06)"
+                        tickFormatter={(value) => String(value).slice(0, 5)}
+                      />
                       {tradeMarkers.map((marker) => (
                         <ReferenceDot
                           key={`${marker.id}-${marker.type}`}
@@ -2918,7 +2928,7 @@ export function DetailPage({
                                 fill={marker.color}
                                 stroke={marker.markerBorder}
                                 strokeWidth={0.4}
-                                fontSize={14}
+                                fontSize={28}
                                 fontWeight={800}
                               >
                                 ★
