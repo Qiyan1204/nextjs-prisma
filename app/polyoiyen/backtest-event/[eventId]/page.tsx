@@ -4,6 +4,7 @@ import Link from "next/link";
 import { use, useEffect, useMemo, useState } from "react";
 import { Brush, CartesianGrid, Legend, Line, LineChart, ReferenceDot, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import PolyHeader from "../../PolyHeader";
+import { useAuth } from "@/app/hooks/useAuth";
 
 type ModelRow = {
   eventId: string;
@@ -134,6 +135,11 @@ function fmtSignedMoney(value: number): string {
 function fmtPrice(value: number | null): string {
   if (value == null || !Number.isFinite(value)) return "N/A";
   return value.toFixed(4);
+}
+
+function fmtCents(value: number | null): string {
+  if (value == null || !Number.isFinite(value)) return "N/A";
+  return `${value.toFixed(2)}¢`;
 }
 
 function parseTokenIds(market: PolyMarket | null): { yes: string; no: string } {
@@ -445,6 +451,7 @@ function getPriceHistoryWindow(event: PolyEvent | null, bets: UserBet[]): { star
 
 export default function EventBacktestDetailsPage({ params }: { params: Promise<{ eventId: string }> }) {
   const { eventId } = use(params);
+  const { user: authUser } = useAuth();
   const [row, setRow] = useState<ModelRow | null>(null);
   const [returnDetails, setReturnDetails] = useState<ReturnDetails | null>(null);
   const [loading, setLoading] = useState(true);
@@ -458,6 +465,10 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
   const [chartWindow, setChartWindow] = useState<"1h" | "6h" | "1d" | "all">("all");
   const [eventBets, setEventBets] = useState<UserBet[]>([]);
   const [selectedTradeId, setSelectedTradeId] = useState<number | null>(null);
+  const [replayEnabled, setReplayEnabled] = useState(false);
+  const [replayDelayHours, setReplayDelayHours] = useState(6);
+  const [replayScope, setReplayScope] = useState<"me" | "all">("me");
+  const [replayIndex, setReplayIndex] = useState(0);
 
   useEffect(() => {
     async function load() {
@@ -776,6 +787,107 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
   const activeSeriesKey = selectedSeriesKey && chartSeries.some((series) => series.key === selectedSeriesKey)
     ? selectedSeriesKey
     : chartSeries[0]?.key ?? null;
+
+  const replayTrades = useMemo(() => {
+    const trades = timelineRows
+      .filter((bet) => bet.type === "BUY" || bet.type === "SELL")
+      .filter((bet) => {
+        if (replayScope === "all") return true;
+        if (!authUser?.id) return true;
+        return bet.userId === authUser.id;
+      })
+      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+
+    return trades;
+  }, [timelineRows, replayScope, authUser?.id]);
+
+  useEffect(() => {
+    // Keep replay index valid when the trade list changes.
+    setReplayIndex((prev) => {
+      if (replayTrades.length === 0) return 0;
+      return Math.max(0, Math.min(prev, replayTrades.length - 1));
+    });
+  }, [replayTrades.length]);
+
+  useEffect(() => {
+    // If the user isn't logged in, "me" behaves like "all".
+    if (!authUser?.id && replayScope === "me") {
+      setReplayScope("all");
+    }
+  }, [authUser?.id, replayScope]);
+
+  const replayCurrent = useMemo(() => {
+    if (!replayEnabled) return null;
+    if (replayTrades.length === 0) return null;
+    const bet = replayTrades[replayIndex] ?? null;
+    if (!bet) return null;
+
+    const tsMs = Date.parse(bet.createdAt);
+    if (!Number.isFinite(tsMs)) return null;
+
+    const seriesKey = pickBestSeriesKeyForBet(chartSeries, bet) ?? activeSeriesKey;
+    if (!seriesKey) return null;
+
+    const nearest = findNearestChartDataPoint(chartSeriesData, tsMs);
+    const nearestLabel = nearest?.timeLabel ?? new Date(tsMs).toLocaleString();
+    const chartPriceAtTradeCents = nearest && typeof nearest[seriesKey] === "number" ? (nearest[seriesKey] as number) : null;
+
+    const executionPriceRaw = normalizeBinaryPrice(Number(bet.price));
+    const executionYes = bet.side === "NO" ? clamp01(1 - executionPriceRaw) : executionPriceRaw;
+    const executionCents = Number.isFinite(executionYes) ? Number((executionYes * 100).toFixed(2)) : null;
+
+    const delayMs = Math.max(0, Math.min(72, replayDelayHours)) * 60 * 60 * 1000;
+    const delayed = findNearestChartDataPoint(chartSeriesData, tsMs + delayMs);
+    const delayedCents = delayed && typeof delayed[seriesKey] === "number" ? (delayed[seriesKey] as number) : null;
+
+    let worstAfterCents: number | null = null;
+    let worstAfterPct: number | null = null;
+
+    if (executionCents != null && executionCents > 0) {
+      let minAfter = Number.POSITIVE_INFINITY;
+      let maxAfter = Number.NEGATIVE_INFINITY;
+      for (const point of chartSeriesData) {
+        if (point.ts * 1000 < tsMs) continue;
+        const v = point[seriesKey];
+        if (typeof v !== "number" || !Number.isFinite(v)) continue;
+        minAfter = Math.min(minAfter, v);
+        maxAfter = Math.max(maxAfter, v);
+      }
+
+      const isShortYes = bet.side === "NO";
+      const adverse = isShortYes ? maxAfter : minAfter;
+      if (Number.isFinite(adverse)) {
+        worstAfterCents = Number(adverse.toFixed(2));
+        worstAfterPct = Number((((adverse - executionCents) / executionCents) * 100).toFixed(2));
+      }
+    }
+
+    const delayDeltaCents = executionCents != null && delayedCents != null ? Number((delayedCents - executionCents).toFixed(2)) : null;
+    const delayDeltaPct = executionCents != null && delayedCents != null && executionCents > 0
+      ? Number((((delayedCents - executionCents) / executionCents) * 100).toFixed(2))
+      : null;
+
+    return {
+      bet,
+      seriesKey,
+      x: nearestLabel,
+      executionCents,
+      chartPriceAtTradeCents,
+      delayedCents,
+      delayDeltaCents,
+      delayDeltaPct,
+      worstAfterCents,
+      worstAfterPct,
+    };
+  }, [
+    replayEnabled,
+    replayTrades,
+    replayIndex,
+    replayDelayHours,
+    chartSeries,
+    activeSeriesKey,
+    chartSeriesData,
+  ]);
 
   const tradeMarkers = timelineRowsForChartMarkers
     .filter((bet) => bet.type === "BUY" || bet.type === "SELL")
@@ -1252,6 +1364,154 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                   </div>
                 </div>
 
+                <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" }}>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    <button
+                      type="button"
+                      onClick={() => setReplayEnabled((prev) => !prev)}
+                      style={{
+                        border: "1px solid rgba(255,255,255,0.12)",
+                        background: replayEnabled ? "rgba(59,130,246,0.16)" : "rgba(255,255,255,0.04)",
+                        color: "rgba(255,255,255,0.85)",
+                        borderRadius: 999,
+                        padding: "7px 12px",
+                        fontSize: 12,
+                        fontWeight: 800,
+                        cursor: "pointer",
+                      }}
+                      title="Replay trades on the chart"
+                    >
+                      ▶ Trade Replay
+                    </button>
+
+                    <div style={{ display: "inline-flex", gap: 6, alignItems: "center", fontSize: 12, color: "rgba(255,255,255,0.6)" }}>
+                      <span>Delay</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={72}
+                        value={replayDelayHours}
+                        onChange={(e) => setReplayDelayHours(Number(e.target.value))}
+                        style={{
+                          width: 64,
+                          padding: "6px 8px",
+                          borderRadius: 8,
+                          border: "1px solid rgba(255,255,255,0.12)",
+                          background: "rgba(0,0,0,0.25)",
+                          color: "rgba(255,255,255,0.85)",
+                          fontSize: 12,
+                        }}
+                      />
+                      <span>hours</span>
+                    </div>
+
+                    <div style={{ display: "inline-flex", gap: 6, alignItems: "center", fontSize: 12, color: "rgba(255,255,255,0.6)" }}>
+                      <span>Scope</span>
+                      <select
+                        value={replayScope}
+                        onChange={(e) => setReplayScope(e.target.value as "me" | "all")}
+                        disabled={!authUser?.id}
+                        style={{
+                          padding: "6px 8px",
+                          borderRadius: 8,
+                          border: "1px solid rgba(255,255,255,0.12)",
+                          background: "rgba(0,0,0,0.25)",
+                          color: "rgba(255,255,255,0.85)",
+                          fontSize: 12,
+                        }}
+                        title={!authUser?.id ? "Login required to filter to your trades" : "Choose which trades to replay"}
+                      >
+                        <option value="me">My trades</option>
+                        <option value="all">All users</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {replayEnabled && (
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <button
+                        type="button"
+                        onClick={() => setReplayIndex((prev) => Math.max(0, prev - 1))}
+                        disabled={replayTrades.length === 0 || replayIndex <= 0}
+                        style={{
+                          border: "1px solid rgba(255,255,255,0.12)",
+                          background: "rgba(255,255,255,0.04)",
+                          color: "rgba(255,255,255,0.85)",
+                          borderRadius: 10,
+                          padding: "7px 10px",
+                          fontSize: 12,
+                          fontWeight: 800,
+                          cursor: "pointer",
+                          opacity: replayTrades.length === 0 || replayIndex <= 0 ? 0.5 : 1,
+                        }}
+                      >
+                        Prev
+                      </button>
+                      <div style={{ fontSize: 12, color: "rgba(255,255,255,0.6)", fontFamily: "'DM Mono', monospace" }}>
+                        {replayTrades.length === 0 ? "0/0" : `${replayIndex + 1}/${replayTrades.length}`}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setReplayIndex((prev) => Math.min(replayTrades.length - 1, prev + 1))}
+                        disabled={replayTrades.length === 0 || replayIndex >= replayTrades.length - 1}
+                        style={{
+                          border: "1px solid rgba(255,255,255,0.12)",
+                          background: "rgba(255,255,255,0.04)",
+                          color: "rgba(255,255,255,0.85)",
+                          borderRadius: 10,
+                          padding: "7px 10px",
+                          fontSize: 12,
+                          fontWeight: 800,
+                          cursor: "pointer",
+                          opacity: replayTrades.length === 0 || replayIndex >= replayTrades.length - 1 ? 0.5 : 1,
+                        }}
+                      >
+                        Next
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {replayEnabled && (
+                  <div style={{ marginTop: 10, border: "1px solid rgba(255,255,255,0.10)", borderRadius: 12, background: "rgba(255,255,255,0.03)", padding: 12 }}>
+                    {replayCurrent ? (
+                      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" }}>
+                        <div style={{ minWidth: 260 }}>
+                          <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.88)" }}>
+                            {replayCurrent.bet.type} {replayCurrent.bet.side} · {new Date(replayCurrent.bet.createdAt).toLocaleString()}
+                          </div>
+                          <div style={{ marginTop: 4, fontSize: 12, color: "rgba(255,255,255,0.6)", fontFamily: "'DM Mono', monospace" }}>
+                            Exec: {fmtCents(replayCurrent.executionCents)} · Chart: {fmtCents(replayCurrent.chartPriceAtTradeCents)}
+                          </div>
+                        </div>
+
+                        <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+                          <div style={{ fontSize: 12, color: "rgba(255,255,255,0.65)" }}>
+                            Worst after trade: <span style={{ color: "rgba(255,255,255,0.9)", fontFamily: "'DM Mono', monospace" }}>{fmtCents(replayCurrent.worstAfterCents)}</span>
+                            {replayCurrent.worstAfterPct == null ? null : (
+                              <span style={{ marginLeft: 8, color: replayCurrent.worstAfterPct > 0 ? "#fca5a5" : "#86efac", fontFamily: "'DM Mono', monospace" }}>
+                                ({replayCurrent.worstAfterPct > 0 ? "+" : ""}{replayCurrent.worstAfterPct.toFixed(2)}%)
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: 12, color: "rgba(255,255,255,0.65)" }}>
+                            If delayed {Math.max(0, Math.min(72, replayDelayHours))}h: <span style={{ color: "rgba(255,255,255,0.9)", fontFamily: "'DM Mono', monospace" }}>{fmtCents(replayCurrent.delayedCents)}</span>
+                            {replayCurrent.delayDeltaCents == null ? null : (
+                              <span style={{ marginLeft: 8, color: replayCurrent.delayDeltaCents > 0 ? "#fca5a5" : "#86efac", fontFamily: "'DM Mono', monospace" }}>
+                                ({replayCurrent.delayDeltaCents > 0 ? "+" : ""}{replayCurrent.delayDeltaCents.toFixed(2)}¢{replayCurrent.delayDeltaPct == null ? "" : `, ${replayCurrent.delayDeltaPct > 0 ? "+" : ""}${replayCurrent.delayDeltaPct.toFixed(2)}%`})
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 12, color: "rgba(255,255,255,0.6)" }}>
+                        No trades available to replay for the selected scope.
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <div style={{ width: "100%", height: 340, marginTop: 14 }}>
                   {priceHistoryLoading ? (
                     <div style={{ height: "100%", borderRadius: 12, border: "1px dashed rgba(255,255,255,0.14)", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.5)", fontSize: 13 }}>
@@ -1309,6 +1569,35 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                             activeDot={{ r: 3 }}
                           />
                         ))}
+                        {replayCurrent && (
+                          <ReferenceDot
+                            x={replayCurrent.x}
+                            y={replayCurrent.executionCents ?? undefined}
+                            r={0}
+                            fill="transparent"
+                            stroke="transparent"
+                            ifOverflow="visible"
+                            shape={(props: { cx?: number; cy?: number; x?: number; y?: number }) => {
+                              const cx = props.cx ?? props.x;
+                              const cy = props.cy ?? props.y;
+                              return (
+                                <text
+                                  x={cx}
+                                  y={cy}
+                                  textAnchor="middle"
+                                  dominantBaseline="central"
+                                  fill="#ffffff"
+                                  stroke="rgba(255,255,255,0.55)"
+                                  strokeWidth={0.6}
+                                  fontSize={34}
+                                  fontWeight={900}
+                                >
+                                  ★
+                                </text>
+                              );
+                            }}
+                          />
+                        )}
                         <Brush
                           dataKey="timeLabel"
                           height={22}
