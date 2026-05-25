@@ -79,6 +79,7 @@ type MarketSeries = {
 
 type MarketChartPoint = {
   ts: number;
+  tsMs: number;
   timeLabel: string;
   [seriesKey: string]: number | string | null;
 };
@@ -245,6 +246,7 @@ function buildForwardFilledChartData(seriesList: MarketSeries[]): MarketChartPoi
   return allTimestamps.map((ts) => {
     const row: MarketChartPoint = {
       ts,
+      tsMs: ts * 1000,
       timeLabel: new Date(ts * 1000).toLocaleString(),
     };
 
@@ -774,11 +776,11 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
     return chartSeriesData.filter((point) => point.ts * 1000 >= chartCutoffMs);
   }, [chartSeriesData, chartCutoffMs]);
   const officialChartTicks = useMemo(() => {
-    return officialChartData.reduce<string[]>((ticks, point, index) => {
-      const currentDay = new Date(point.ts * 1000).toISOString().slice(0, 10);
-      const previousDay = index > 0 ? new Date(officialChartData[index - 1].ts * 1000).toISOString().slice(0, 10) : null;
+    return officialChartData.reduce<number[]>((ticks, point, index) => {
+      const currentDay = new Date(point.tsMs).toISOString().slice(0, 10);
+      const previousDay = index > 0 ? new Date(officialChartData[index - 1].tsMs).toISOString().slice(0, 10) : null;
       if (index === 0 || currentDay !== previousDay) {
-        ticks.push(point.timeLabel);
+        ticks.push(point.tsMs);
       }
       return ticks;
     }, []);
@@ -788,6 +790,8 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
     ? selectedSeriesKey
     : chartSeries[0]?.key ?? null;
 
+  const visibleChartSeries = activeSeriesKey ? chartSeries.filter((series) => series.key === activeSeriesKey) : [];
+
   const replayTrades = useMemo(() => {
     const trades = timelineRows
       .filter((bet) => bet.type === "BUY" || bet.type === "SELL")
@@ -796,10 +800,15 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
         if (!authUser?.id) return true;
         return bet.userId === authUser.id;
       })
+      .filter((bet) => {
+        if (!activeSeriesKey) return true;
+        const seriesKey = pickBestSeriesKeyForBet(chartSeries, bet) ?? activeSeriesKey;
+        return seriesKey === activeSeriesKey;
+      })
       .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
 
     return trades;
-  }, [timelineRows, replayScope, authUser?.id]);
+  }, [timelineRows, replayScope, authUser?.id, activeSeriesKey, chartSeries]);
 
   useEffect(() => {
     // Keep replay index valid when the trade list changes.
@@ -830,6 +839,7 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
 
     const nearest = findNearestChartDataPoint(chartSeriesData, tsMs);
     const nearestLabel = nearest?.timeLabel ?? new Date(tsMs).toLocaleString();
+    const nearestTsMs = nearest?.tsMs ?? tsMs;
     const chartPriceAtTradeCents = nearest && typeof nearest[seriesKey] === "number" ? (nearest[seriesKey] as number) : null;
 
     const executionPriceRaw = normalizeBinaryPrice(Number(bet.price));
@@ -870,7 +880,8 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
     return {
       bet,
       seriesKey,
-      x: nearestLabel,
+      x: nearestTsMs,
+      xLabel: nearestLabel,
       executionCents,
       chartPriceAtTradeCents,
       delayedCents,
@@ -920,7 +931,7 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
 
       return seriesKey ? {
         id: bet.id,
-        x: nearest.timeLabel,
+        x: nearest.tsMs,
         yCents: Number.isFinite(Number(yValue)) ? Number(Number(yValue).toFixed(2)) : NaN,
         type: bet.type,
         side: bet.side,
@@ -932,11 +943,12 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
       } : null;
     })
     .filter((marker): marker is NonNullable<typeof marker> => Boolean(marker))
-    .filter((marker) => Number.isFinite(marker.yCents));
+    .filter((marker) => Number.isFinite(marker.yCents))
+    .filter((marker) => !activeSeriesKey || marker.seriesKey === activeSeriesKey);
 
   const groupedTradeMarkers = useMemo(() => {
     const groups = new Map<string, {
-      x: string;
+      x: number;
       yCents: number;
       count: number;
       color: string;
@@ -1296,7 +1308,7 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                   <div>
                     <h2 style={{ margin: 0, fontSize: 16 }}>Price Chart</h2>
                     <div style={{ marginTop: 6, fontSize: 12, color: "rgba(255,255,255,0.66)" }}>
-                      Multi-outcome chart for this event. Stars indicate trade execution prices across outcomes (NO trades are shown on the YES scale).
+                      Multi-outcome event. Select a single outcome below; only that price line + its trade stars will be shown (NO trades are shown on the YES scale).
                     </div>
                   </div>
                   {selectedMarketInfo && (
@@ -1306,35 +1318,32 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                   )}
                 </div>
 
-                <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 10 }}>
-                  {chartSeries.map((series) => {
-                    const isActive = activeSeriesKey === series.key;
-                    return (
-                      <button
-                        key={series.key}
-                        type="button"
-                        onClick={() => setSelectedSeriesKey(series.key)}
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 8,
-                          padding: "6px 10px",
-                          borderRadius: 999,
-                          border: `1px solid ${isActive ? series.color : `${series.color}33`}`,
-                          background: isActive ? `${series.color}2B` : `${series.color}12`,
-                          boxShadow: isActive ? `0 0 0 1px ${series.color}33 inset` : "none",
-                          fontSize: 12,
-                          color: "rgba(255,255,255,0.88)",
-                          cursor: "pointer",
-                        }}
-                        title="Click to set active series for trade markers"
-                      >
-                        <span style={{ width: 8, height: 8, borderRadius: 999, background: series.color, flexShrink: 0 }} />
-                        <span style={{ maxWidth: 220, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{series.label}</span>
-                        <span style={{ color: "rgba(255,255,255,0.58)" }}>{series.latestPriceCents == null ? "N/A" : `${series.latestPriceCents.toFixed(0)}¢`}</span>
-                      </button>
-                    );
-                  })}
+                <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                  <div style={{ fontSize: 12, color: "rgba(255,255,255,0.55)", fontWeight: 700 }}>
+                    Event:
+                  </div>
+                  <select
+                    value={activeSeriesKey ?? ""}
+                    onChange={(e) => setSelectedSeriesKey(e.target.value || null)}
+                    disabled={chartSeries.length === 0}
+                    style={{
+                      padding: "7px 10px",
+                      borderRadius: 10,
+                      border: "1px solid rgba(255,255,255,0.12)",
+                      background: "rgba(0,0,0,0.25)",
+                      color: "rgba(255,255,255,0.85)",
+                      fontSize: 12,
+                      minWidth: 360,
+                      maxWidth: 720,
+                    }}
+                    title="Choose which outcome series to display"
+                  >
+                    {chartSeries.map((series) => (
+                      <option key={series.key} value={series.key}>
+                        {series.label}{series.latestPriceCents == null ? "" : ` (${series.latestPriceCents.toFixed(0)}¢)`}
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
                 <div style={{ marginTop: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
@@ -1512,7 +1521,7 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                   </div>
                 )}
 
-                <div style={{ width: "100%", height: 340, marginTop: 14 }}>
+                <div style={{ width: "100%", height: 340, marginTop: 14, minWidth: 0 }}>
                   {priceHistoryLoading ? (
                     <div style={{ height: "100%", borderRadius: 12, border: "1px dashed rgba(255,255,255,0.14)", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.5)", fontSize: 13 }}>
                       Loading price chart...
@@ -1530,13 +1539,20 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                       <LineChart data={officialChartData} margin={{ top: 12, right: 18, bottom: 8, left: 4 }}>
                         <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="4 4" />
                         <XAxis
-                          dataKey="timeLabel"
+                          dataKey="tsMs"
+                          type="number"
+                          domain={["dataMin", "dataMax"]}
                           ticks={officialChartTicks}
                           interval={0}
                           tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 11 }}
                           axisLine={{ stroke: "rgba(255,255,255,0.12)" }}
                           tickLine={{ stroke: "rgba(255,255,255,0.12)" }}
-                          tickFormatter={(value) => String(value).slice(0, 5)}
+                          tickFormatter={(value) => {
+                            const ms = Number(value);
+                            if (!Number.isFinite(ms)) return "";
+                            const d = new Date(ms);
+                            return `${d.getMonth() + 1}/${d.getDate()}`;
+                          }}
                         />
                         <YAxis
                           tick={{ fill: "rgba(255,255,255,0.55)", fontSize: 11 }}
@@ -1554,17 +1570,21 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                             color: "#fff",
                           }}
                           formatter={(value: number | string | undefined, name) => [`${Number(value ?? 0).toFixed(2)}¢`, String(name)]}
-                          labelFormatter={(label) => label}
+                          labelFormatter={(label) => {
+                            const ms = Number(label);
+                            if (!Number.isFinite(ms)) return String(label);
+                            return new Date(ms).toLocaleString();
+                          }}
                         />
-                        {chartSeries.map((series) => (
+                        {visibleChartSeries.map((series) => (
                           <Line
                             key={series.key}
                             type="monotone"
                             dataKey={series.key}
                             name={series.label}
                             stroke={series.color}
-                            strokeWidth={activeSeriesKey === series.key ? 3.1 : 1.7}
-                            strokeOpacity={activeSeriesKey === series.key ? 1 : 0.45}
+                            strokeWidth={3.1}
+                            strokeOpacity={1}
                             dot={false}
                             activeDot={{ r: 3 }}
                           />
@@ -1599,12 +1619,17 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                           />
                         )}
                         <Brush
-                          dataKey="timeLabel"
+                          dataKey="tsMs"
                           height={22}
                           travellerWidth={10}
                           stroke="rgba(255,255,255,0.22)"
                           fill="rgba(255,255,255,0.06)"
-                          tickFormatter={(value) => String(value).slice(0, 5)}
+                          tickFormatter={(value) => {
+                            const ms = Number(value);
+                            if (!Number.isFinite(ms)) return "";
+                            const d = new Date(ms);
+                            return `${d.getMonth() + 1}/${d.getDate()}`;
+                          }}
                         />
                         {groupedTradeMarkers.map((marker, index) => (
                           <ReferenceDot
@@ -1643,7 +1668,7 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                           if (!bet) return null;
                           const betTs = Date.parse(bet.createdAt);
                           const nearest = findNearestChartDataPoint(officialChartData, betTs);
-                          const x = nearest?.timeLabel ?? new Date(bet.createdAt).toLocaleString();
+                          const x = nearest?.tsMs ?? betTs;
                           const betPrice = Number(bet.price);
                           const yCents = Number.isFinite(betPrice) ? Number((betPrice * 100).toFixed(2)) : NaN;
                           if (!Number.isFinite(yCents)) return null;
@@ -1867,7 +1892,7 @@ export default function EventBacktestDetailsPage({ params }: { params: Promise<{
                   This starts from 0 and shows how many YES / NO shares were accumulated over time.
                 </div>
 
-                <div style={{ width: "100%", height: 260, marginTop: 12 }}>
+                <div style={{ width: "100%", height: 260, marginTop: 12, minWidth: 0 }}>
                   {timelineRows.length === 0 ? (
                     <div style={{ height: "100%", borderRadius: 12, border: "1px dashed rgba(255,255,255,0.14)", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.5)", fontSize: 13 }}>
                       No transaction records available yet.
